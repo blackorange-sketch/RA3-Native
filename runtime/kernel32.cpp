@@ -517,6 +517,32 @@ IMP_STD(K, WideCharToMultiByte, 8)
 	SET(s.size());
 }
 
+
+static std::string lowerStr(std::string s) { for (auto& c : s) c = (char)tolower((unsigned char)c); return s; }
+// Debug aid: dump interesting entries of an EA BIG archive that the game has just opened.
+static void scanBig(int fd, const std::string& name)
+{
+	uint8_t h[16];
+	if (pread(fd, h, 16, 0) != 16 || memcmp(h, "BIG", 3) != 0) { log("big %s: bad header", name.c_str()); return; }
+	auto be = [](const uint8_t* p) { return (uint32_t)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; };
+	uint32_t count = be(h + 8), first = be(h + 12);
+	std::vector<uint8_t> toc(first > 16 && first < (64u << 20) ? first - 16 : 0);
+	if (toc.empty() || pread(fd, toc.data(), toc.size(), 16) != (ssize_t)toc.size()) { log("big %s: toc read failed", name.c_str()); return; }
+	size_t pos = 0;
+	uint32_t shown = 0;
+	for (uint32_t i = 0; i < count && pos + 9 <= toc.size(); i++)
+	{
+		uint32_t off = be(&toc[pos]), sz = be(&toc[pos + 4]);
+		const char* n = (const char*)&toc[pos + 8];
+		size_t len = strnlen(n, toc.size() - pos - 8);
+		pos += 8 + len + 1;
+		std::string ln = lowerStr(std::string(n, len));
+		if ((ln.find("manifest") != std::string::npos || ln.find(".version") != std::string::npos) && shown++ < 12)
+			log("big %s: [%s] off=%u size=%u", name.c_str(), std::string(n, len).c_str(), off, sz);
+	}
+	log("big %s: %u entries, first data offset %u", name.c_str(), count, first);
+}
+
 // ================= files
 static FileObj* fileOf(uint32_t h) { return (FileObj*)getHandle(h, KFile); }
 static void openFile(CPU* c, const std::string& winPath, uint32_t access, uint32_t share, uint32_t disp)
@@ -546,6 +572,11 @@ static void openFile(CPU* c, const std::string& winPath, uint32_t access, uint32
 	{
 		static int opened = 0;
 		if (opened++ < 300) log("open ok: '%s' -> %s%s acc=%08x disp=%u fd=%d", winPath.c_str(), hp.c_str(), isDir ? " (dir)" : "", access, disp, fd);
+	}
+	if (fd >= 0 && !(flags & (O_WRONLY | O_RDWR)) && hp.size() > 4 && lowerStr(hp.substr(hp.size() - 4)) == ".big")
+	{
+		static int scanned = 0;
+		if (scanned++ < 60) scanBig(fd, hp.substr(hp.rfind('/') + 1));
 	}
 	auto* f = new FileObj{fd, hp, isDir};
 	SET(newHandle(f, KFile));

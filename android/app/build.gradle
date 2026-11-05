@@ -21,7 +21,16 @@ android {
     externalNativeBuild {
         cmake { path 'src/main/cpp/CMakeLists.txt' }
     }
+    signingConfigs {
+        // fixed key (private repo, test app) so every CI build is signed identically and installs over the previous one
+        main {
+            storeFile file('ra3native.keystore')
+            storePassword 'ra3native'
+            keyAlias 'ra3native'
+            keyPassword 'ra3native'
+        }
+    }
     buildTypes {
-        debug { debuggable true }
+        debug { debuggable true; signingConfig signingConfigs.main }
     }
 }
