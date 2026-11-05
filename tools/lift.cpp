@@ -1019,7 +1019,7 @@ Result liftFunction(Reader& r, uint32_t entry, const Options& opt)
 			}
 			in.id = insn->id; in.mn = insn->mnemonic; in.ops = insn->op_str; in.size = insn->size; in.next = pc + insn->size;
 			in.x = insn->detail->x86;
-			bool jcc = isJcc(in.id);
+			bool jcc = isJcc(in.id) || in.id == X86_INS_LOOP || in.id == X86_INS_LOOPE || in.id == X86_INS_LOOPNE || in.id == X86_INS_JECXZ;
 			if (in.id == X86_INS_RET || in.id == X86_INS_INT3 || in.id == X86_INS_UD2 || in.id == X86_INS_HLT) in.terminal = true;
 			if (in.id == X86_INS_JMP)
 			{

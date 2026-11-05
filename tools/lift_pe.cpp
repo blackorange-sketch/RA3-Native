@@ -57,7 +57,11 @@ int main(int argc, char** argv)
 	unsigned v;
 	while (fscanf(fl, "%x", &v) == 1) funcs.insert(v);
 	fclose(fl);
-	FILE* out = argc > 4 ? fopen(argv[4], "w") : nullptr;
+	FILE* out = argc > 4 && !strcmp(argv[3], "--emit") ? fopen(argv[4], "w") : nullptr;
+	const char* dir = argc > 5 && !strcmp(argv[3], "--emit-dir") ? argv[4] : nullptr;
+	int nfiles = dir ? atoi(argv[5]) : 0;
+	std::vector<std::string> chunks;
+	std::vector<uint32_t> order;
 	lift::init();
 	lift::Options opt;
 	opt.funcEntries = &funcs;
@@ -76,6 +80,27 @@ int main(int argc, char** argv)
 			if (seen.insert(mn).second) funcsByMn[mn]++;
 		}
 		if (out) fputs(r.code.c_str(), out);
+		if (dir) { chunks.push_back(r.code); order.push_back(e); }
+	}
+	if (dir)
+	{
+		std::string d = dir;
+		FILE* h = fopen((d + "/lifted_decl.h").c_str(), "w");
+		fprintf(h, "#pragma once\n#include \"lifted_prelude.h\"\n");
+		for (uint32_t e : order) fprintf(h, "void f_%08x(CPU*);\n", e);
+		fclose(h);
+		for (int i = 0; i < nfiles; i++)
+		{
+			FILE* f = fopen((d + "/lifted_" + std::to_string(i) + ".cpp").c_str(), "w");
+			fprintf(f, "#include \"lifted_decl.h\"\n#include <cmath>\n");
+			for (size_t k = i; k < chunks.size(); k += nfiles) fputs(chunks[k].c_str(), f);
+			fclose(f);
+		}
+		FILE* t = fopen((d + "/lifted_table.cpp").c_str(), "w");
+		fprintf(t, "#include \"lifted_decl.h\"\nstruct LiftedEntry { uint32_t addr; LiftedFn fn; };\nextern const LiftedEntry lifted_table[] = {\n");
+		for (uint32_t e : order) fprintf(t, "\t{0x%08xu, f_%08x},\n", e, e);
+		fprintf(t, "};\nextern const unsigned lifted_count = %zu;\n", order.size());
+		fclose(t);
 	}
 	printf("functions %zu, fully lifted %zu (%.1f%%), instructions %zu, unsupported %zu (%.2f%%)\n", total, full, 100.0 * full / total, ins, bad, 100.0 * bad / ins);
 	std::vector<std::pair<size_t, std::string>> v2;
