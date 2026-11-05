@@ -20,7 +20,11 @@ struct Entry
 	HostFn fn;               // nullptr until implemented
 	int pop;                 // bytes of arguments the callee removes (stdcall); 0 for cdecl
 	uint64_t calls = 0;
+	uint32_t user = 0;       // free for the implementation (COM method index etc.)
 };
+
+// The entry being dispatched on this thread (valid inside a HostFn).
+extern thread_local Entry* current;
 
 constexpr uint32_t StubBase = 0x70000000;   // above any section, below the stack
 constexpr uint32_t StubStride = 16;
@@ -30,7 +34,9 @@ void registerFn(const char* dll, const char* name, HostFn fn, int pop);
 using DataInit = uint32_t (*)();
 void registerData(const char* dll, const char* name, uint32_t size, DataInit init);
 extern uint32_t (*dataAlloc)(uint32_t size);
-uint32_t bind(const std::string& dll, const std::string& name);   // returns stub address
+uint32_t bind(const std::string& dll, const std::string& name);
+// Creates a stub at run time (COM vtable methods); returns its guest address.
+uint32_t addDynamic(const std::string& dll, const std::string& name, HostFn fn, int pop, uint32_t user);   // returns stub address
 Entry* lookup(uint32_t stubAddr);
 const std::vector<Entry>& all();
 }

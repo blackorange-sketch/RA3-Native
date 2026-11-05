@@ -1,4 +1,8 @@
 // WS2_32 (ordinal imports). Networking is not implemented yet: sockets fail cleanly so the game runs offline.
+#include <algorithm>
+#include <chrono>
+#include <thread>
+
 #include "rt.h"
 
 #define W "WS2_32.dll"
@@ -39,3 +43,7 @@ IMP_ID(W, "WSACreateEvent", WSACreateEvent, 0) { SET(0x7777); }
 IMP_ID(W, "WSASetEvent", WSASetEvent, 4) { SET(1); }
 IMP_ID(W, "WSACloseEvent", WSACloseEvent, 4) { SET(1); }
 IMP_ID(W, "WSAIoctl", WSAIoctl, 36) { SET(0xffffffff); }
+IMP_ID(W, "WSAWaitForMultipleEvents", WSAWaitForMultipleEvents, 20) { std::this_thread::sleep_for(std::chrono::milliseconds(std::min<uint32_t>(ARG(3), 50))); SET(0x102); }
+IMP_ID(W, "WSAResetEvent", WSAResetEvent, 4) { SET(1); }
+IMP_ID(W, "WSAEventSelect", WSAEventSelect, 12) { SET(0xffffffff); }
+IMP_ID(W, "WSAEnumNetworkEvents", WSAEnumNetworkEvents, 12) { SET(0xffffffff); }

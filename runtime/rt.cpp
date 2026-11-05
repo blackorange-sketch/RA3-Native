@@ -255,6 +255,7 @@ void call_target(CPU* c, uint32_t addr)
 		static const bool implog = getenv("RA3_IMPLOG") != nullptr;
 		if (implog) log("import %s!%s ret=%08x a0=%08x a1=%08x", e->dll.c_str(), e->name.c_str(), guest::load<uint32_t>(c->r[ESP]), guest::load<uint32_t>(c->r[ESP] + 4), guest::load<uint32_t>(c->r[ESP] + 8));
 		e->calls++;
+		imports::current = e;
 		e->fn(c);
 		c->r[ESP] += 4 + e->pop;
 		return;

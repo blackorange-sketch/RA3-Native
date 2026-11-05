@@ -490,7 +490,7 @@ IMP_STD(K, SetNamedPipeHandleState, 4) { SET(0); }
 IMP_STD(K, CreateToolhelp32Snapshot, 2) { SET(0xffffffff); }
 IMP_STD(K, Thread32First, 2) { SET(0); }
 IMP_STD(K, Thread32Next, 2) { SET(0); }
-IMP_STD(K, EnumThreadWindows, 3) { SET(1); }
+IMP_ID("USER32.dll", "EnumThreadWindows", EnumThreadWindows, 12) { SET(1); }
 IMP_STD(K, MultiByteToWideChar, 6)
 {
 	uint32_t srcLen = ARG(3);

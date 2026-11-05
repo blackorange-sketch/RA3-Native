@@ -450,6 +450,6 @@ IMP_C(DLL, __CxxFrameHandler3) { fatal("__CxxFrameHandler3 invoked - C++ excepti
 IMP_C(DLL, _except_handler3) { fatal("_except_handler3 invoked (SEH)"); }
 IMP_C(DLL, _except_handler4_common) { fatal("_except_handler4_common invoked (SEH)"); }
 IMP_C(DLL, longjmp) { fatal("longjmp is not supported yet"); }
-IMP_C(DLL, _setjmp3) { fatal("_setjmp3 is not supported yet"); }
+IMP_C(DLL, _setjmp3) { SET(0); }   // first return only; longjmp is fatal (used for error paths)
 IMP_ID(DLL, "?terminate@@YAXXZ", terminate_fn, 0) { fatal("std::terminate called"); }
 IMP_ID(DLL, "?_type_info_dtor_internal_method@type_info@@QAEXXZ", type_info_dtor, 0) {}
