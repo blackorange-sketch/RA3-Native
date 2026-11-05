@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include "lift.h"
 
 #include <capstone/capstone.h>
@@ -147,7 +148,10 @@ void flagRW(Ins& i)
 	case X86_INS_BSF: case X86_INS_BSR: i.wr = ALL6; break;
 	case X86_INS_STC: case X86_INS_CLC: i.wr = 1u << CF; break;
 	case X86_INS_CMC: i.rd = 1u << CF; i.wr = 1u << CF; break;
+	case X86_INS_CMPXCHG8B: i.wr = 1u << ZF; break;
 	case X86_INS_LAHF: i.rd = ALL6 & ~(1u << OF); break;
+	case X86_INS_PUSHFD: i.rd = ALL6; break;
+	case X86_INS_POPFD: i.wr = ALL6; break;
 	case X86_INS_SCASB: case X86_INS_SCASW: case X86_INS_SCASD: case X86_INS_CMPSB: case X86_INS_CMPSW: case X86_INS_CMPSD:
 		i.wr = ALL6; break;
 	case X86_INS_COMISS: case X86_INS_UCOMISS: case X86_INS_FCOMI: case X86_INS_FCOMPI: case X86_INS_FUCOMI: case X86_INS_FUCOMPI:
@@ -258,6 +262,7 @@ struct Gen
 	std::string jumpTo(uint32_t t, const char* saveRegs = "SAVE();")
 	{
 		if (isLocal(t)) return fmt("goto L_%08x;", t);
+		if (funcs && !funcs->count(t)) return fmt("{ %s call_target(c, 0x%08xu); return; }", saveRegs, t);
 		return fmt("{ %s f_%08x(c); return; }", saveRegs, t);
 	}
 
@@ -454,6 +459,16 @@ struct Gen
 			break;
 		}
 
+		case X86_INS_CMPXCHG8B:
+		{
+			if (op(0).type != X86_OP_MEM) { ok = false; break; }
+			e.line("{ uint32_t ea = " + e.ea(op(0)) + "; uint64_t exp = ((uint64_t)edx << 32) | eax, nv = ((uint64_t)ecx << 32) | ebx;");
+			e.line("bool hit = __atomic_compare_exchange_n((uint64_t*)guest::host(ea), &exp, nv, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);");
+			e.flag(ZF, "hit");
+			e.line("if (!hit) { eax = (uint32_t)exp; edx = (uint32_t)(exp >> 32); } }");
+			break;
+		}
+
 		case X86_INS_PUSH:
 			if (sz != 4) { ok = false; break; }
 			e.line("{ uint32_t v = " + e.rd(op(0), nullptr, 4) + "; esp -= 4; S32(esp, v); }");
@@ -596,6 +611,15 @@ struct Gen
 		case X86_INS_SAHF:
 			e.flag(CF, "(eax >> 8) & 1"); e.flag(PF, "(eax >> 10) & 1"); e.flag(AF, "(eax >> 12) & 1");
 			e.flag(ZF, "(eax >> 14) & 1"); e.flag(SF, "(eax >> 15) & 1");
+			break;
+		case X86_INS_PUSHFD:
+			e.line("esp -= 4; S32(esp, (uint32_t)(cf | pf << 2 | af << 4 | zf << 6 | sf << 7 | df << 10 | of << 11) | 0x202u);");
+			break;
+		case X86_INS_POPFD:
+			e.line("{ uint32_t fl = G32(esp); esp += 4; df = (fl >> 10) & 1;");
+			e.flag(CF, "fl & 1"); e.flag(PF, "(fl >> 2) & 1"); e.flag(AF, "(fl >> 4) & 1");
+			e.flag(ZF, "(fl >> 6) & 1"); e.flag(SF, "(fl >> 7) & 1"); e.flag(OF, "(fl >> 11) & 1");
+			e.line("}");
 			break;
 		case X86_INS_LAHF:
 			e.line("eax = (eax & 0xffff00ffu) | ((uint32_t)(sf << 7 | zf << 6 | af << 4 | pf << 2 | 2 | cf) << 8);");
@@ -949,7 +973,10 @@ struct Gen
 			{
 				uint32_t target = (uint32_t)t.imm;
 				if (target == in.next) { e.line(fmt("esp -= 4; S32(esp, %s);", hex(in.next).c_str())); break; }   // get-PC idiom
-				e.line(fmt("esp -= 4; S32(esp, %s); SAVE(); f_%08x(c); LOAD();", hex(in.next).c_str(), target));
+				if (funcs && !funcs->count(target))
+					e.line(fmt("esp -= 4; S32(esp, %s); SAVE(); call_target(c, 0x%08xu); LOAD();", hex(in.next).c_str(), target));
+				else
+					e.line(fmt("esp -= 4; S32(esp, %s); SAVE(); f_%08x(c); LOAD();", hex(in.next).c_str(), target));
 			}
 			else
 			{
@@ -1085,6 +1112,12 @@ Result liftFunction(Reader& r, uint32_t entry, const Options& opt)
 	Result res;
 	Gen g{opt.funcEntries, entry, &code, {}};
 	std::string body;
+	if (!code.empty() && code.begin()->first != entry)
+	{
+		// Some of the function's code lies below its entry (shared tails reached by jumps): start at the entry.
+		labels.insert(entry);
+		body += fmt("\tgoto L_%08x;\n", entry);
+	}
 	for (auto& [va, i] : code)
 	{
 		if (labels.count(va)) body += fmt("L_%08x:;\n", va);
@@ -1096,11 +1129,20 @@ Result liftFunction(Reader& r, uint32_t entry, const Options& opt)
 		res.instructions++;
 	}
 
-	std::string head = fmt("void f_%08x(CPU* c)\n{\n", entry);
+	static const std::set<uint32_t> hooks = [] {
+		std::set<uint32_t> h;
+		if (const char* e = getenv("RA3_HOOKS")) for (const char* p = e; *p;) { h.insert((uint32_t)strtoul(p, (char**)&p, 16)); if (*p == ',') p++; }
+		return h;
+	}();
+	bool hooked = hooks.count(entry) != 0;
+	std::string head = fmt("void f_%08x%s(CPU* c)\n{\n", entry, hooked ? "_real" : "");
 	head += "\tuint32_t eax = c->r[0], ecx = c->r[1], edx = c->r[2], ebx = c->r[3], esp = c->r[4], ebp = c->r[5], esi = c->r[6], edi = c->r[7];\n";
 	head += "\tuint8_t cf = 0, pf = 0, af = 0, zf = 0, sf = 0, of = 0, df = (uint8_t)c->df;\n";
+	head += fmt("\tTRACE_FN(0x%08xu);\n", entry);
 	head += "\t(void)cf; (void)pf; (void)af; (void)zf; (void)sf; (void)of; (void)df;\n";
 	res.code = head + body + "}\n";
+	if (hooked)
+		res.code += fmt("void f_%08x(CPU* c)\n{\n\tuint32_t a0 = G32(c->r[4] + 4), a1 = G32(c->r[4] + 8), a2 = G32(c->r[4] + 12), ecx0 = c->r[1];\n\tf_%08x_real(c);\n\tra3_hook_after(c, 0x%08xu, a0, a1, a2, ecx0);\n}\n", entry, entry, entry);
 	res.unsupported = g.unsup;
 	return res;
 }

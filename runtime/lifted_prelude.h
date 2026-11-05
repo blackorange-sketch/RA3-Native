@@ -5,3 +5,14 @@
 
 #define SAVE() do { c->r[0] = eax; c->r[1] = ecx; c->r[2] = edx; c->r[3] = ebx; c->r[4] = esp; c->r[5] = ebp; c->r[6] = esi; c->r[7] = edi; c->df = df; } while (0)
 #define LOAD() do { eax = c->r[0]; ecx = c->r[1]; edx = c->r[2]; ebx = c->r[3]; esp = c->r[4]; ebp = c->r[5]; esi = c->r[6]; edi = c->r[7]; df = (uint8_t)c->df; } while (0)
+
+// Call tracing: a per-thread ring of the last function entries, dumped on fatal errors (build with -DRA3_TRACE).
+#ifdef RA3_TRACE
+extern thread_local uint32_t ra3_ring[256];
+extern thread_local uint32_t ra3_ring_pos;
+#define TRACE_FN(a) (ra3_ring[ra3_ring_pos++ & 255] = (a))
+#else
+#define TRACE_FN(a) ((void)0)
+#endif
+
+void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t ecx);

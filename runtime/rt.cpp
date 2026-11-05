@@ -1,3 +1,5 @@
+#include <unistd.h>
+#include <atomic>
 #include <algorithm>
 #include <dirent.h>
 #include <map>
@@ -37,6 +39,33 @@ void log(const char* f, ...)
 	}
 }
 
+#ifdef RA3_TRACE
+}
+thread_local uint32_t ra3_ring[256];
+thread_local uint32_t ra3_ring_pos;
+namespace rt {
+static struct { uint32_t* ring; uint32_t* pos; uint32_t tid; } rings[32];
+static std::atomic<int> ringCount{0};
+void traceRegister(uint32_t tid)
+{
+	int i = ringCount++;
+	if (i < 32) rings[i] = {ra3_ring, &ra3_ring_pos, tid};
+}
+void traceDump()
+{
+	for (int i = 0; i < ringCount && i < 32; i++)
+	{
+		fprintf(stderr, "-- thread %u%s, last functions (oldest first):", rings[i].tid, rings[i].ring == ra3_ring ? " (CURRENT)" : "");
+		uint32_t p = *rings[i].pos;
+		for (uint32_t k = 0; k < 256; k++) fprintf(stderr, " %08x", rings[i].ring[(p - 256 + k) & 255]);
+		fprintf(stderr, "\n");
+	}
+}
+#else
+void traceRegister(uint32_t) {}
+void traceDump() {}
+#endif
+
 void fatal(const char* f, ...)
 {
 	char buf[1024];
@@ -45,8 +74,9 @@ void fatal(const char* f, ...)
 	vsnprintf(buf, sizeof buf, f, ap);
 	va_end(ap);
 	log("FATAL: %s", buf);
+	traceDump();
 	if (logFp) fflush(logFp);
-	exit(70);
+	fflush(stderr); _exit(70);
 }
 
 // ---- strings
@@ -216,9 +246,14 @@ std::string hostPath(const std::string& win)
 void call_target(CPU* c, uint32_t addr)
 {
 	using namespace rt;
+	#ifdef RA3_TRACE
+	ra3_ring[ra3_ring_pos++ & 255] = 0xc0000000u ^ addr;   // marker: indirect call target
+	#endif
 	if (auto* e = imports::lookup(addr))
 	{
 		if (!e->fn) fatal("unimplemented import %s!%s (called from guest %08x)", e->dll.c_str(), e->name.c_str(), guest::load<uint32_t>(c->r[ESP]));
+		static const bool implog = getenv("RA3_IMPLOG") != nullptr;
+		if (implog) log("import %s!%s ret=%08x a0=%08x a1=%08x", e->dll.c_str(), e->name.c_str(), guest::load<uint32_t>(c->r[ESP]), guest::load<uint32_t>(c->r[ESP] + 4), guest::load<uint32_t>(c->r[ESP] + 8));
 		e->calls++;
 		e->fn(c);
 		c->r[ESP] += 4 + e->pop;
@@ -231,10 +266,30 @@ void call_target(CPU* c, uint32_t addr)
 		if (lifted_table[mid].addr < addr) lo = mid + 1; else hi = mid;
 	}
 	if (lo < lifted_count && lifted_table[lo].addr == addr) { lifted_table[lo].fn(c); return; }
+	{
+		const char* nm[8] = {"eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"};
+		for (int i = 0; i < 8; i++)
+		{
+			fprintf(stderr, "%s=%08x", nm[i], c->r[i]);
+			uint32_t v = c->r[i];
+			if (v >= 0x400000 && v < 0x70000000 && i != 4 && i != 0)
+			{
+				fprintf(stderr, " [");
+				for (int k = 0; k < 8; k++) fprintf(stderr, " %08x", guest::load<uint32_t>(v + 4 * k));
+				fprintf(stderr, " ]");
+			}
+			fprintf(stderr, "\n");
+		}
+	}
 	fatal("call to unknown guest address %08x (return address %08x)", addr, guest::load<uint32_t>(c->r[ESP]));
 }
 
 void unsupported(CPU* c, uint32_t va, const char* what)
 {
 	rt::fatal("unsupported instruction at %08x: %s", va, what);
+}
+
+void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t ecx)
+{
+	rt::log("hook %08x(ecx=%08x, %08x, %08x, %08x) -> eax=%08x", fn, ecx, a0, a1, a2, c->r[EAX]);
 }

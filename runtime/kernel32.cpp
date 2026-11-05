@@ -117,6 +117,7 @@ void threadMain(ThreadObj* t)
 	tctx.tid = t->tid;
 	tctx.stackTop = top;
 	tctx.teb = makeTeb(low, top, t->tid);
+	traceRegister(t->tid);
 	cpu.fsbase = tctx.teb;
 	cpu.r[ESP] = top - 16;
 	uint32_t r = callGuestRet(&cpu, t->fn, {t->arg}, 4);
@@ -183,6 +184,7 @@ uint32_t spawnMainThread(CPU* c)
 	tctx.tid = nextTid++;
 	tctx.stackTop = top;
 	tctx.teb = makeTeb(low, top, tctx.tid);
+	traceRegister(tctx.tid);
 	c->fsbase = tctx.teb;
 	c->r[ESP] = top - 16;
 	return top;
@@ -204,6 +206,21 @@ IMP_STD(K, CreateThread, 6)
 	if (!t->suspended) { t->started = true; t->th = std::thread(threadMain, t); t->th.detach(); }
 	SET(h);
 }
+IMP_ID("MSVCR80.dll", "_beginthreadex", beginthreadex, 0)
+{
+	auto* t = new ThreadObj;
+	t->kind = KThread;
+	t->manual = true;
+	t->tid = nextTid++;
+	t->fn = ARG(2);
+	t->arg = ARG(3);
+	t->suspended = (ARG(4) & 4) != 0;
+	uint32_t h = newHandle(t, KThread);
+	if (ARG(5)) guest::store<uint32_t>(ARG(5), t->tid);
+	if (!t->suspended) { t->started = true; t->th = std::thread(threadMain, t); t->th.detach(); }
+	SET(h);
+}
+IMP_ID("MSVCR80.dll", "_endthreadex", endthreadex, 0) { fatal("_endthreadex called (thread exit via unwinding not implemented)"); }
 IMP_STD(K, ResumeThread, 1)
 {
 	auto* t = (ThreadObj*)getHandle(ARG(0), KThread);
@@ -317,7 +334,7 @@ IMP_STD(K, TlsSetValue, 2) { guest::store<uint32_t>(thisThread().teb + 0x1000 + 
 IMP_STD(K, TlsGetValue, 1) { SET(guest::load<uint32_t>(thisThread().teb + 0x1000 + 4 * ARG(0))); }
 IMP_STD(K, GetLastError, 0) { SET(guest::load<uint32_t>(lastErrorAddr())); }
 IMP_STD(K, SetLastError, 1) { setLastError(ARG(0)); }
-IMP_STD(K, RaiseException, 4) { fatal("RaiseException(code %08x)", ARG(0)); }
+IMP_STD(K, RaiseException, 4) { if (ARG(0) == 0x406d1388) return; fatal("RaiseException(code %08x)", ARG(0)); }
 IMP_STD(K, SetUnhandledExceptionFilter, 1) { SET(0); }
 IMP_STD(K, UnhandledExceptionFilter, 1) { SET(0); }
 IMP_STD(K, IsDebuggerPresent, 0) { SET(0); }

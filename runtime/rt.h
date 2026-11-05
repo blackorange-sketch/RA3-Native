@@ -68,6 +68,8 @@ struct ThreadCtx { CPU* cpu; uint32_t tid; uint32_t teb; uint32_t stackTop; };
 ThreadCtx& thisThread();
 uint32_t makeTeb(uint32_t stackLow, uint32_t stackHigh, uint32_t tid);
 void setLastError(uint32_t e);
+void traceRegister(uint32_t tid);
+void traceDump();
 
 // ---- formatting (fmt.cpp)
 struct ArgReader

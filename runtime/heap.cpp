@@ -7,6 +7,12 @@ namespace rt
 {
 namespace
 {
+uint32_t watchAddr = getenv("RA3_WATCH") ? (uint32_t)strtoul(getenv("RA3_WATCH"), nullptr, 16) : 0;
+void watchLog(const char* what, uint32_t p, uint32_t sz)
+{
+	CPU* c = thisThread().cpu;
+	log("heap %s %08x size %u (ret %08x)", what, p, sz, c ? guest::load<uint32_t>(c->r[ESP]) : 0);
+}
 // Block header lives 16 bytes before the payload: {size, magic, pad...}. Size classes are powers of
 // two from 32 bytes; larger blocks come straight from the arena and are recycled by exact size.
 constexpr uint32_t Magic = 0xa110ca7e;
@@ -58,6 +64,7 @@ uint32_t gmalloc(uint32_t size, uint32_t align)
 	guest::store<uint32_t>(payload - 12, Magic);
 	guest::store<uint32_t>(payload - 8, block);   // original block start (differs when over-aligned)
 	guest::store<uint32_t>(payload - 4, size);
+	if (watchAddr && payload <= watchAddr && watchAddr < payload + cls) watchLog("alloc", payload, size);
 	return payload;
 }
 
@@ -67,6 +74,7 @@ void gfree(uint32_t p)
 	std::lock_guard<std::mutex> l(mu);
 	if (guest::load<uint32_t>(p - 12) != Magic) { log("free of a foreign pointer %08x", p); return; }
 	uint32_t cls = guest::load<uint32_t>(p - 16), block = guest::load<uint32_t>(p - 8);
+	if (watchAddr && p <= watchAddr && watchAddr < p + guest::load<uint32_t>(p - 16)) watchLog("free", p, 0);
 	guest::store<uint32_t>(p - 12, 0);
 	freeBySize[cls].push_back(block);
 }

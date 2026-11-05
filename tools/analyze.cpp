@@ -173,6 +173,16 @@ int main(int argc, char** argv)
 					if (x.operands[i].type == X86_OP_MEM && x.operands[i].mem.segment == X86_REG_FS)
 					{ st["fs_access"]++; break; }
 
+				// Code addresses materialized as immediates (callbacks, `mov eax, fn; call eax`).
+				if (id != X86_INS_CALL && id != X86_INS_JMP)
+					for (int i = 0; i < x.op_count; i++)
+						if (x.operands[i].type == X86_OP_IMM)
+						{
+							uint32_t v = (uint32_t)x.operands[i].imm;
+							uint8_t prev = 0;
+							if (v >= imageBase && isCode(v) && readVA(v - 1, &prev, 1) && (prev == 0xcc || prev == 0xc3 || prev == 0x90 || prev == 0xc2) && !funcs.count(v))
+							{ addFunc(v); st["imm_code_seed"]++; }
+						}
 				if (id == X86_INS_CALL || id == X86_INS_JMP || (insn->detail->groups_count && false)) {}
 				bool isJcc = false, isCall = id == X86_INS_CALL, isJmp = id == X86_INS_JMP;
 				for (int g = 0; g < insn->detail->groups_count; g++)
