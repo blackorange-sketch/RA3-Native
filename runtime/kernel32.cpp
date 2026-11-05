@@ -543,6 +543,10 @@ static void openFile(CPU* c, const std::string& winPath, uint32_t access, uint32
 	int fd = isDir ? -1 : open(hp.c_str(), flags, 0666);
 	if (fd < 0 && !isDir) { if (!(flags & O_CREAT)) log("open failed: '%s' -> '%s' (errno %d)", winPath.c_str(), hp.c_str(), errno); setLastError(errno == ENOENT ? 2 : errno == EEXIST ? 80 : 5); SET(0xffffffff); return; }
 	setLastError(disp == 4 && fd >= 0 && st.st_size > 0 ? 183 : 0);
+	{
+		static int opened = 0;
+		if (opened++ < 300) log("open ok: '%s' -> %s%s acc=%08x disp=%u fd=%d", winPath.c_str(), hp.c_str(), isDir ? " (dir)" : "", access, disp, fd);
+	}
 	auto* f = new FileObj{fd, hp, isDir};
 	SET(newHandle(f, KFile));
 }
@@ -553,6 +557,11 @@ IMP_STD(K, ReadFile, 5)
 	FileObj* f = fileOf(ARG(0));
 	if (!f || f->fd < 0) { SET(0); return; }
 	ssize_t n = read(f->fd, guest::host(ARG(1)), ARG(2));
+	{
+		static int reads = 0;
+		if (reads++ < 150 || n < 0 || (uint32_t)n != ARG(2))
+			if (reads < 600) log("ReadFile fd=%d want=%u got=%d ovl=%08x errno=%d", f->fd, ARG(2), (int)n, ARG(4), n < 0 ? errno : 0);
+	}
 	if (n < 0) { SET(0); return; }
 	if (ARG(3)) guest::store<uint32_t>(ARG(3), (uint32_t)n);
 	SET(1);
@@ -678,6 +687,10 @@ static void findFirst(CPU* c, const std::string& winPattern, uint32_t out, bool 
 	{
 		while (auto* e = readdir(d)) if (wildMatch(pat.c_str(), e->d_name)) fo->names.push_back(e->d_name);
 		closedir(d);
+	}
+	{
+		static int finds = 0;
+		if (finds++ < 100) log("FindFirst '%s' -> '%s' : %d matches", winPattern.c_str(), hp.c_str(), (int)fo->names.size());
 	}
 	if (fo->names.empty()) { delete fo; setLastError(2); SET(0xffffffff); return; }
 	fillFind(out, hp, fo->names[fo->pos++], wide);
