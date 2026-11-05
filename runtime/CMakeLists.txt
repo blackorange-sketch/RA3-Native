@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.20)
+project(ra3rt CXX)
+set(CMAKE_CXX_STANDARD 17)
+add_library(ra3rt STATIC guest.cpp imports.cpp pe_loader.cpp)
+add_executable(loadtest loadtest.cpp)
+target_link_libraries(loadtest ra3rt)
