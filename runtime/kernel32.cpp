@@ -573,6 +573,14 @@ static void openFile(CPU* c, const std::string& winPath, uint32_t access, uint32
 		static int opened = 0;
 		if (opened++ < 300) log("open ok: '%s' -> %s%s acc=%08x disp=%u fd=%d", winPath.c_str(), hp.c_str(), isDir ? " (dir)" : "", access, disp, fd);
 	}
+	if (fd >= 0 && !(flags & (O_WRONLY | O_RDWR)) && hp.size() > 7 && lowerStr(hp.substr(hp.size() - 7)) == ".skudef")
+	{
+		char buf[900];
+		ssize_t n = pread(fd, buf, sizeof buf - 1, 0);
+		std::string t;
+		for (ssize_t i = 0; i < n; i++) t += buf[i] == '\n' ? std::string(" | ") : buf[i] == '\r' ? std::string() : std::string(1, buf[i]);
+		log("skudef %s: %s", hp.substr(hp.rfind('/') + 1).c_str(), t.c_str());
+	}
 	if (fd >= 0 && !(flags & (O_WRONLY | O_RDWR)) && hp.size() > 4 && lowerStr(hp.substr(hp.size() - 4)) == ".big")
 	{
 		static int scanned = 0;
