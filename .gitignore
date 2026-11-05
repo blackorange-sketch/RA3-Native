@@ -1,0 +1,5 @@
+*.game
+*.exe
+*.big
+build/
+out*
