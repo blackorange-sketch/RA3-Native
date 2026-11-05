@@ -86,6 +86,105 @@ T("repne scasb", "mov edi, 0x2000100\nmov al, [0x2000103]\nmov ecx, 100\ncld\nre
 T("repe cmpsb", "mov esi, 0x2000100\nmov edi, 0x2000100\nmov byte [edi+7], 5\nmov byte [esi+7], 6\nmov ecx, 50\ncld\nrepe cmpsb")
 T("scasd cmpsd", "mov edi, 0x2000100\nmov esi, 0x2000200\ncld\nscasd\ncmpsd")
 
+
+
+# ---- lock-prefixed / atomic forms (sequential semantics; atomicity itself is not testable here)
+for op in ["add", "sub", "and", "or", "xor"]:
+    low = 0xc5 if op in ("and", "or", "xor") else 0xd5
+    T(f"lock {op} dword", MEM + f"lock {op} dword [esi+4], eax", low)
+    T(f"lock {op} byte", MEM + f"lock {op} byte [esi+5], bl", low)
+    T(f"lock {op} word imm", MEM + f"lock {op} word [esi+6], 0x1234", low)
+T("lock inc dec", MEM + "lock inc dword [esi+4]\nlock dec word [esi+8]\nlock inc byte [esi+12]")
+T("lock xadd", MEM + "lock xadd [esi+4], eax\nlock xadd [esi+8], bl\nxadd [esi+12], cx")
+T("lock cmpxchg hit", MEM + "mov eax, [esi+4]\nlock cmpxchg [esi+4], ebx")
+T("lock cmpxchg miss", MEM + "lock cmpxchg [esi+4], ebx")
+T("lock cmpxchg byte word", MEM + "lock cmpxchg [esi+4], bl\nlock cmpxchg [esi+8], cx")
+T("xchg mem", MEM + "xchg [esi+4], eax\nxchg bl, [esi+9]\nxchg [esi+10], cx")
+
+# ---- SSE (single precision, random bit patterns incl. NaN/denormals)
+LD4 = """mov [0x2000f40], eax
+mov [0x2000f44], ebx
+mov [0x2000f48], ecx
+mov [0x2000f4c], edx
+mov [0x2000f50], esi
+mov [0x2000f54], edi
+mov [0x2000f58], ebx
+mov [0x2000f5c], eax
+movups xmm0, [0x2000f40]
+movups xmm1, [0x2000f50]
+"""
+ST4 = "\nmovups [0x2000f60], xmm0\nmovups [0x2000f70], xmm1"
+for op in ["addps", "subps", "mulps", "divps", "minps", "maxps", "sqrtps", "andps", "orps", "xorps", "andnps", "unpcklps", "unpckhps", "movlhps", "movhlps"]:
+    T(f"sse {op}", LD4 + f"{op} xmm0, xmm1" + ST4)
+    T(f"sse {op} mem", LD4 + f"{op} xmm0, [0x2000f50]" + ST4) if op not in ("movlhps", "movhlps") else None
+for op in ["addss", "subss", "mulss", "divss", "minss", "maxss", "sqrtss"]:
+    T(f"sse {op}", LD4 + f"{op} xmm0, xmm1" + ST4)
+    T(f"sse {op} mem", LD4 + f"{op} xmm0, [0x2000f50]" + ST4)
+for imm in [0x00, 0x1b, 0xe4, 0x55, 0xaa, 0xc6]:
+    T(f"shufps {imm:#x}", LD4 + f"shufps xmm0, xmm1, {imm}" + ST4)
+for p in ["eq", "lt", "le", "unord", "neq", "nlt", "nle", "ord"]:
+    T(f"cmp{p}ps", LD4 + f"cmp{p}ps xmm0, xmm1" + ST4)
+    T(f"cmp{p}ss", LD4 + f"cmp{p}ss xmm0, xmm1" + ST4)
+T("comiss", LD4 + "comiss xmm0, xmm1")
+T("ucomiss", LD4 + "ucomiss xmm1, xmm0")
+T("comiss mem", LD4 + "comiss xmm0, [0x2000f50]")
+T("movss forms", LD4 + "movss xmm0, xmm1\nmovss xmm2, [0x2000f48]\nmovss [0x2000f80], xmm1\nmovups [0x2000f90], xmm2" + ST4)
+T("movaps forms", LD4 + "movaps xmm2, xmm1\nmovaps [0x2000fa0], xmm0\nmovaps xmm3, [0x2000fa0]\nmovups [0x2000f90], xmm3" + ST4)
+T("movlps movhps", LD4 + "movlps xmm0, [0x2000f50]\nmovhps xmm1, [0x2000f40]\nmovlps [0x2000f80], xmm1\nmovhps [0x2000f88], xmm0" + ST4)
+T("movd movq", "movd xmm0, eax\nmovd xmm1, [0x2000f00]\nmovd ecx, xmm0\nmovd [0x2000f10], xmm1\nmovq xmm2, xmm1\nmovq [0x2000f20], xmm2\nmovq xmm3, [0x2000f20]\nmovups [0x2000f60], xmm0\nmovups [0x2000f70], xmm3")
+T("cvtsi2ss", "cvtsi2ss xmm0, eax\ncvtsi2ss xmm1, [0x2000f00]\nmovups [0x2000f60], xmm0\nmovups [0x2000f70], xmm1")
+T("cvttss2si", LD4 + "cvttss2si eax, xmm0\ncvttss2si edx, xmm1" + ST4)
+T("cvtss2si", LD4 + "cvtss2si eax, xmm0\ncvtss2si edx, xmm1" + ST4)
+T("movmskps", LD4 + "movmskps eax, xmm0\nmovmskps edx, xmm1" + ST4)
+
+# ---- x87: 53-bit precision (matches double arithmetic) and 24-bit precision (matches float arithmetic)
+def FP(pc):  # sets the control word and loads two integers: st1 = eax, st0 = ebx
+    return f"""mov dword [0x2000f00], {pc}
+fldcw [0x2000f00]
+mov [0x2000f10], eax
+mov [0x2000f14], ebx
+fild dword [0x2000f10]
+fild dword [0x2000f14]
+"""
+def stores(depth):
+    return "".join(f"\nfstp qword [0x{0x2000f20 + 8 * i:x}]" for i in range(depth))
+def depth_of(code, start=2):
+    d = start
+    for line in code.split("\n"):
+        m = line.split(" ")[0]
+        if m.startswith("fld") or m.startswith("fild"): d += 1
+        elif m in ("faddp", "fsubp", "fsubrp", "fmulp", "fdivp", "fdivrp"): d -= 1
+    return d
+FPST = stores(2)
+for pcn, pc in [("53", "0x27f"), ("24", "0x7f")]:
+    pre = FP(pc)
+    for op in ["fadd st0, st1", "fadd st1, st0", "faddp st1, st0", "fsub st0, st1", "fsub st1, st0", "fsubp st1, st0", "fsubr st0, st1", "fsubr st1, st0", "fsubrp st1, st0",
+               "fmul st0, st1", "fmul st1, st0", "fmulp st1, st0", "fdiv st0, st1", "fdiv st1, st0", "fdivp st1, st0", "fdivr st0, st1", "fdivr st1, st0", "fdivrp st1, st0",
+               "fxch st1", "fchs", "fabs", "fsqrt", "fld st1\nfadd st0, st1", "fldz\nfaddp st2, st0", "fld1\nfdivp st1, st0"]:
+        T(f"x87/{pcn} {op}", pre + op + stores(depth_of(op)))
+    # memory operands: take sane floats from the integer inputs first
+    sane = "fst dword [0x2000f18]\nfst qword [0x2000f1c]\n"
+    for op in ["fadd dword [0x2000f18]", "fadd qword [0x2000f1c]", "fsub dword [0x2000f18]", "fsubr qword [0x2000f1c]", "fmul dword [0x2000f18]", "fdiv dword [0x2000f18]",
+               "fdivr qword [0x2000f1c]"]:
+        T(f"x87/{pcn} {op}", pre + sane + op + FPST)
+    for op in ["fiadd dword [0x2000f10]", "fisub dword [0x2000f14]", "fimul dword [0x2000f10]", "fidiv dword [0x2000f14]", "fidivr dword [0x2000f10]", "fiadd word [0x2000f10]", "fimul word [0x2000f14]"]:
+        T(f"x87/{pcn} {op}", pre + op + FPST)
+    T(f"x87/{pcn} fst forms", pre + "fst dword [0x2000f30]\nfst qword [0x2000f38]\nfst st2\nfstp dword [0x2000f40]" + stores(2))
+    T(f"x87/{pcn} fld mem", pre + sane + "fld dword [0x2000f18]\nfld qword [0x2000f1c]" + stores(4))
+    T(f"x87/{pcn} constants", pre + "fstp st0\nfstp st0\nfld1\nfldz\nfldpi\nfldl2e\nfldln2\nfldl2t\nfldlg2" + stores(7))
+for mode, name in [(0x37f, "nearest"), (0x77f, "down"), (0xb7f, "up"), (0xf7f, "trunc")]:
+    T(f"x87 fist {name}", FP("0x27f") + f"fdivp st1, st0\nmov dword [0x2000f00], {mode}\nfldcw [0x2000f00]\nfld st0\nfistp dword [0x2000f34]\nfld st0\nfistp word [0x2000f38]\nfistp qword [0x2000f40]\nmov dword [0x2000f00], 0x27f\nfldcw [0x2000f00]")
+T("x87 fnstcw fldcw", "mov dword [0x2000f04], 0x27f\nfldcw [0x2000f04]\nfnstcw [0x2000f08]\nmov dword [0x2000f04], 0xb7f\nfldcw [0x2000f04]\nfnstcw [0x2000f0c]\nmov dword [0x2000f04], 0x27f\nfldcw [0x2000f04]")
+for op in ["fcom st1", "fcomp st1", "fucom st1", "fucomp st1", "fcom", "fcompp", "fucompp"]:
+    pops = 2 if op in ("fcompp", "fucompp") else 1 if op.endswith("p st1") else 0
+    T(f"x87 {op} + fnstsw", FP("0x27f") + op + "\nfnstsw ax\nand eax, 0x4500\nmov [0x2000f20], eax" + stores(2 - pops))
+for op in ["fcomi st0, st1", "fcomip st0, st1", "fucomi st0, st1", "fucomip st0, st1"]:
+    pops = 1 if op.startswith(("fcomip", "fucomip")) else 0
+    T(f"x87 {op}", FP("0x27f") + op + stores(2 - pops), 0xc5 | 0x10, 1)
+T("x87 fcom mem", FP("0x27f") + "fst qword [0x2000f1c]\nfcomp qword [0x2000f1c]\nfnstsw ax\nand eax, 0x4500" + stores(1))
+T("x87 fcom sahf", FP("0x27f") + "fcompp\nfnstsw ax\nand eax, 0x4500\nsahf", 0x45, 0)
+T("x87 misc", FP("0x27f") + "fxch\nfincstp\nfdecstp" + stores(2))
+
 SUFFIX = """
 push eax
 seto al

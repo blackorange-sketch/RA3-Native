@@ -82,6 +82,6 @@ int main(int argc, char** argv)
 	for (auto& [k, n] : byMn) v2.push_back({n, k});
 	std::sort(v2.rbegin(), v2.rend());
 	printf("unsupported by mnemonic (instances / functions affected):\n");
-	for (size_t i = 0; i < v2.size() && i < 45; i++) printf("  %-12s %8zu %8zu\n", v2[i].second.c_str(), v2[i].first, funcsByMn[v2[i].second]);
+	for (size_t i = 0; i < v2.size() && i < 200; i++) printf("  %-12s %8zu %8zu\n", v2[i].second.c_str(), v2[i].first, funcsByMn[v2[i].second]);
 	return 0;
 }

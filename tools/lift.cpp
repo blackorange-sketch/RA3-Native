@@ -126,7 +126,7 @@ void flagRW(Ins& i)
 {
 	i.rd = condMask(i.id);
 	i.wr = 0;
-	bool variableCount = i.x.op_count == 2 && i.x.operands[1].type == X86_OP_REG;
+	bool variableCount = i.x.op_count >= 2 && i.x.operands[i.x.op_count - 1].type == X86_OP_REG;
 	switch (i.id)
 	{
 	case X86_INS_ADD: case X86_INS_SUB: case X86_INS_CMP: case X86_INS_NEG: case X86_INS_AND: case X86_INS_OR: case X86_INS_XOR:
@@ -136,7 +136,7 @@ void flagRW(Ins& i)
 	case X86_INS_ADC: case X86_INS_SBB: i.rd = 1u << CF; i.wr = ALL6; break;
 	case X86_INS_INC: case X86_INS_DEC: i.wr = ALL6 & ~(1u << CF); break;
 	case X86_INS_MUL: case X86_INS_IMUL: i.wr = ALL6; break;
-	case X86_INS_SHL: case X86_INS_SHR: case X86_INS_SAR: case X86_INS_SHLD: case X86_INS_SHRD:
+	case X86_INS_SHL: case X86_INS_SAL: case X86_INS_SHR: case X86_INS_SAR: case X86_INS_SHLD: case X86_INS_SHRD:
 		if (variableCount) { i.rd = ALL6; }   // count may be 0: flags untouched
 		i.wr = ALL6; break;
 	case X86_INS_ROL: case X86_INS_ROR:
@@ -149,6 +149,8 @@ void flagRW(Ins& i)
 	case X86_INS_CMC: i.rd = 1u << CF; i.wr = 1u << CF; break;
 	case X86_INS_LAHF: i.rd = ALL6 & ~(1u << OF); break;
 	case X86_INS_SCASB: case X86_INS_SCASW: case X86_INS_SCASD: case X86_INS_CMPSB: case X86_INS_CMPSW: case X86_INS_CMPSD:
+		i.wr = ALL6; break;
+	case X86_INS_COMISS: case X86_INS_UCOMISS: case X86_INS_FCOMI: case X86_INS_FCOMPI: case X86_INS_FUCOMI: case X86_INS_FUCOMPI:
 		i.wr = ALL6; break;
 	case X86_INS_CALL: i.wr = ALL6; break;   // flags are dead across calls
 	}
@@ -265,8 +267,15 @@ struct Gen
 		auto& x = in.x;
 		auto op = [&](int i) -> cs_x86_op& { return x.operands[i]; };
 		unsigned id = in.id;
+		{
+			// capstone gives most predicate forms (cmpeqps, cmpleps, ...) ids of their own: dispatch by mnemonic
+			const std::string& m = in.mn;
+			bool tail = m.size() >= 2 && (m.compare(m.size() - 2, 2, "ps") == 0 || m.compare(m.size() - 2, 2, "ss") == 0);
+			if (m.compare(0, 3, "cmp") == 0 && tail && (m.size() >= 7 || x.op_count == 3) && id != X86_INS_CMPPS && id != X86_INS_CMPSS) id = X86_INS_CMPPS;
+		}
 		int sz = x.op_count ? op(0).size : 4;
 		bool ok = true;
+		bool lk = x.prefix[0] == X86_PREFIX_LOCK;
 
 		auto alu = [&](const char* kind) {
 			// dst = dst <kind> src with flags
@@ -274,9 +283,13 @@ struct Gen
 			std::string t = ty(sz);
 			int bits = sz * 8;
 			if (mem) e.line("uint32_t ea = " + e.ea(op(0)) + ";");
-			e.line("{ " + t + " a = " + e.rd(op(0), mem ? "ea" : nullptr) + ", b = " + e.rd(op(1), nullptr, sz) + ";");
 			std::string k = kind;
 			bool store = true;
+			bool atom = lk && mem && (k == "add" || k == "sub" || k == "and" || k == "or" || k == "xor");
+			if (atom)
+				e.line("{ " + t + " b = " + e.rd(op(1), nullptr, sz) + "; " + t + " a = __atomic_fetch_" + k + "((" + t + "*)guest::host(ea), b, __ATOMIC_SEQ_CST);");
+			else
+				e.line("{ " + t + " a = " + e.rd(op(0), mem ? "ea" : nullptr) + ", b = " + e.rd(op(1), nullptr, sz) + ";");
 			if (k == "add" || k == "adc")
 			{
 				if (k == "adc") e.line(t + " r = (" + t + ")(a + b + cf);"); else e.line(t + " r = (" + t + ")(a + b);");
@@ -284,7 +297,7 @@ struct Gen
 				e.flag(OF, fmt("((a ^ r) & (b ^ r)) >> %d", bits - 1));
 				e.flag(AF, "((a ^ b ^ r) >> 4) & 1");
 				e.zsp("r", bits);
-				e.line(e.wr(op(0), "r", mem ? "ea" : nullptr));
+				if (!atom) e.line(e.wr(op(0), "r", mem ? "ea" : nullptr));
 			}
 			else if (k == "sub" || k == "sbb" || k == "cmp")
 			{
@@ -293,7 +306,7 @@ struct Gen
 				e.flag(OF, fmt("((a ^ b) & (a ^ r)) >> %d", bits - 1));
 				e.flag(AF, "((a ^ b ^ r) >> 4) & 1");
 				e.zsp("r", bits);
-				if (k != "cmp") e.line(e.wr(op(0), "r", mem ? "ea" : nullptr));
+				if (k != "cmp" && !atom) e.line(e.wr(op(0), "r", mem ? "ea" : nullptr));
 			}
 			else
 			{
@@ -301,7 +314,7 @@ struct Gen
 				e.line(t + " r = (" + t + ")(a " + o + " b);");
 				e.flag(CF, "0"); e.flag(OF, "0"); e.flag(AF, "0");
 				e.zsp("r", bits);
-				if (k != "test") e.line(e.wr(op(0), "r", mem ? "ea" : nullptr));
+				if (k != "test" && !atom) e.line(e.wr(op(0), "r", mem ? "ea" : nullptr));
 			}
 			(void)store;
 			e.line("}");
@@ -362,6 +375,13 @@ struct Gen
 			e.line("} }");
 		};
 
+		auto isX = [&](const cs_x86_op& o) { return o.type == X86_OP_REG && o.reg >= X86_REG_XMM0 && o.reg <= X86_REG_XMM7; };
+		auto xi = [&](const cs_x86_op& o) { return (int)(o.reg - X86_REG_XMM0); };
+		auto X = [&](const cs_x86_op& o) { return fmt("c->xmm[%d]", xi(o)); };
+		auto src128 = [&](const cs_x86_op& o) { return isX(o) ? X(o) : "ld128(" + e.ea(o) + ")"; };
+		auto srcF = [&](const cs_x86_op& o) { return isX(o) ? X(o) + ".f[0]" : "ldf32(" + e.ea(o) + ")"; };
+		auto isST = [&](const cs_x86_op& o) { return o.type == X86_OP_REG && o.reg >= X86_REG_ST0 && o.reg <= X86_REG_ST7; };
+		auto sti = [&](const cs_x86_op& o) { return (int)(o.reg - X86_REG_ST0); };
 		auto condJumpOrTail = [&](uint32_t t) {
 			std::string c = condExpr(id);
 			e.line("if (" + c + ") " + jumpTo(t));
@@ -390,8 +410,7 @@ struct Gen
 			{
 				int mi = op(0).type == X86_OP_MEM ? 0 : 1;
 				e.line("{ uint32_t ea = " + e.ea(op(mi)) + ";");
-				e.line(std::string(ty(sz)) + " t = " + e.rd(op(mi), "ea") + ";");
-				e.line(e.wr(op(mi), e.rd(op(1 - mi)), "ea"));
+				e.line(std::string(ty(sz)) + " t = __atomic_exchange_n((" + ty(sz) + "*)guest::host(ea), " + e.rd(op(1 - mi)) + ", __ATOMIC_SEQ_CST);");   // xchg with memory is always locked
 				e.line(e.wr(op(1 - mi), "t"));
 				e.line("}");
 			}
@@ -403,6 +422,38 @@ struct Gen
 				e.line("}");
 			}
 			break;
+		case X86_INS_XADD:
+		{
+			if (op(0).type != X86_OP_MEM) { ok = false; break; }
+			std::string t = ty(sz);
+			int bits = sz * 8;
+			e.line("{ uint32_t ea = " + e.ea(op(0)) + "; " + t + " b = " + e.rd(op(1)) + "; " + t + " a = __atomic_fetch_add((" + t + "*)guest::host(ea), b, __ATOMIC_SEQ_CST); " + t + " r = (" + t + ")(a + b);");
+			e.flag(CF, "r < a");
+			e.flag(OF, fmt("((a ^ r) & (b ^ r)) >> %d", bits - 1));
+			e.flag(AF, "((a ^ b ^ r) >> 4) & 1");
+			e.zsp("r", bits);
+			e.line(e.wr(op(1), "a"));
+			e.line("}");
+			break;
+		}
+		case X86_INS_CMPXCHG:
+		{
+			if (op(0).type != X86_OP_MEM) { ok = false; break; }
+			std::string t = ty(sz);
+			int bits = sz * 8;
+			std::string acc = sz == 4 ? "eax" : sz == 2 ? "(uint16_t)eax" : "(uint8_t)eax";
+			e.line("{ uint32_t ea = " + e.ea(op(0)) + "; " + t + " a = " + acc + ", exp = a, nv = " + e.rd(op(1)) + ";");
+			e.line("bool hit = __atomic_compare_exchange_n((" + t + "*)guest::host(ea), &exp, nv, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);");
+			e.line(t + " b = exp, r = (" + t + ")(a - b);");   // on a hit exp == a
+			e.flag(CF, "a < b");
+			e.flag(OF, fmt("((a ^ b) & (a ^ r)) >> %d", bits - 1));
+			e.flag(AF, "((a ^ b ^ r) >> 4) & 1");
+			e.zsp("r", bits);
+			e.line("if (!hit) " + std::string(sz == 4 ? "eax = exp;" : sz == 2 ? "eax = (eax & 0xffff0000u) | exp;" : "eax = (eax & 0xffffff00u) | exp;"));
+			e.line("}");
+			break;
+		}
+
 		case X86_INS_PUSH:
 			if (sz != 4) { ok = false; break; }
 			e.line("{ uint32_t v = " + e.rd(op(0), nullptr, 4) + "; esp -= 4; S32(esp, v); }");
@@ -430,11 +481,13 @@ struct Gen
 			int bits = sz * 8;
 			bool inc = id == X86_INS_INC;
 			if (mem) e.line("uint32_t ea = " + e.ea(op(0)) + ";");
-			e.line("{ " + t + " a = " + e.rd(op(0), mem ? "ea" : nullptr) + "; " + t + " r = (" + t + ")(a " + (inc ? "+" : "-") + " 1);");
+			bool atom = lk && mem;
+			if (atom) e.line("{ " + t + " a = __atomic_fetch_" + (inc ? "add" : "sub") + "((" + t + "*)guest::host(ea), 1, __ATOMIC_SEQ_CST); " + t + " r = (" + t + ")(a " + (inc ? "+" : "-") + " 1);");
+			else e.line("{ " + t + " a = " + e.rd(op(0), mem ? "ea" : nullptr) + "; " + t + " r = (" + t + ")(a " + (inc ? "+" : "-") + " 1);");
 			e.flag(OF, inc ? fmt("r == (%s)(1u << %d)", t.c_str(), bits - 1) : fmt("a == (%s)(1u << %d)", t.c_str(), bits - 1));
 			e.flag(AF, "((a ^ 1 ^ r) >> 4) & 1");
 			e.zsp("r", bits);
-			e.line(e.wr(op(0), "r", mem ? "ea" : nullptr));
+			if (!atom) e.line(e.wr(op(0), "r", mem ? "ea" : nullptr));
 			e.line("}");
 			break;
 		}
@@ -635,6 +688,242 @@ struct Gen
 			break;
 		}
 
+		case X86_INS_SAL: id = X86_INS_SHL; in.id = id; shift(); break;
+
+		case X86_INS_SHLD: case X86_INS_SHRD:
+		{
+			if (sz != 4 || op(0).type != X86_OP_REG) { ok = false; break; }
+			bool l = id == X86_INS_SHLD;
+			e.line("{ uint32_t a = " + e.rd(op(0)) + ", b = " + e.rd(op(1)) + "; unsigned n = (" + e.rd(op(2), nullptr, 1) + ") & 31; if (n) {");
+			e.line(l ? "uint32_t r = (a << n) | (b >> (32 - n));" : "uint32_t r = (a >> n) | (b << (32 - n));");
+			e.flag(CF, l ? "(a >> (32 - n)) & 1" : "(a >> (n - 1)) & 1");
+			e.flag(OF, "((r ^ a) >> 31) & 1");
+			e.flag(AF, "0");
+			e.zsp("r", 32);
+			e.line(e.wr(op(0), "r"));
+			e.line("} }");
+			break;
+		}
+		case X86_INS_LOOP: case X86_INS_LOOPE: case X86_INS_LOOPNE:
+		{
+			std::string c = id == X86_INS_LOOP ? "ecx != 0" : id == X86_INS_LOOPE ? "ecx != 0 && zf" : "ecx != 0 && !zf";
+			e.line("ecx--;");
+			e.line("if (" + c + ") " + jumpTo((uint32_t)op(0).imm));
+			break;
+		}
+		case X86_INS_JECXZ: e.line("if (ecx == 0) " + jumpTo((uint32_t)op(0).imm)); break;
+		case X86_INS_RDTSC: e.line("{ uint64_t t = rdtsc_host(); eax = (uint32_t)t; edx = (uint32_t)(t >> 32); }"); break;
+		case X86_INS_CPUID: e.line("cpuid_impl(eax, ebx, ecx, edx);"); break;
+		case X86_INS_WAIT: case X86_INS_FNCLEX: case X86_INS_FFREE: case X86_INS_PREFETCHT0: case X86_INS_PREFETCHT1: case X86_INS_PREFETCHT2:
+		case X86_INS_PREFETCHNTA: case X86_INS_EMMS: case X86_INS_SFENCE: case X86_INS_LFENCE: case X86_INS_MFENCE:
+			break;
+
+		// ---- SSE (single precision) and the SSE2 moves the game uses
+		case X86_INS_MOVSS:
+			if (isX(op(0)) && isX(op(1))) e.line(X(op(0)) + ".f[0] = " + X(op(1)) + ".f[0];");
+			else if (isX(op(0))) e.line("{ float v = " + srcF(op(1)) + "; " + X(op(0)) + ".f[0] = v; " + X(op(0)) + ".u[1] = 0; " + X(op(0)) + ".u[2] = 0; " + X(op(0)) + ".u[3] = 0; }");
+			else if (isX(op(1))) e.line("stf32(" + e.ea(op(0)) + ", " + X(op(1)) + ".f[0]);");
+			else ok = false;
+			break;
+		case X86_INS_MOVAPS: case X86_INS_MOVUPS: case X86_INS_MOVDQA: case X86_INS_MOVDQU: case X86_INS_MOVAPD: case X86_INS_MOVUPD:
+			if (isX(op(0))) e.line("{ X128 v = " + src128(op(1)) + "; " + X(op(0)) + " = v; }");
+			else if (isX(op(1))) e.line("st128(" + e.ea(op(0)) + ", " + X(op(1)) + ");");
+			else ok = false;
+			break;
+		case X86_INS_MOVLPS: case X86_INS_MOVHPS:
+		{
+			int lane = id == X86_INS_MOVLPS ? 0 : 1;
+			if (isX(op(0)) && op(1).type == X86_OP_MEM) e.line(fmt("%s.q[%d] = guest::load<uint64_t>(%s);", X(op(0)).c_str(), lane, e.ea(op(1)).c_str()));
+			else if (isX(op(1)) && op(0).type == X86_OP_MEM) e.line(fmt("guest::store<uint64_t>(%s, %s.q[%d]);", e.ea(op(0)).c_str(), X(op(1)).c_str(), lane));
+			else ok = false;
+			break;
+		}
+		case X86_INS_MOVLHPS: e.line(X(op(0)) + ".q[1] = " + X(op(1)) + ".q[0];"); break;
+		case X86_INS_MOVHLPS: e.line(X(op(0)) + ".q[0] = " + X(op(1)) + ".q[1];"); break;
+		case X86_INS_MOVD:
+			if (isX(op(0))) e.line("{ uint32_t v = " + e.rd(op(1), nullptr, 4) + "; " + X(op(0)) + ".u[0] = v; " + X(op(0)) + ".u[1] = 0; " + X(op(0)) + ".q[1] = 0; }");
+			else if (isX(op(1))) e.line(e.wr(op(0), X(op(1)) + ".u[0]"));
+			else ok = false;
+			break;
+		case X86_INS_MOVQ:
+			if (isX(op(0)) && isX(op(1))) e.line("{ uint64_t v = " + X(op(1)) + ".q[0]; " + X(op(0)) + ".q[0] = v; " + X(op(0)) + ".q[1] = 0; }");
+			else if (isX(op(0)) && op(1).type == X86_OP_MEM) e.line("{ uint64_t v = guest::load<uint64_t>(" + e.ea(op(1)) + "); " + X(op(0)) + ".q[0] = v; " + X(op(0)) + ".q[1] = 0; }");
+			else if (isX(op(1)) && op(0).type == X86_OP_MEM) e.line("guest::store<uint64_t>(" + e.ea(op(0)) + ", " + X(op(1)) + ".q[0]);");
+			else ok = false;
+			break;
+		case X86_INS_ADDSS: case X86_INS_SUBSS: case X86_INS_MULSS: case X86_INS_DIVSS: case X86_INS_MINSS: case X86_INS_MAXSS: case X86_INS_SQRTSS:
+		{
+			std::string d = X(op(0)) + ".f[0]", s = srcF(op(1));
+			std::string r = id == X86_INS_ADDSS ? d + " + b" : id == X86_INS_SUBSS ? d + " - b" : id == X86_INS_MULSS ? d + " * b" : id == X86_INS_DIVSS ? d + " / b"
+				: id == X86_INS_MINSS ? "sse_min(" + d + ", b)" : id == X86_INS_MAXSS ? "sse_max(" + d + ", b)" : "sqrtf(b)";
+			e.line("{ float b = " + s + "; " + d + " = " + r + "; }");
+			break;
+		}
+		case X86_INS_ADDPS: case X86_INS_SUBPS: case X86_INS_MULPS: case X86_INS_DIVPS: case X86_INS_MINPS: case X86_INS_MAXPS:
+		case X86_INS_SQRTPS: case X86_INS_RCPPS: case X86_INS_RSQRTPS:
+		{
+			std::string d = X(op(0)) + ".f[k]";
+			std::string r = id == X86_INS_ADDPS ? d + " + b.f[k]" : id == X86_INS_SUBPS ? d + " - b.f[k]" : id == X86_INS_MULPS ? d + " * b.f[k]" : id == X86_INS_DIVPS ? d + " / b.f[k]"
+				: id == X86_INS_MINPS ? "sse_min(" + d + ", b.f[k])" : id == X86_INS_MAXPS ? "sse_max(" + d + ", b.f[k])" : id == X86_INS_SQRTPS ? "sqrtf(b.f[k])"
+				: id == X86_INS_RCPPS ? "1.0f / b.f[k]" : "1.0f / sqrtf(b.f[k])";
+			e.line("{ X128 b = " + src128(op(1)) + "; for (int k = 0; k < 4; k++) " + d + " = " + r + "; }");
+			break;
+		}
+		case X86_INS_RSQRTSS: e.line("{ float b = " + srcF(op(1)) + "; " + X(op(0)) + ".f[0] = 1.0f / sqrtf(b); }"); break;
+		case X86_INS_ANDPS: case X86_INS_ORPS: case X86_INS_XORPS: case X86_INS_ANDNPS: case X86_INS_PXOR: case X86_INS_PAND: case X86_INS_POR: case X86_INS_PANDN:
+		{
+			if (!isX(op(0))) { ok = false; break; }
+			const char* o = (id == X86_INS_ANDPS || id == X86_INS_PAND) ? "a & b.u[k]" : (id == X86_INS_ORPS || id == X86_INS_POR) ? "a | b.u[k]"
+				: (id == X86_INS_ANDNPS || id == X86_INS_PANDN) ? "~a & b.u[k]" : "a ^ b.u[k]";
+			e.line("{ X128 b = " + src128(op(1)) + "; for (int k = 0; k < 4; k++) { uint32_t a = " + X(op(0)) + ".u[k]; " + X(op(0)) + ".u[k] = " + o + "; } }");
+			break;
+		}
+		case X86_INS_COMISS: case X86_INS_UCOMISS:
+			e.line("{ unsigned fl = fcmpflags(" + srcF(op(0)) + ", " + srcF(op(1)) + ");");
+			e.flag(CF, "fl & 1"); e.flag(PF, "(fl >> 2) & 1"); e.flag(ZF, "(fl >> 6) & 1"); e.flag(OF, "0"); e.flag(SF, "0"); e.flag(AF, "0");
+			e.line("}");
+			break;
+		case X86_INS_CVTSI2SS: e.line(X(op(0)) + ".f[0] = (float)(int32_t)" + e.rd(op(1), nullptr, 4) + ";"); break;
+		case X86_INS_CVTTSS2SI: e.line(e.wr(op(0), "(uint32_t)sse_cvtt(" + srcF(op(1)) + ")")); break;
+		case X86_INS_CVTSS2SI: e.line(e.wr(op(0), "(uint32_t)sse_cvt(" + srcF(op(1)) + ")")); break;
+		case X86_INS_SHUFPS:
+		{
+			unsigned im = (unsigned)op(2).imm & 0xff;
+			e.line("{ X128 d = " + X(op(0)) + ", s = " + src128(op(1)) + ";");
+			e.line(fmt("%s.f[0] = d.f[%u]; %s.f[1] = d.f[%u]; %s.f[2] = s.f[%u]; %s.f[3] = s.f[%u]; }",
+				X(op(0)).c_str(), im & 3, X(op(0)).c_str(), (im >> 2) & 3, X(op(0)).c_str(), (im >> 4) & 3, X(op(0)).c_str(), (im >> 6) & 3));
+			break;
+		}
+		case X86_INS_UNPCKLPS: case X86_INS_UNPCKHPS:
+		{
+			int b0 = id == X86_INS_UNPCKLPS ? 0 : 2;
+			e.line("{ X128 d = " + X(op(0)) + ", s = " + src128(op(1)) + ";");
+			e.line(fmt("%s.f[0] = d.f[%d]; %s.f[1] = s.f[%d]; %s.f[2] = d.f[%d]; %s.f[3] = s.f[%d]; }",
+				X(op(0)).c_str(), b0, X(op(0)).c_str(), b0, X(op(0)).c_str(), b0 + 1, X(op(0)).c_str(), b0 + 1));
+			break;
+		}
+		case X86_INS_CMPPS: case X86_INS_CMPSS:
+		{
+			// capstone names the predicate in the mnemonic: cmpeqps, cmpltss, ...
+			static const char* preds[] = {"eq", "lt", "le", "unord", "neq", "nlt", "nle", "ord"};
+			std::string m = in.mn, name = m.substr(3, m.size() - 5);
+			int pr = -1;
+			for (int k = 0; k < 8; k++) if (name == preds[k]) pr = k;
+			if (pr < 0 && x.op_count == 3) pr = (int)op(2).imm & 7;
+			if (pr < 0 || m.size() < 5) { ok = false; break; }
+			bool scalar = m.back() == 's' && m[m.size() - 2] == 's';
+			if (scalar) e.line("{ float b = " + srcF(op(1)) + "; " + X(op(0)) + fmt(".u[0] = sse_cmp(%d, ", pr) + X(op(0)) + ".f[0], b); }");
+			else e.line("{ X128 b = " + src128(op(1)) + "; for (int k = 0; k < 4; k++) " + X(op(0)) + fmt(".u[k] = sse_cmp(%d, ", pr) + X(op(0)) + ".f[k], b.f[k]); }");
+			break;
+		}
+		case X86_INS_MOVMSKPS:
+			e.line(e.wr(op(0), "(" + X(op(1)) + ".u[0] >> 31) | ((" + X(op(1)) + ".u[1] >> 31) << 1) | ((" + X(op(1)) + ".u[2] >> 31) << 2) | ((" + X(op(1)) + ".u[3] >> 31) << 3)"));
+			break;
+
+		// ---- x87
+		case X86_INS_FLD:
+			if (isST(op(0))) e.line(fmt("{ double v = ST(c, %d); fpush(c, v); }", sti(op(0))));
+			else if (op(0).size == 4) e.line("fpush(c, (double)ldf32(" + e.ea(op(0)) + "));");
+			else if (op(0).size == 8) e.line("fpush(c, ldf64(" + e.ea(op(0)) + "));");
+			else ok = false;
+			break;
+		case X86_INS_FILD:
+			if (op(0).size == 2) e.line("fpush(c, (double)(int16_t)G16(" + e.ea(op(0)) + "));");
+			else if (op(0).size == 4) e.line("fpush(c, (double)(int32_t)G32(" + e.ea(op(0)) + "));");
+			else e.line("fpush(c, (double)guest::load<int64_t>(" + e.ea(op(0)) + "));");
+			break;
+		case X86_INS_FLD1: e.line("fpush(c, 1.0);"); break;
+		case X86_INS_FLDZ: e.line("fpush(c, 0.0);"); break;
+		case X86_INS_FLDPI: e.line("fpush(c, 3.14159265358979323846);"); break;
+		case X86_INS_FLDLN2: e.line("fpush(c, 0.693147180559945309417);"); break;
+		case X86_INS_FLDL2E: e.line("fpush(c, 1.44269504088896340736);"); break;
+		case X86_INS_FLDL2T: e.line("fpush(c, 3.32192809488736234787);"); break;
+		case X86_INS_FLDLG2: e.line("fpush(c, 0.301029995663981195214);"); break;
+		case X86_INS_FST: case X86_INS_FSTP:
+		{
+			bool pop = id == X86_INS_FSTP;
+			if (isST(op(0))) e.line(fmt("ST(c, %d) = ST(c, 0);", sti(op(0))));
+			else if (op(0).size == 4) e.line("stf32(" + e.ea(op(0)) + ", (float)ST(c, 0));");
+			else if (op(0).size == 8) e.line("stf64(" + e.ea(op(0)) + ", ST(c, 0));");
+			else { ok = false; break; }
+			if (pop) e.line("fpop(c);");
+			break;
+		}
+		case X86_INS_FIST: case X86_INS_FISTP: case X86_INS_FISTTP:
+		{
+			bool trunc = id == X86_INS_FISTTP;
+			int bits = op(0).size * 8;
+			std::string conv = trunc ? fmt("fcvt_mode(ST(c, 0), %d, 3)", bits) : fmt("fcvt(c, ST(c, 0), %d)", bits);
+			if (bits == 64) e.line("guest::store<int64_t>(" + e.ea(op(0)) + ", " + conv + ");");
+			else e.line(fmt("S%d(%s, (uint32_t)%s);", bits, e.ea(op(0)).c_str(), conv.c_str()));
+			if (id != X86_INS_FIST) e.line("fpop(c);");
+			break;
+		}
+		case X86_INS_FADD: case X86_INS_FIADD: case X86_INS_FSUB: case X86_INS_FSUBP: case X86_INS_FISUB:
+		case X86_INS_FSUBR: case X86_INS_FSUBRP: case X86_INS_FISUBR: case X86_INS_FMUL: case X86_INS_FMULP: case X86_INS_FIMUL:
+		case X86_INS_FDIV: case X86_INS_FDIVP: case X86_INS_FIDIV: case X86_INS_FDIVR: case X86_INS_FDIVRP: case X86_INS_FIDIVR:
+		{
+			int kind; bool rev, pop, isInt;
+			switch (id)
+			{
+			case X86_INS_FADD: kind = 0; rev = 0; pop = in.mn == "faddp"; isInt = 0; break; case X86_INS_FIADD: kind = 0; rev = 0; pop = 0; isInt = 1; break;
+			case X86_INS_FSUB: kind = 1; rev = 0; pop = 0; isInt = 0; break; case X86_INS_FSUBP: kind = 1; rev = 0; pop = 1; isInt = 0; break; case X86_INS_FISUB: kind = 1; rev = 0; pop = 0; isInt = 1; break;
+			case X86_INS_FSUBR: kind = 1; rev = 1; pop = 0; isInt = 0; break; case X86_INS_FSUBRP: kind = 1; rev = 1; pop = 1; isInt = 0; break; case X86_INS_FISUBR: kind = 1; rev = 1; pop = 0; isInt = 1; break;
+			case X86_INS_FMUL: kind = 2; rev = 0; pop = 0; isInt = 0; break; case X86_INS_FMULP: kind = 2; rev = 0; pop = 1; isInt = 0; break; case X86_INS_FIMUL: kind = 2; rev = 0; pop = 0; isInt = 1; break;
+			case X86_INS_FDIV: kind = 3; rev = 0; pop = 0; isInt = 0; break; case X86_INS_FDIVP: kind = 3; rev = 0; pop = 1; isInt = 0; break; case X86_INS_FIDIV: kind = 3; rev = 0; pop = 0; isInt = 1; break;
+			case X86_INS_FDIVR: kind = 3; rev = 1; pop = 0; isInt = 0; break; case X86_INS_FDIVRP: kind = 3; rev = 1; pop = 1; isInt = 0; break; default: kind = 3; rev = 1; pop = 0; isInt = 1; break;
+			}
+			std::string other; int dst = 0;
+			if (op(0).type == X86_OP_MEM)
+			{
+				if (isInt) other = op(0).size == 2 ? "(double)(int16_t)G16(" + e.ea(op(0)) + ")" : "(double)(int32_t)G32(" + e.ea(op(0)) + ")";
+				else other = op(0).size == 4 ? "(double)ldf32(" + e.ea(op(0)) + ")" : "ldf64(" + e.ea(op(0)) + ")";
+			}
+			else if (x.op_count == 2 && isST(op(0)) && isST(op(1))) { dst = sti(op(0)); other = fmt("ST(c, %d)", sti(op(1))); }
+			else if (x.op_count == 1 && isST(op(0))) { if (pop) { dst = sti(op(0)); other = "ST(c, 0)"; } else { dst = 0; other = fmt("ST(c, %d)", sti(op(0))); } }
+			else if (x.op_count == 0) { dst = 1; other = "ST(c, 0)"; pop = true; }   // fsubp etc. without operands
+			else { ok = false; break; }
+			e.line(fmt("farith(c, %d, %d, %s, %s, %s);", kind, dst, other.c_str(), rev ? "true" : "false", pop ? "true" : "false"));
+			break;
+		}
+		case X86_INS_FXCH: e.line(fmt("{ double t = ST(c, 0); ST(c, 0) = ST(c, %d); ST(c, %d) = t; }", x.op_count ? sti(op(x.op_count - 1)) : 1, x.op_count ? sti(op(x.op_count - 1)) : 1)); break;
+		case X86_INS_FCHS: e.line("ST(c, 0) = -ST(c, 0);"); break;
+		case X86_INS_FABS: e.line("ST(c, 0) = fabs(ST(c, 0));"); break;
+		case X86_INS_FSQRT: e.line("ST(c, 0) = fround(c, sqrt(ST(c, 0)));"); break;
+		case X86_INS_FSIN: e.line("ST(c, 0) = sin(ST(c, 0));"); break;
+		case X86_INS_FCOS: e.line("ST(c, 0) = cos(ST(c, 0));"); break;
+		case X86_INS_FSINCOS: e.line("{ double v = ST(c, 0); ST(c, 0) = sin(v); fpush(c, cos(v)); }"); break;
+		case X86_INS_FPTAN: e.line("ST(c, 0) = tan(ST(c, 0)); fpush(c, 1.0);"); break;
+		case X86_INS_FPATAN: e.line("ST(c, 1) = atan2(ST(c, 1), ST(c, 0)); fpop(c);"); break;
+		case X86_INS_FYL2X: e.line("ST(c, 1) = ST(c, 1) * log2(ST(c, 0)); fpop(c);"); break;
+		case X86_INS_F2XM1: e.line("ST(c, 0) = exp2(ST(c, 0)) - 1.0;"); break;
+		case X86_INS_FSCALE: e.line("ST(c, 0) = ldexp(ST(c, 0), (int)trunc(ST(c, 1)));"); break;
+		case X86_INS_FRNDINT: e.line("ST(c, 0) = (double)fcvt(c, ST(c, 0), 64);"); break;
+		case X86_INS_FCOM: case X86_INS_FCOMP: case X86_INS_FCOMPP: case X86_INS_FUCOM: case X86_INS_FUCOMP: case X86_INS_FUCOMPP:
+		{
+			std::string other = x.op_count == 0 ? "ST(c, 1)" : isST(op(0)) ? fmt("ST(c, %d)", sti(op(0)))
+				: op(0).size == 4 ? "(double)ldf32(" + e.ea(op(0)) + ")" : "ldf64(" + e.ea(op(0)) + ")";
+			e.line("fsetcc(c, ST(c, 0), " + other + ");");
+			int pops = (id == X86_INS_FCOMPP || id == X86_INS_FUCOMPP) ? 2 : (id == X86_INS_FCOMP || id == X86_INS_FUCOMP) ? 1 : 0;
+			for (int k = 0; k < pops; k++) e.line("fpop(c);");
+			break;
+		}
+		case X86_INS_FCOMI: case X86_INS_FCOMPI: case X86_INS_FUCOMI: case X86_INS_FUCOMPI:
+			e.line(fmt("{ unsigned fl = fcmpflags(ST(c, 0), ST(c, %d));", x.op_count ? sti(op(0)) : 1));
+			e.flag(CF, "fl & 1"); e.flag(PF, "(fl >> 2) & 1"); e.flag(ZF, "(fl >> 6) & 1"); e.flag(OF, "0"); e.flag(SF, "0"); e.flag(AF, "0");
+			e.line("}");
+			if (id == X86_INS_FCOMPI || id == X86_INS_FUCOMPI) e.line("fpop(c);");
+			break;
+		case X86_INS_FNSTSW:
+			if (op(0).type == X86_OP_REG) e.line("eax = (eax & 0xffff0000u) | fstatus(c);");
+			else e.line("S16(" + e.ea(op(0)) + ", fstatus(c));");
+			break;
+		case X86_INS_FNSTCW: e.line("S16(" + e.ea(op(0)) + ", c->fcw);"); break;
+		case X86_INS_FLDCW: e.line("c->fcw = G16(" + e.ea(op(0)) + ");"); break;
+		case X86_INS_FNINIT: e.line("c->fcw = 0x37f; c->fcc = 0; c->top = 0;"); break;
+		case X86_INS_FINCSTP: e.line("c->top = (c->top + 1) & 7;"); break;
+		case X86_INS_FDECSTP: e.line("c->top = (c->top - 1) & 7;"); break;
+
 		// ---- control flow
 		case X86_INS_JMP:
 		{
@@ -688,7 +977,7 @@ struct Gen
 			unsup.push_back(fmt("%08x %s %s", in.va, in.mn.c_str(), in.ops.c_str()));
 			e.o = "\tunsupported(c, " + hex(in.va) + ", \"" + in.mn + " " + in.ops + "\");\n";
 		}
-		out += e.o;
+		if (!e.o.empty()) out += "\t{\n" + e.o + "\t}\n";
 	}
 };
 
