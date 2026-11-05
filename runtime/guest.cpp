@@ -2,6 +2,7 @@
 
 #include <sys/mman.h>
 #include <cstdio>
+#include <unistd.h>
 
 namespace guest
 {
@@ -22,7 +23,8 @@ bool init()
 
 bool commit(uint32_t addr, uint32_t size)
 {
-	uint64_t lo = addr & ~0xfffull, hi = (static_cast<uint64_t>(addr) + size + 0xfff) & ~0xfffull;
+	static const uint64_t pg = static_cast<uint64_t>(sysconf(_SC_PAGESIZE));   // 4 KiB, or 16 KiB on newer Android kernels
+	uint64_t lo = addr & ~(pg - 1), hi = (static_cast<uint64_t>(addr) + size + pg - 1) & ~(pg - 1);
 	return mprotect(base + lo, hi - lo, PROT_READ | PROT_WRITE) == 0;
 }
 }

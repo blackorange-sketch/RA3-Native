@@ -23,6 +23,7 @@ struct Config
 };
 extern Config config;
 
+extern void (*logHook)(const char*);   // optional extra sink (on-screen console, logcat)
 void log(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 [[noreturn]] void fatal(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 

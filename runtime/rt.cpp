@@ -20,23 +20,19 @@ uint32_t imageBase, imageEntry;
 static FILE* logFp;
 static std::mutex logMu;
 
+void (*logHook)(const char*) = nullptr;
 void log(const char* f, ...)
 {
-	std::lock_guard<std::mutex> l(logMu);
-	if (!logFp && !config.logFile.empty()) logFp = fopen(config.logFile.c_str(), "a");
+	char buf[2048];
 	va_list ap;
 	va_start(ap, f);
-	vfprintf(stderr, f, ap);
-	fputc('\n', stderr);
+	vsnprintf(buf, sizeof buf, f, ap);
 	va_end(ap);
-	if (logFp)
-	{
-		va_start(ap, f);
-		vfprintf(logFp, f, ap);
-		fputc('\n', logFp);
-		fflush(logFp);
-		va_end(ap);
-	}
+	std::lock_guard<std::mutex> l(logMu);
+	if (!logFp && !config.logFile.empty()) logFp = fopen(config.logFile.c_str(), "a");
+	fprintf(stderr, "%s\n", buf);
+	if (logFp) { fprintf(logFp, "%s\n", buf); fflush(logFp); }
+	if (logHook) logHook(buf);
 }
 
 #ifdef RA3_TRACE
@@ -233,8 +229,11 @@ std::string hostPath(const std::string& win)
 {
 	std::string p = win;
 	std::replace(p.begin(), p.end(), '\\', '/');
+	bool absolute = (p.size() >= 2 && p[1] == ':') || (!p.empty() && p[0] == '/');
 	if (p.size() >= 2 && p[1] == ':') p = p.substr(2);
 	while (!p.empty() && p[0] == '/') p.erase(0, 1);
+	while (p.rfind("./", 0) == 0) p.erase(0, 2);
+	if (!absolute) p = "ra3/" + p;   // relative paths resolve against the game's working directory C:\RA3
 	// everything under RA3/ is the game folder; the rest is our writable area
 	std::string lp = lowerStr(p);
 	if (lp == "ra3" || lp.rfind("ra3/", 0) == 0) return resolveCI(config.gameRoot, p.size() > 4 ? p.substr(4) : "");
