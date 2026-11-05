@@ -2,6 +2,7 @@
 #include <android/log.h>
 #include <android/native_activity.h>
 #include <android/native_window.h>
+#include <android/hardware_buffer.h>
 #include <android_native_app_glue.h>
 #include <dirent.h>
 #include <jni.h>
@@ -99,6 +100,11 @@ void draw(ANativeWindow* w)
 {
 	ANativeWindow_Buffer b;
 	if (ANativeWindow_lock(w, &b, nullptr) != 0) return;
+	if (b.format != AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM && b.format != AHARDWAREBUFFER_FORMAT_R8G8B8X8_UNORM)
+	{
+		ANativeWindow_unlockAndPost(w);
+		return;
+	}
 	uint32_t* px = (uint32_t*)b.bits;
 	for (int y = 0; y < b.height; y++)
 		for (int x = 0; x < b.width; x++) px[y * b.stride + x] = 0xff101418;
@@ -135,7 +141,7 @@ ANativeWindow* window = nullptr;
 
 void onCmd(android_app* app, int32_t cmd)
 {
-	if (cmd == APP_CMD_INIT_WINDOW) { window = app->window; dirty = true; }
+	if (cmd == APP_CMD_INIT_WINDOW) { window = app->window; ANativeWindow_setBuffersGeometry(window, 0, 0, AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM); dirty = true; }
 	if (cmd == APP_CMD_TERM_WINDOW) window = nullptr;
 }
 }
