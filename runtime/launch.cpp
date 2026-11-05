@@ -1,12 +1,16 @@
 // Shared start-up: maps the PE, creates the main guest thread and runs the entry point.
 #include "launch.h"
 
+#include <algorithm>
+#include <vector>
 #include <csignal>
 #include <fcntl.h>
 #include <pthread.h>
 #include <cstdio>
 #include <unistd.h>
 
+#include <dirent.h>
+#include <sys/stat.h>
 #include "pe_loader.h"
 
 namespace rt
@@ -58,8 +62,28 @@ void spawnHostThread(std::function<void()> fn, size_t stackBytes)
 	pthread_attr_destroy(&attr);
 }
 
+static void listDir(const std::string& d, int depth)
+{
+	DIR* dir = opendir(d.c_str());
+	if (!dir) return;
+	std::vector<std::string> names;
+	while (auto e = readdir(dir)) if (e->d_name[0] != '.') names.push_back(e->d_name);
+	closedir(dir);
+	std::sort(names.begin(), names.end());
+	int shown = 0;
+	for (auto& n : names)
+	{
+		struct stat st;
+		bool isDir = stat((d + "/" + n).c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+		if (shown++ < 40) log("  %s%s%s", std::string(2 * (3 - depth), ' ').c_str(), n.c_str(), isDir ? "/" : "");
+		if (isDir && depth > 1) listDir(d + "/" + n, depth - 1);
+	}
+	if ((int)names.size() > 40) log("  ... %d entries total", (int)names.size());
+}
 int launch(const std::string& gameFile)
 {
+	log("game root listing: %s", config.gameRoot.c_str());
+	listDir(config.gameRoot, 2);
 	{
 		struct sigaction sa{};
 		sa.sa_sigaction = onFault;
