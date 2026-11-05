@@ -2,6 +2,8 @@
 #include "launch.h"
 
 #include <csignal>
+#include <fcntl.h>
+#include <pthread.h>
 #include <cstdio>
 #include <unistd.h>
 
@@ -9,15 +11,51 @@
 
 namespace rt
 {
+static void emit(const char* s)
+{
+	if (!config.logFile.empty())
+		if (int fd = open(config.logFile.c_str(), O_WRONLY | O_APPEND | O_CREAT, 0666); fd >= 0) { write(fd, s, strlen(s)); close(fd); }
+	if (logHook) logHook(s);
+	fputs(s, stderr);
+}
+
 static void onFault(int sig, siginfo_t* si, void*)
 {
+	// Deliberately lock-free: the fault may have happened inside log().
+	char buf[256];
 	uintptr_t a = (uintptr_t)si->si_addr, b = (uintptr_t)guest::base;
 	if (a >= b && a < b + (1ull << 32))
-		log("FATAL: signal %d, guest memory access at %08x is not mapped", sig, (uint32_t)(a - b));
+		snprintf(buf, sizeof buf, "FATAL: signal %d (code %d), guest memory access at %08x", sig, si->si_code, (uint32_t)(a - b));
 	else
-		log("FATAL: signal %d at host address %p (runtime bug)", sig, si->si_addr);
+		snprintf(buf, sizeof buf, "FATAL: signal %d (code %d) at host address %p (stack overflow or runtime bug)", sig, si->si_code, si->si_addr);
+	emit(buf);
+	emit("\n");
 	traceDump();
 	_exit(72);
+}
+
+static void installAltStack()
+{
+	static thread_local bool done = false;
+	if (done) return;
+	done = true;
+	stack_t ss{};
+	ss.ss_size = 64 * 1024;
+	ss.ss_sp = malloc(ss.ss_size);
+	sigaltstack(&ss, nullptr);
+}
+
+void spawnHostThread(std::function<void()> fn, size_t stackBytes)
+{
+	auto* f = new std::function<void()>([fn] { installAltStack(); fn(); });
+	pthread_attr_t attr;
+	pthread_attr_init(&attr);
+	pthread_attr_setstacksize(&attr, stackBytes);
+	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+	pthread_t th;
+	if (pthread_create(&th, &attr, [](void* p) -> void* { auto* fn = static_cast<std::function<void()>*>(p); (*fn)(); delete fn; return nullptr; }, f) != 0)
+		fatal("cannot create a host thread");
+	pthread_attr_destroy(&attr);
 }
 
 int launch(const std::string& gameFile)
@@ -25,11 +63,12 @@ int launch(const std::string& gameFile)
 	{
 		struct sigaction sa{};
 		sa.sa_sigaction = onFault;
-		sa.sa_flags = SA_SIGINFO;
+		sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
 		sigaction(SIGSEGV, &sa, nullptr);
 		sigaction(SIGBUS, &sa, nullptr);
 		sigaction(SIGFPE, &sa, nullptr);
 	}
+	installAltStack();
 	guest::init();
 	heapInit();
 	pe::Image img;

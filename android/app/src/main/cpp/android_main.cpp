@@ -176,11 +176,11 @@ void android_main(android_app* app)
 					pushLine("game root: " + rt::config.gameRoot);
 					status = "running";
 					started = true;
-					std::thread([game] {
+					rt::spawnHostThread([game] {
 						int code = rt::launch(game);
 						rt::log("game exited with code %d", code);
 						status = "exited";
-					}).detach();
+					}, 256u << 20);
 				}
 			}
 		}

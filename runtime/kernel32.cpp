@@ -203,7 +203,7 @@ IMP_STD(K, CreateThread, 6)
 	t->suspended = (ARG(4) & 4) != 0;
 	uint32_t h = newHandle(t, KThread);
 	if (ARG(5)) guest::store<uint32_t>(ARG(5), t->tid);
-	if (!t->suspended) { t->started = true; t->th = std::thread(threadMain, t); t->th.detach(); }
+	if (!t->suspended) { t->started = true; spawnHostThread([t] { threadMain(t); }); }
 	SET(h);
 }
 IMP_ID("MSVCR80.dll", "_beginthreadex", beginthreadex, 0)
@@ -217,14 +217,14 @@ IMP_ID("MSVCR80.dll", "_beginthreadex", beginthreadex, 0)
 	t->suspended = (ARG(4) & 4) != 0;
 	uint32_t h = newHandle(t, KThread);
 	if (ARG(5)) guest::store<uint32_t>(ARG(5), t->tid);
-	if (!t->suspended) { t->started = true; t->th = std::thread(threadMain, t); t->th.detach(); }
+	if (!t->suspended) { t->started = true; spawnHostThread([t] { threadMain(t); }); }
 	SET(h);
 }
 IMP_ID("MSVCR80.dll", "_endthreadex", endthreadex, 0) { fatal("_endthreadex called (thread exit via unwinding not implemented)"); }
 IMP_STD(K, ResumeThread, 1)
 {
 	auto* t = (ThreadObj*)getHandle(ARG(0), KThread);
-	if (t && t->suspended && !t->started) { t->suspended = false; t->started = true; t->th = std::thread(threadMain, t); t->th.detach(); SET(1); }
+	if (t && t->suspended && !t->started) { t->suspended = false; t->started = true; spawnHostThread([t] { threadMain(t); }); SET(1); }
 	else SET(0);
 }
 IMP_STD(K, SuspendThread, 1) { SET(0); }

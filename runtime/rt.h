@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <string>
 
 #include "cpu.h"
@@ -71,6 +72,8 @@ uint32_t makeTeb(uint32_t stackLow, uint32_t stackHigh, uint32_t tid);
 void setLastError(uint32_t e);
 void traceRegister(uint32_t tid);
 void traceDump();
+// Starts a detached host thread with a large stack (bionic's default of 1 MiB is too small for lifted code).
+void spawnHostThread(std::function<void()> fn, size_t stackBytes = 64u << 20);
 
 // ---- formatting (fmt.cpp)
 struct ArgReader

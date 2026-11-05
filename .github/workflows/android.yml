@@ -44,9 +44,26 @@ jobs:
           mkdir -p lifted
           ./lift_pe game/ra3_1.12.game game/ra3.functions.txt --emit-dir lifted 96 | head -3
 
+      # The generated code is identical between runs, so ccache makes rebuilds after runtime-only edits take minutes.
+      - name: Set up ccache
+        run: sudo apt-get install -y ccache >/dev/null
+      - uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ github.sha }}
+          restore-keys: ccache-
+
       - name: Build APK
         working-directory: android
-        run: gradle assembleDebug -PliftedDir=${{ github.workspace }}/lifted --no-daemon
+        env:
+          CCACHE_DIR: ~/.ccache
+          CCACHE_NODIRECT: '1'
+          CCACHE_COMPILERCHECK: 'string:ndk'
+          CCACHE_MAXSIZE: 1G
+        run: |
+          export CCACHE_DIR=$HOME/.ccache
+          gradle assembleDebug -PliftedDir=${{ github.workspace }}/lifted -PuseCcache=1 --no-daemon
+          ccache -s | head -8
 
       - uses: actions/upload-artifact@v4
         with:

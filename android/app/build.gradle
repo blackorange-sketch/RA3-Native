@@ -12,7 +12,8 @@ android {
         ndk { abiFilters 'arm64-v8a' }
         externalNativeBuild {
             cmake {
-                arguments "-DCMAKE_BUILD_TYPE=Release", "-DLIFTED_DIR=" + (project.findProperty('liftedDir') ?: '')
+                arguments "-DCMAKE_BUILD_TYPE=Release", "-DLIFTED_DIR=" + (project.findProperty('liftedDir') ?: ''),
+                          *(project.hasProperty('useCcache') ? ["-DCMAKE_CXX_COMPILER_LAUNCHER=ccache", "-DCMAKE_C_COMPILER_LAUNCHER=ccache"] : [])
                 cppFlags '-std=c++17'
             }
         }
