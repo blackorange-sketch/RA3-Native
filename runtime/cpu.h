@@ -30,6 +30,7 @@ struct CPU
 	uint16_t fcw = 0x37f;
 	uint16_t fcc = 0;   // condition codes C0..C3 in their status-word positions (bits 8, 9, 10, 14)
 	uint32_t mxcsr = 0x1f80;
+	uint8_t t_cf = 0, t_pf = 0, t_af = 0, t_zf = 0, t_sf = 0, t_of = 0;   // flags handed over by tail jumps (see lift.cpp)
 	CPU() : r{}, fsbase(0), df(0), xmm{}, st{} {}
 };
 

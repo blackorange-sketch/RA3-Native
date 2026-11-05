@@ -1,3 +1,4 @@
+#include <functional>
 #include <unistd.h>
 #include <atomic>
 #include <algorithm>
@@ -292,4 +293,13 @@ void unsupported(CPU* c, uint32_t va, const char* what)
 void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t ecx)
 {
 	rt::log("hook %08x(ecx=%08x, %08x, %08x, %08x) -> eax=%08x", fn, ecx, a0, a1, a2, c->r[EAX]);
+	auto tryStr = [](uint32_t p) -> std::string {
+		if (p < 0x400000 || (p >= 0x60000000 && p < 0x71000000) || p >= 0x7f000000) return "";
+		const unsigned char* q = (const unsigned char*)guest::host(p);
+		std::string r;
+		for (int i = 0; i < 100; i++) { if (!q[i]) return r.size() >= 2 ? r : ""; if (q[i] < 32 || q[i] > 126) return ""; r += (char)q[i]; }
+		return r;
+	};
+	std::string s0 = tryStr(a0), s1 = tryStr(a1), s2 = tryStr(a2);
+	if (!s0.empty() || !s1.empty() || !s2.empty()) rt::log("   strs: a0='%s' a1='%s' a2='%s'", s0.c_str(), s1.c_str(), s2.c_str());
 }

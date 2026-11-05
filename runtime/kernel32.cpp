@@ -567,7 +567,8 @@ static void openFile(CPU* c, const std::string& winPath, uint32_t access, uint32
 	struct stat st;
 	bool isDir = stat(hp.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
 	int fd = isDir ? -1 : open(hp.c_str(), flags, 0666);
-	if (fd < 0 && !isDir) { if (!(flags & O_CREAT)) log("open failed: '%s' -> '%s' (errno %d)", winPath.c_str(), hp.c_str(), errno); setLastError(errno == ENOENT ? 2 : errno == EEXIST ? 80 : 5); SET(0xffffffff); return; }
+	if (fd < 0 && !isDir) { if (getenv("RA3_RINGDUMP") && winPath.find("audio.manifest") != std::string::npos) traceDump();
+	if (!(flags & O_CREAT)) log("open failed: '%s' -> '%s' (errno %d)", winPath.c_str(), hp.c_str(), errno); setLastError(errno == ENOENT ? 2 : errno == EEXIST ? 80 : 5); SET(0xffffffff); return; }
 	setLastError(disp == 4 && fd >= 0 && st.st_size > 0 ? 183 : 0);
 	{
 		static int opened = 0;

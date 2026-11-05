@@ -31,6 +31,7 @@ struct Ins
 	std::vector<uint32_t> succ;  // local successors besides fallthrough
 	unsigned rd = 0, wr = 0;     // flag read / write masks
 	unsigned liveOut = 0;
+	unsigned tailNeed = 0;       // flags the tail-call target reads before writing (handed over through CPU)
 };
 
 std::string fmt(const char* f, ...)
@@ -248,6 +249,60 @@ struct Emit
 	}
 };
 
+
+// ---- flags handed over by tail jumps ------------------------------------------------------------
+// A jump to another function's entry is emitted as a tail call. If the target reads flags before it writes
+// them (e.g. "cmp; jbe L" where L starts with "sbb eax, eax") they have to travel through the CPU struct.
+Reader* gReader = nullptr;
+
+unsigned entryFlagNeed(uint32_t t)
+{
+	static std::map<uint32_t, unsigned> cache;
+	if (auto it = cache.find(t); it != cache.end()) return it->second;
+	unsigned need = 0;
+	if (gReader)
+	{
+		std::set<std::pair<uint32_t, unsigned>> seen;
+		std::vector<std::pair<uint32_t, unsigned>> work{{t, 0u}};
+		cs_insn* insn = cs_malloc(cs);
+		int budget = 400;
+		while (!work.empty() && budget > 0)
+		{
+			auto [pc, written] = work.back();
+			work.pop_back();
+			for (int n = 0; n < 48 && budget > 0 && gReader->isCode(pc) && seen.insert({pc, written}).second; n++, budget--)
+			{
+				uint8_t buf[16] = {};
+				size_t avail = 0;
+				for (; avail < 15 && gReader->read(pc + avail, buf + avail, 1); avail++) {}
+				const uint8_t* p = buf;
+				size_t left = avail;
+				uint64_t a = pc;
+				if (!cs_disasm_iter(cs, &p, &left, &a, insn)) break;
+				Ins in;
+				in.id = insn->id;
+				in.x = insn->detail->x86;
+				in.next = pc + insn->size;
+				flagRW(in);
+				need |= in.rd & ~written;
+				written |= in.wr;
+				if (in.id == X86_INS_CALL || in.id == X86_INS_RET || in.id == X86_INS_INT3 || in.id == X86_INS_UD2 || in.id == X86_INS_HLT) break;
+				bool jcc = isJcc(in.id) || in.id == X86_INS_LOOP || in.id == X86_INS_LOOPE || in.id == X86_INS_LOOPNE || in.id == X86_INS_JECXZ;
+				if (jcc && in.x.op_count == 1 && in.x.operands[0].type == X86_OP_IMM) work.push_back({(uint32_t)in.x.operands[0].imm, written});
+				if (in.id == X86_INS_JMP)
+				{
+					if (in.x.op_count == 1 && in.x.operands[0].type == X86_OP_IMM) { pc = (uint32_t)in.x.operands[0].imm; continue; }
+					break;
+				}
+				pc = in.next;
+			}
+		}
+		cs_free(insn, 1);
+	}
+	cache[t] = need;
+	return need;
+}
+
 // ---- code generation of a single instruction -------------------------------------------------
 
 struct Gen
@@ -263,6 +318,7 @@ struct Gen
 	{
 		if (isLocal(t)) return fmt("goto L_%08x;", t);
 		if (funcs && !funcs->count(t)) return fmt("{ %s call_target(c, 0x%08xu); return; }", saveRegs, t);
+		if (entryFlagNeed(t)) return fmt("{ %s SAVEFL(); f_%08x(c); return; }", saveRegs, t);
 		return fmt("{ %s f_%08x(c); return; }", saveRegs, t);
 	}
 
@@ -1018,6 +1074,7 @@ void init()
 
 Result liftFunction(Reader& r, uint32_t entry, const Options& opt)
 {
+	gReader = &r;
 	std::map<uint32_t, Ins> code;
 	std::vector<uint32_t> work{entry};
 	cs_insn* insn = cs_malloc(cs);
@@ -1056,6 +1113,7 @@ Result liftFunction(Reader& r, uint32_t entry, const Options& opt)
 				{
 					uint32_t t = (uint32_t)o.imm;
 					if (!isEntryOther(t)) { in.succ.push_back(t); work.push_back(t); }
+					else in.tailNeed = entryFlagNeed(t);
 				}
 				else if (o.type == X86_OP_MEM && o.mem.index != X86_REG_INVALID && o.mem.disp)
 				{
@@ -1073,6 +1131,7 @@ Result liftFunction(Reader& r, uint32_t entry, const Options& opt)
 			{
 				uint32_t t = (uint32_t)in.x.operands[0].imm;
 				if (!isEntryOther(t)) { in.succ.push_back(t); work.push_back(t); }
+				else in.tailNeed = entryFlagNeed(t);
 			}
 			code[pc] = in;
 			flagRW(code[pc]);
@@ -1099,6 +1158,7 @@ Result liftFunction(Reader& r, uint32_t entry, const Options& opt)
 			if (!i.terminal) out |= liveIn(i.next);
 			for (uint32_t s : i.succ)
 				if (code.count(s)) out |= liveIn(s);
+			out |= i.tailNeed;
 			if (i.id == X86_INS_CALL) out = 0;
 			if (out != i.liveOut) { i.liveOut = out; changed = true; }
 		}
@@ -1140,6 +1200,7 @@ Result liftFunction(Reader& r, uint32_t entry, const Options& opt)
 	head += "\tuint8_t cf = 0, pf = 0, af = 0, zf = 0, sf = 0, of = 0, df = (uint8_t)c->df;\n";
 	head += fmt("\tTRACE_FN(0x%08xu);\n", entry);
 	head += "\t(void)cf; (void)pf; (void)af; (void)zf; (void)sf; (void)of; (void)df;\n";
+	if (entryFlagNeed(entry)) head += "\tLOADFL();\n";
 	res.code = head + body + "}\n";
 	if (hooked)
 		res.code += fmt("void f_%08x(CPU* c)\n{\n\tuint32_t a0 = G32(c->r[4] + 4), a1 = G32(c->r[4] + 8), a2 = G32(c->r[4] + 12), ecx0 = c->r[1];\n\tf_%08x_real(c);\n\tra3_hook_after(c, 0x%08xu, a0, a1, a2, ecx0);\n}\n", entry, entry, entry);
