@@ -11,8 +11,9 @@
 // Call tracing: a per-thread ring of the last function entries, dumped on fatal errors (build with -DRA3_TRACE).
 #ifdef RA3_TRACE
 extern thread_local uint32_t ra3_ring[256];
+extern thread_local uint32_t ra3_ring_ra[256];
 extern thread_local uint32_t ra3_ring_pos;
-#define TRACE_FN(a) (ra3_ring[ra3_ring_pos++ & 255] = (a))
+#define TRACE_FN(a) do { uint32_t i_ = ra3_ring_pos++ & 255; ra3_ring[i_] = (a); ra3_ring_ra[i_] = G32(c->r[4]); } while (0)
 #else
 #define TRACE_FN(a) ((void)0)
 #endif

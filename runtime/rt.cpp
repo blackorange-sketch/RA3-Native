@@ -39,14 +39,15 @@ void log(const char* f, ...)
 #ifdef RA3_TRACE
 }
 thread_local uint32_t ra3_ring[256];
+thread_local uint32_t ra3_ring_ra[256];
 thread_local uint32_t ra3_ring_pos;
 namespace rt {
-static struct { uint32_t* ring; uint32_t* pos; uint32_t tid; } rings[32];
+static struct { uint32_t* ring; uint32_t* pos; uint32_t tid; uint32_t* ra; } rings[32];
 static std::atomic<int> ringCount{0};
 void traceRegister(uint32_t tid)
 {
 	int i = ringCount++;
-	if (i < 32) rings[i] = {ra3_ring, &ra3_ring_pos, tid};
+	if (i < 32) rings[i] = {ra3_ring, &ra3_ring_pos, tid, ra3_ring_ra};
 }
 void traceDump()
 {
@@ -61,7 +62,9 @@ void traceDump()
 			{
 				uint32_t v = rings[i].ring[(p - 256 + k) & 255];
 				imports::Entry* e = (v >> 28) == 0xb ? imports::lookup(v ^ 0xc0000000u) : nullptr;
+				uint32_t ra = rings[i].ra[(p - 256 + k) & 255];
 				if (e) fprintf(f, " %s!%s", e->dll.c_str(), e->name.c_str());
+				else if (ra) fprintf(f, " %08x<%08x", v, ra);
 				else fprintf(f, " %08x", v);
 			}
 			fprintf(f, "\n");
@@ -258,7 +261,7 @@ void call_target(CPU* c, uint32_t addr)
 {
 	using namespace rt;
 	#ifdef RA3_TRACE
-	ra3_ring[ra3_ring_pos++ & 255] = 0xc0000000u ^ addr;   // marker: indirect call target
+	{ uint32_t i_ = ra3_ring_pos++ & 255; ra3_ring[i_] = 0xc0000000u ^ addr; ra3_ring_ra[i_] = 0; }   // marker: indirect call target
 	#endif
 	if (auto* e = imports::lookup(addr))
 	{
