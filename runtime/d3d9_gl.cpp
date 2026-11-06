@@ -740,6 +740,39 @@ void draw(const DrawCall& dc)
 	uint64_t t0 = nowUs();
 	Prog* p = getProgram(vs, ps);
 	if (!p) return;
+	if (gFrameNo == 700)
+	{
+		static int dn = 0;
+		std::string tx;
+		for (int i = 0; i < 4; i++)
+			if (Obj* t = dev.tex[i])
+			{
+				unsigned nz = 0;
+				if (t->data && t->size) { const uint8_t* b = (const uint8_t*)guest::host(t->data); for (uint32_t k = 0; k < std::min<uint32_t>(t->size, 4096); k += 7) nz += b[k] != 0; }
+				char b2[96]; snprintf(b2, sizeof b2, " t%d=%ux%u/f%x/l%u/nz%u%s", i, t->w, t->h, t->fmt, t->levels, nz, t->rtTex ? "/RT" : "");
+				tx += b2;
+			}
+		if (dev.vdecl)
+		{
+			std::string de;
+			for (size_t i = 0; i < dev.vdecl->blob.size() / 8; i++)
+			{
+				DeclElem e; memcpy(&e, dev.vdecl->blob.data() + 8 * i, 8);
+				if (e.stream == 0xff) break;
+				char b3[48]; snprintf(b3, sizeof b3, " s%u+%u:t%u:u%u.%u", e.stream, e.offset, e.type, e.usage, e.index); de += b3;
+			}
+			Stream& st0 = dev.streams[0];
+			std::string v0;
+			if (st0.vb && st0.vb->data && st0.stride)
+			{
+				const float* f = (const float*)((const uint8_t*)guest::host(st0.vb->data) + st0.offset);
+				for (uint32_t i = 0; i < std::min<uint32_t>(st0.stride / 4 * 2, 16); i++) { char b4[24]; snprintf(b4, sizeof b4, " %g", (double)f[i]); v0 += b4; }
+			}
+			log("DD   decl%s stride %u v:%s", de.c_str(), st0.stride, v0.c_str());
+		}
+		log("DD #%d prim %u cnt %u vs %p ps %p%s | z %u zw %u blend %u src %u dst %u cull %u at %u | rt %p", dn++, dc.prim, dc.primCount, (void*)vs, (void*)ps, tx.c_str(),
+			dev.rs[7], dev.rs[14], dev.rs[27], dev.rs[19], dev.rs[20], dev.rs[22], dev.rs[15], (void*)dev.rt0);
+	}
 	bindTargets();
 	uint32_t tw, th;
 	targetSize(dev.rt0, tw, th);
