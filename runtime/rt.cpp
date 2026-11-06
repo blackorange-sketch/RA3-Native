@@ -57,7 +57,13 @@ void traceDump()
 			if (!f) continue;
 			fprintf(f, "-- thread %u%s, last functions (oldest first):", rings[i].tid, rings[i].ring == ra3_ring ? " (CURRENT)" : "");
 			uint32_t p = *rings[i].pos;
-			for (uint32_t k = 0; k < 256; k++) fprintf(f, " %08x", rings[i].ring[(p - 256 + k) & 255]);
+			for (uint32_t k = 0; k < 256; k++)
+			{
+				uint32_t v = rings[i].ring[(p - 256 + k) & 255];
+				imports::Entry* e = (v >> 28) == 0xb ? imports::lookup(v ^ 0xc0000000u) : nullptr;
+				if (e) fprintf(f, " %s!%s", e->dll.c_str(), e->name.c_str());
+				else fprintf(f, " %08x", v);
+			}
 			fprintf(f, "\n");
 			fflush(f);
 		}

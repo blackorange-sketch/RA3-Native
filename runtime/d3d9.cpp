@@ -90,7 +90,12 @@ void initDefs()
 void comDispatch(CPU* c)
 {
 	Handler h = methodInfos[imports::current->user].h;
-	if (!h) { SET(0); return; }
+	if (!h)
+	{
+		if (imports::current->calls == 1) log("d3d9: unhandled method %s (returns S_OK, outputs untouched)", imports::current->name.c_str());
+		SET(0);
+		return;
+	}
 	h(c, objectAt(ARG(0)));
 }
 
