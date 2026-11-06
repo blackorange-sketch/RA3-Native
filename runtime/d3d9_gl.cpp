@@ -246,7 +246,14 @@ GLuint ensureBuffer(Obj* o, GLenum target)
 	if (o->glVer != o->ver)
 	{
 		glBindBuffer(target, o->glBuf);
-		glBufferData(target, o->size, guest::host(o->data), GL_DYNAMIC_DRAW);
+		if (o->glVer && o->glSize == o->size && o->dirtyLo < o->dirtyHi)
+			glBufferSubData(target, o->dirtyLo, o->dirtyHi - o->dirtyLo, (const uint8_t*)guest::host(o->data) + o->dirtyLo);
+		else
+		{
+			glBufferData(target, o->size, guest::host(o->data), GL_DYNAMIC_DRAW);
+			o->glSize = o->size;
+		}
+		o->dirtyLo = 0xffffffffu; o->dirtyHi = 0;
 		o->glVer = o->ver;
 	}
 	return o->glBuf;

@@ -41,7 +41,8 @@ struct Obj
 	ShaderObj* sh = nullptr;          // IVS / IPS
 	// renderer state (GL names are owned by d3d9_gl.cpp)
 	uint32_t glTex = 0, glBuf = 0, glFbo = 0, glDepth = 0, glFmt = 0;
-	uint32_t ver = 1, glVer = 0;      // content version / uploaded version
+	uint32_t ver = 1, glVer = 0;
+	uint32_t dirtyLo = 0xffffffffu, dirtyHi = 0, glSize = 0; // buffer: locked range since the last upload      // content version / uploaded version
 	bool rtTex = false;               // contents live on the GPU (render target)
 };
 

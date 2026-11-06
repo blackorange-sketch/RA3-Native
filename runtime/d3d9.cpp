@@ -8,6 +8,7 @@
 
 #include <sys/stat.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <map>
@@ -424,6 +425,14 @@ H("IDirect3DDevice9::GetSoftwareVertexProcessing") { SET(0); } END;
 H("IDirect3DTexture9::GetLevelCount") { SET(o->levels); } END;
 H("IDirect3DTexture9::GetLevelDesc") { Obj tmp = *o; tmp.w = std::max(1u, o->w >> ARG(1)); tmp.h = std::max(1u, o->h >> ARG(1)); fillDesc(ARG(2), &tmp); SET(0); } END;
 H("IDirect3DTexture9::GetSurfaceLevel") { writeOut(ARG(2), surfaceOfLevel(o, ARG(1), 0)); SET(0); } END;
+static void markLocked(Obj* o, uint32_t off, uint32_t size)
+{
+	uint32_t hi = (size == 0 || off + size > o->size) ? o->size : off + size;
+	if (off > o->size) off = o->size;
+	o->dirtyLo = std::min(o->dirtyLo, off);
+	o->dirtyHi = std::max(o->dirtyHi, hi);
+}
+
 H("IDirect3DTexture9::LockRect")
 {
 	uint32_t lvl = ARG(1), pLocked = ARG(2), pRect = ARG(3);
@@ -487,9 +496,9 @@ H("IDirect3DSurface9::LockRect")
 } END;
 H("IDirect3DSurface9::UnlockRect") { o->ver++; if (o->parent) if (Obj* t = objectAt(o->parent)) t->ver++; SET(0); } END;
 H("IDirect3DSurface9::GetContainer") { if (o->parent) { guest::store<uint32_t>(ARG(2), o->parent); if (Obj* p = objectAt(o->parent)) p->ref++; SET(0); } else SET(0x80004002); } END;
-H("IDirect3DVertexBuffer9::Lock") { guest::store<uint32_t>(ARG(3), o->data + ARG(1)); SET(0); } END;
+H("IDirect3DVertexBuffer9::Lock") { guest::store<uint32_t>(ARG(3), o->data + ARG(1)); markLocked(o, ARG(1), ARG(2)); SET(0); } END;
 H("IDirect3DVertexBuffer9::GetDesc") { uint32_t p = ARG(1); guest::store<uint32_t>(p, 0); guest::store<uint32_t>(p + 4, 3); guest::store<uint32_t>(p + 8, o->usage); guest::store<uint32_t>(p + 12, o->pool); guest::store<uint32_t>(p + 16, o->size); guest::store<uint32_t>(p + 20, o->fvf); SET(0); } END;
-H("IDirect3DIndexBuffer9::Lock") { guest::store<uint32_t>(ARG(3), o->data + ARG(1)); SET(0); } END;
+H("IDirect3DIndexBuffer9::Lock") { guest::store<uint32_t>(ARG(3), o->data + ARG(1)); markLocked(o, ARG(1), ARG(2)); SET(0); } END;
 H("IDirect3DIndexBuffer9::GetDesc") { uint32_t p = ARG(1); guest::store<uint32_t>(p, o->fmt); guest::store<uint32_t>(p + 4, 4); guest::store<uint32_t>(p + 8, o->usage); guest::store<uint32_t>(p + 12, o->pool); guest::store<uint32_t>(p + 16, o->size); SET(0); } END;
 H("IDirect3DVertexDeclaration9::GetDeclaration")
 {
