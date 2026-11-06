@@ -627,6 +627,10 @@ void clear(uint32_t count, uint32_t rects, uint32_t flags, uint32_t color, float
 	if (n++ < 4) log("d3d9: Clear flags %x color %08x z %g -> %s", flags, color, (double)z, isBack(dev.rt0) ? "back buffer" : "render target");
 }
 
+#include <chrono>
+static inline uint64_t nowUs() { return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+static uint64_t tProg, tState, tUni, tSamp, tAttr, tDraw, nDraw;
+
 void draw(const DrawCall& dc)
 {
 	{ static int n = 0; if (n++ < 5) log("GL: draw on tid %d ctx %p", (int)gettid(), (void*)eglGetCurrentContext()); }
@@ -638,13 +642,16 @@ void draw(const DrawCall& dc)
 		if (noShader++ < 5) log("d3d9: draw without shaders (fixed function not implemented): fvf %x vdecl %p", dev.fvf, (void*)dev.vdecl);
 		return;
 	}
+	uint64_t t0 = nowUs();
 	Prog* p = getProgram(vs, ps);
 	if (!p) return;
 	bindTargets();
 	uint32_t tw, th;
 	targetSize(dev.rt0, tw, th);
+	uint64_t t1 = nowUs();
 	applyState(tw, th);
 	glUseProgram(p->id);
+	uint64_t t2 = nowUs();
 	glBindVertexArray(gVao);
 	// constants
 	if (p->vc >= 0) glUniform4fv(p->vc, std::max(1, std::min(256, vs->info.numC + 0)), dev.vsF);
@@ -655,7 +662,9 @@ void draw(const DrawCall& dc)
 	if (p->pcb >= 0) glUniform1iv(p->pcb, 16, dev.psB);
 	if (p->flip >= 0) glUniform1f(p->flip, -1.f);
 	if (p->at >= 0) glUniform4f(p->at, dev.rs[15] ? (float)dev.rs[25] : 0.f, (dev.rs[24] & 255) / 255.f, 0.f, 0.f);
+	uint64_t t3 = nowUs();
 	bindSamplers(p, ps);
+	uint64_t t4 = nowUs();
 	// vertex attributes
 	std::vector<DeclElem> els;
 	if (dev.vdecl)
@@ -717,6 +726,7 @@ void draw(const DrawCall& dc)
 	for (int loc = 0; loc < 16; loc++)
 		if (!(enabled >> loc & 1)) { glDisableVertexAttribArray(loc); glVertexAttrib4f(loc, 0.f, 0.f, 0.f, 1.f); }
 	if (p->bgra >= 0) glUniform1i(p->bgra, (GLint)bgra);
+	uint64_t t5 = nowUs();
 	GLenum mode = primMode(dc.prim);
 	uint32_t nv = (uint32_t)primVertices(dc.prim, dc.primCount);
 	if (!dc.indexed)
@@ -736,6 +746,8 @@ void draw(const DrawCall& dc)
 		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ensureBuffer(dev.ib, GL_ELEMENT_ARRAY_BUFFER));
 		glDrawElements(mode, nv, wide ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT, (const void*)(uintptr_t)(dc.startIndex * (wide ? 4 : 2)));
 	}
+	uint64_t t6 = nowUs();
+	tProg += t1 - t0; tState += t2 - t1; tUni += t3 - t2; tSamp += t4 - t3; tAttr += t5 - t4; tDraw += t6 - t5; nDraw++;
 	gDrawsThisFrame++;
 	if (gDrawsThisFrame <= 3 && gFrameNo < 5) glErr("draw");
 }
@@ -769,6 +781,12 @@ void present()
 	gfx::swap();
 	glErr("present");
 	gFrameNo++;
+	if (gFrameNo % 300 == 0)
+	{
+		static uint64_t last = 0; uint64_t n = nowUs();
+		log("perf: 300 frames in %llu ms; per draw us: prog %llu state %llu uni %llu samp %llu attr %llu draw %llu (n %llu)", (unsigned long long)((n - last) / 1000), (unsigned long long)(tProg / std::max<uint64_t>(1, nDraw)), (unsigned long long)(tState / std::max<uint64_t>(1, nDraw)), (unsigned long long)(tUni / std::max<uint64_t>(1, nDraw)), (unsigned long long)(tSamp / std::max<uint64_t>(1, nDraw)), (unsigned long long)(tAttr / std::max<uint64_t>(1, nDraw)), (unsigned long long)(tDraw / std::max<uint64_t>(1, nDraw)), (unsigned long long)nDraw);
+		last = n; tProg = tState = tUni = tSamp = tAttr = tDraw = nDraw = 0;
+	}
 	if (gFrameNo == 1 || gFrameNo % 300 == 0) log("d3d9: frame %u presented, %u draws in the last frame, screen %dx%d", gFrameNo, gDrawsThisFrame.load(), sw, sh);
 	gDrawsThisFrame = 0;
 }
