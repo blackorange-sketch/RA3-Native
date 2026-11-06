@@ -45,7 +45,7 @@ H("IDirect3DDevice9::SetTexture")
 	if (s < 16) dev.tex[s] = ARG(2) ? objectAt(ARG(2)) : nullptr;
 	{
 		static int nl = 0;
-		if (nl++ < 40) log("d3d9: SetTexture stage %u tex %x -> %p", s, ARG(2), (void*)dev.tex[s < 16 ? s : 0]);
+		if (ARG(2) && nl++ < 60) log("d3d9: SetTexture stage %u tex %x -> %p", s, ARG(2), (void*)dev.tex[s < 16 ? s : 0]);
 	}
 	SET(0);
 } END;
