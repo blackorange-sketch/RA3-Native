@@ -16,3 +16,6 @@ IMP_ID(D, "#9", GetDeviceID, 8)
 	if (ARG(0) && ARG(1)) memcpy(guest::host(ARG(1)), guest::host(ARG(0)), 16);
 	SET(0);
 }
+
+// XINPUT1_3.dll: the only import is ordinal 2 = XInputGetState(user, state*). No gamepads: ERROR_DEVICE_NOT_CONNECTED.
+IMP_ID("XINPUT1_3.dll", "#2", XInputGetState, 8) { SET(1167); }
