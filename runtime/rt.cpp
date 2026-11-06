@@ -84,6 +84,12 @@ void callStats()
 	std::string line;
 	for (size_t i = 0; i < v.size() && i < 40; i++) line += " " + v[i].second + "=" + std::to_string(v[i].first);
 	log("calls:%s", line.c_str());
+	std::vector<std::pair<uint64_t, std::string>> w;
+	for (auto& e : imports::all()) if (e.calls && !(e.dll.find("d3d") != std::string::npos || e.name.find("::") != std::string::npos || e.name.find("D3DX") != std::string::npos)) w.push_back({e.calls, e.dll + "!" + e.name});
+	std::sort(w.rbegin(), w.rend());
+	std::string l2;
+	for (size_t i = 0; i < w.size() && i < 60; i++) l2 += " " + w[i].second + "=" + std::to_string(w[i].first);
+	log("calls-other:%s", l2.c_str());
 }
 void traceProfile(int ms)
 {
