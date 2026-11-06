@@ -73,6 +73,7 @@ void setLastError(uint32_t e);
 void traceRegister(uint32_t tid);
 void traceDump();
 void traceProfile(int ms);
+void callStats();
 // Starts a detached host thread with a large stack (bionic's default of 1 MiB is too small for lifted code).
 void spawnHostThread(std::function<void()> fn, size_t stackBytes = 64u << 20);
 

@@ -104,6 +104,7 @@ int launch(const std::string& gameFile)
 			log("watchdog: %d s since start", i * 20);
 			dumpWaiters();
 			if (i <= 2) traceDump();
+			callStats();
 			traceProfile(3000);
 		}
 	}).detach();

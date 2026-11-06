@@ -76,6 +76,15 @@ void traceDump()
 		}
 	}
 }
+void callStats()
+{
+	std::vector<std::pair<uint64_t, std::string>> v;
+	for (auto& e : imports::all()) if (e.calls && (e.dll.find("d3d") != std::string::npos || e.name.find("::") != std::string::npos || e.name.find("D3DX") != std::string::npos)) v.push_back({e.calls, e.name});
+	std::sort(v.rbegin(), v.rend());
+	std::string line;
+	for (size_t i = 0; i < v.size() && i < 40; i++) line += " " + v[i].second + "=" + std::to_string(v[i].first);
+	log("calls:%s", line.c_str());
+}
 void traceProfile(int ms)
 {
 	std::map<std::pair<uint32_t, uint32_t>, int> hist;
@@ -110,6 +119,7 @@ void traceProfile(int ms)
 void traceRegister(uint32_t) {}
 void traceDump() {}
 void traceProfile(int) {}
+void callStats() {}
 #endif
 
 void fatal(const char* f, ...)
