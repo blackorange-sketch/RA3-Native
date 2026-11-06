@@ -28,6 +28,8 @@ thread_local ThreadCtx tctx;
 std::atomic<uint32_t> nextTid{0x1000};
 std::atomic<uint32_t> bumpThread{rt::ThreadBase};
 uint32_t pebAddr;
+std::map<uint32_t, std::pair<uint32_t, uint32_t>> gWaiting;   // tid -> (handle, timeout) of threads currently blocked in WaitForSingleObject
+std::atomic<uint64_t> gReadCalls{0}, gReadBytes{0}, gWaitCalls{0};
 std::mutex waitMu;               // one lock + condvar for all waitable objects: simple and correct
 std::condition_variable waitCv;
 
@@ -293,8 +295,17 @@ IMP_STD(K, WaitForSingleObject, 2)
 	if (!w) { SET(0xffffffff); return; }
 	uint32_t ms = ARG(1), tid = thisThread().tid;
 	std::unique_lock<std::mutex> l(waitMu);
-	if (ms == 0xffffffff) { waitCv.wait(l, [&] { return waitReady(w, tid); }); SET(0); }
-	else SET(waitCv.wait_for(l, std::chrono::milliseconds(ms), [&] { return waitReady(w, tid); }) ? 0 : 0x102);
+	gWaitCalls++;
+	gWaiting[tid] = {ARG(0), ms};
+	if (ms == 0xffffffff) { waitCv.wait(l, [&] { return waitReady(w, tid); }); gWaiting.erase(tid); SET(0); }
+	else { bool r = waitCv.wait_for(l, std::chrono::milliseconds(ms), [&] { return waitReady(w, tid); }); gWaiting.erase(tid); SET(r ? 0 : 0x102); }
+}
+void dumpWaiters()
+{
+	std::lock_guard<std::mutex> l(waitMu);
+	std::string s;
+	for (auto& kv : gWaiting) { char b[64]; snprintf(b, sizeof b, " [t%u h%x ms%u]", kv.first, kv.second.first, kv.second.second); s += b; }
+	rt::log("stats: reads %llu (%llu bytes), waits %llu, blocked:%s", (unsigned long long)gReadCalls, (unsigned long long)gReadBytes, (unsigned long long)gWaitCalls, s.c_str());
 }
 IMP_STD(K, DuplicateHandle, 7) { guest::store<uint32_t>(ARG(3), ARG(1)); SET(1); }
 IMP_STD(K, CloseHandle, 1)
@@ -612,6 +623,7 @@ IMP_STD(K, ReadFile, 5)
 			if (reads < 600) log("ReadFile fd=%d want=%u got=%d ovl=%08x errno=%d", f->fd, ARG(2), (int)n, ARG(4), n < 0 ? errno : 0);
 	}
 	if (n < 0) { SET(0); return; }
+	gReadCalls++; gReadBytes += (uint64_t)n;
 	if (ARG(3)) guest::store<uint32_t>(ARG(3), (uint32_t)n);
 	SET(1);
 }

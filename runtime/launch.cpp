@@ -15,6 +15,7 @@
 #include <sys/stat.h>
 #include "pe_loader.h"
 
+void dumpWaiters();
 namespace rt
 {
 static void emit(const char* s)
@@ -101,6 +102,7 @@ int launch(const std::string& gameFile)
 		{
 			std::this_thread::sleep_for(std::chrono::seconds(20));
 			log("watchdog: %d s since start", i * 20);
+			dumpWaiters();
 			traceDump();
 		}
 	}).detach();
