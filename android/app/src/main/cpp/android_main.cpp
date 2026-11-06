@@ -2,6 +2,8 @@
 #include <android/log.h>
 #include <android/native_activity.h>
 #include <android/native_window.h>
+#include <vector>
+#include "gfx.h"
 #include <android/hardware_buffer.h>
 #include <android_native_app_glue.h>
 #include <dirent.h>
@@ -152,13 +154,14 @@ void requestAllFilesAccess(android_app* app)
 
 void draw(ANativeWindow* w)
 {
-	ANativeWindow_Buffer b;
-	if (ANativeWindow_lock(w, &b, nullptr) != 0) return;
-	if (b.format != AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM && b.format != AHARDWAREBUFFER_FORMAT_R8G8B8X8_UNORM)
-	{
-		ANativeWindow_unlockAndPost(w);
-		return;
-	}
+	if (!gfx::ready()) return;
+	struct { int width, height, stride; uint32_t* bits; } b;
+	b.width = gfx::width(); b.height = gfx::height(); b.stride = b.width;
+	if (b.width <= 0 || b.height <= 0) return;
+	static std::vector<uint32_t> cpuBuf;
+	cpuBuf.assign((size_t)b.width * b.height, 0);
+	b.bits = cpuBuf.data();
+	auto unlockAndPost = [&] { gfx::postOverlay(cpuBuf.data(), b.width, b.height); if (!gfx::ownedByGame()) gfx::drawOverlayAndPresent(); };
 	uint32_t* px = (uint32_t*)b.bits;
 	for (int y = 0; y < b.height; y++)
 		for (int x = 0; x < b.width; x++) px[y * b.stride + x] = 0xff101418;
@@ -190,7 +193,7 @@ void draw(ANativeWindow* w)
 			if (i >= (int)pickEntries.size()) break;
 			text(r + 1, pickEntries[i].label, pickEntries[i].kind == 0 ? 0xffd8d8d8 : 0xff80ff80);
 		}
-		ANativeWindow_unlockAndPost(w);
+		unlockAndPost();
 		return;
 	}
 	text(0, "RA3 Native - " + status + "  (tap here to choose game folder)", 0xff7fd4ff);
@@ -201,7 +204,7 @@ void draw(ANativeWindow* w)
 		const std::string& s = lines[start + r];
 		text(r + 1, s, s.rfind("FATAL", 0) == 0 ? 0xffff6060 : 0xffd8d8d8);
 	}
-	ANativeWindow_unlockAndPost(w);
+	unlockAndPost();
 }
 
 ANativeWindow* window = nullptr;
@@ -274,8 +277,8 @@ int32_t onInput(android_app*, AInputEvent* ev)
 
 void onCmd(android_app* app, int32_t cmd)
 {
-	if (cmd == APP_CMD_INIT_WINDOW) { window = app->window; ANativeWindow_setBuffersGeometry(window, 0, 0, AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM); dirty = true; }
-	if (cmd == APP_CMD_TERM_WINDOW) window = nullptr;
+	if (cmd == APP_CMD_INIT_WINDOW) { window = app->window; gfx::setWindow(window); dirty = true; }
+	if (cmd == APP_CMD_TERM_WINDOW) { gfx::setWindow(nullptr); window = nullptr; }
 }
 }
 
@@ -319,6 +322,7 @@ void android_main(android_app* app)
 			}
 		}
 		tick++;
+		gfx::servicePlatform();
 		if (window && dirty.exchange(false)) draw(window);
 	}
 }

@@ -3,6 +3,7 @@
 // device: resources have real storage (Lock/Unlock work) but nothing is drawn yet.
 #include "d3d9.h"
 #include "d3dx_fx.h"
+#include "gfx.h"
 
 #include <sys/stat.h>
 
@@ -319,17 +320,40 @@ H("IDirect3DDevice9::ShowCursor") { SET(0); } END;
 H("IDirect3DDevice9::GetNumberOfSwapChains") { SET(1); } END;
 H("IDirect3DDevice9::GetSwapChain") { Obj* s = newObj(ISwap); writeOut(ARG(2), s); SET(0); } END;
 H("IDirect3DDevice9::Reset") { uint32_t pp = ARG(1); if (guest::load<uint32_t>(pp) && guest::load<uint32_t>(pp + 4)) { backW = guest::load<uint32_t>(pp); backH = guest::load<uint32_t>(pp + 4); } SET(0); } END;
+static Obj* gBack = nullptr;
+static bool gOffscreenRT = false;   // render target 0 is not the back buffer
+H("IDirect3DDevice9::SetRenderTarget")
+{
+	if (ARG(1) == 0) { Obj* so = objectAt(ARG(2)); gOffscreenRT = so && gBack && so != gBack; }
+	SET(0);
+} END;
+H("IDirect3DDevice9::Clear")
+{
+	static std::atomic<uint32_t> n{0};
+	uint32_t k = ++n;
+	uint32_t zb = ARG(5); float zf; memcpy(&zf, &zb, 4);
+	if (k <= 5) log("d3d9: Clear flags %x color %08x z %g offscreen %d", ARG(3), ARG(4), (double)zf, (int)gOffscreenRT);
+	if (!gOffscreenRT)
+	{
+		if (!gfx::ownedByGame()) gfx::acquire();
+		gfx::clear(ARG(3), ARG(4), zf, ARG(6));
+	}
+	SET(0);
+} END;
 H("IDirect3DDevice9::Present")
 {
 	static std::atomic<uint32_t> frames{0};
 	uint32_t n = ++frames;
 	if (n == 1 || n % 300 == 0) log("d3d9: Present #%u", n);
+	if (!gfx::ownedByGame()) gfx::acquire();
+	gfx::beginFrame();
+	gfx::present(false);
 	std::this_thread::sleep_for(std::chrono::milliseconds(16));
 	SET(0);
 } END;
 H("IDirect3DDevice9::GetBackBuffer")
 {
-	static Obj* back = nullptr;
+	Obj*& back = gBack;
 	if (!back) back = makeSurface(backW, backH, 22, 1, 0);
 	back->ref++;
 	writeOut(ARG(4), back);
