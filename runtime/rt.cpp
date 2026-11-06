@@ -359,6 +359,17 @@ void unsupported(CPU* c, uint32_t va, const char* what)
 
 void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t ecx)
 {
+	if (fn == 0x9c6870u)
+	{
+		static std::atomic<int> cnt{0};
+		static std::atomic<int> nz{0};
+		uint32_t tex = a1 ? guest::load<uint32_t>(a1 + 0x38) : 0;
+		int k = cnt++;
+		if (tex) nz++;
+		if (k < 30 || (tex && nz < 40) || k % 20000 == 0)
+			rt::log("hook SetTextureWrapper this=%08x stage=%u wrapper=%08x d3dtex=%08x (calls %d nonnull %d)", ecx, a0, a1, tex, k, nz.load());
+		return;
+	}
 	if (fn == 0x9b85c0u)
 	{
 		static std::atomic<int> cnt{0};
