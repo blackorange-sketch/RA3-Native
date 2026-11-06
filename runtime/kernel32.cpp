@@ -205,6 +205,7 @@ IMP_STD(K, CreateThread, 6)
 	t->arg = ARG(3);
 	t->suspended = (ARG(4) & 4) != 0;
 	uint32_t h = newHandle(t, KThread);
+	log("CreateThread tid %u fn %08x arg %08x flags %x by t%u", t->tid, t->fn, t->arg, ARG(4), thisThread().tid);
 	if (ARG(5)) guest::store<uint32_t>(ARG(5), t->tid);
 	if (!t->suspended) { t->started = true; spawnHostThread([t] { threadMain(t); }); }
 	SET(h);
@@ -219,6 +220,7 @@ IMP_ID("MSVCR80.dll", "_beginthreadex", beginthreadex, 0)
 	t->arg = ARG(3);
 	t->suspended = (ARG(4) & 4) != 0;
 	uint32_t h = newHandle(t, KThread);
+	log("beginthreadex tid %u fn %08x arg %08x flags %x by t%u", t->tid, t->fn, t->arg, ARG(4), thisThread().tid);
 	if (ARG(5)) guest::store<uint32_t>(ARG(5), t->tid);
 	if (!t->suspended) { t->started = true; spawnHostThread([t] { threadMain(t); }); }
 	SET(h);
