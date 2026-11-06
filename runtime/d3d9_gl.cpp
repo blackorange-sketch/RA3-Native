@@ -770,6 +770,15 @@ void draw(const DrawCall& dc)
 			}
 			log("DD   decl%s stride %u v:%s", de.c_str(), st0.stride, v0.c_str());
 		}
+		if (dn < 2)
+			for (auto& cc : vs->info.ctab)
+			{
+				if (cc.regSet != 2) continue;
+				std::string vv;
+				for (uint32_t r = 0; r < std::min<uint32_t>(cc.regCount, 4); r++)
+					{ char b5[96]; const float* f = dev.vsF + 4 * (cc.regIndex + r); snprintf(b5, sizeof b5, " [%g %g %g %g]", (double)f[0], (double)f[1], (double)f[2], (double)f[3]); vv += b5; }
+				log("DD   VS c %s r%u x%u:%s", cc.name.c_str(), cc.regIndex, cc.regCount, vv.c_str());
+			}
 		log("DD #%d prim %u cnt %u vs %p ps %p%s | z %u zw %u blend %u src %u dst %u cull %u at %u | rt %p", dn++, dc.prim, dc.primCount, (void*)vs, (void*)ps, tx.c_str(),
 			dev.rs[7], dev.rs[14], dev.rs[27], dev.rs[19], dev.rs[20], dev.rs[22], dev.rs[15], (void*)dev.rt0);
 	}
