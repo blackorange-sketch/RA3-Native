@@ -43,7 +43,7 @@ jobs:
           ./analyze game/ra3_1.12.game game/ra3
           mkdir -p lifted
           # RA3_HOOKS: debug hooks (log arguments/result of these functions): 9ff320 = archive (BIG) stream open by path
-          RA3_HOOKS=9ff320,9bfca0,9bfad0 ./lift_pe game/ra3_1.12.game game/ra3.functions.txt --emit-dir lifted 96 | head -3
+          RA3_HOOKS=9ff320,9b85c0 ./lift_pe game/ra3_1.12.game game/ra3.functions.txt --emit-dir lifted 96 | head -3
 
       # The generated code is identical between runs, so ccache makes rebuilds after runtime-only edits take minutes.
       - name: Set up ccache

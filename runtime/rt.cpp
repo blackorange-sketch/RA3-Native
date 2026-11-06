@@ -359,11 +359,24 @@ void unsupported(CPU* c, uint32_t va, const char* what)
 
 void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t ecx)
 {
-	if (fn != 0x9ff320u)
+	if (fn == 0x9b85c0u)
 	{
-		static std::atomic<int> cnt[2];
-		int k = fn == 0x9bfca0u ? 0 : 1;
-		if (cnt[k]++ < 60) rt::log("hook %08x(ecx=%08x, %08x, %08x, %08x) -> eax=%08x", fn, ecx, a0, a1, a2, c->r[EAX]);
+		static std::atomic<int> cnt{0};
+		int k = cnt++;
+		if (k < 6 || k == 500)
+		{
+			rt::log("hook apply-params this=%08x masks lo=%08x hi=%08x", ecx, a0, a1);
+			uint32_t p = guest::load<uint32_t>(ecx + 0x24);
+			int n = 0;
+			while (p && n < 60)
+			{
+				uint32_t nd = p - 8;
+				rt::log("   node %08x mask %08x:%08x setter %08x arg %08x", nd, guest::load<uint32_t>(nd + 0x1c), guest::load<uint32_t>(nd + 0x18), guest::load<uint32_t>(nd + 0x20), guest::load<uint32_t>(nd + 0x28));
+				p = guest::load<uint32_t>(nd + 0xc);
+				if (!p) break;
+				n++;
+			}
+		}
 		return;
 	}
 	rt::log("hook %08x(ecx=%08x, %08x, %08x, %08x) -> eax=%08x", fn, ecx, a0, a1, a2, c->r[EAX]);
