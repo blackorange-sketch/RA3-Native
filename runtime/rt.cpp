@@ -1,3 +1,7 @@
+#include <string>
+#include <chrono>
+#include <thread>
+#include <vector>
 #include <functional>
 #include <unistd.h>
 #include <atomic>
@@ -72,9 +76,40 @@ void traceDump()
 		}
 	}
 }
+void traceProfile(int ms)
+{
+	std::map<std::pair<uint32_t, uint32_t>, int> hist;
+	int n = ringCount < 32 ? (int)ringCount : 32;
+	for (int t = 0; t < ms; t++)
+	{
+		for (int i = 0; i < n; i++)
+		{
+			uint32_t v = rings[i].ring[(*rings[i].pos - 1) & 255];
+			hist[{rings[i].tid, v}]++;
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	for (int i = 0; i < n; i++)
+	{
+		std::vector<std::pair<int, uint32_t>> v;
+		for (auto& kv : hist) if (kv.first.first == rings[i].tid) v.push_back({kv.second, kv.first.second});
+		std::sort(v.rbegin(), v.rend());
+		std::string line;
+		for (size_t k = 0; k < v.size() && k < 6; k++)
+		{
+			char b[96];
+			imports::Entry* e = (v[k].second >> 28) == 0xb ? imports::lookup(v[k].second ^ 0xc0000000u) : nullptr;
+			if (e) snprintf(b, sizeof b, " %s:%d", e->name.c_str(), v[k].first);
+			else snprintf(b, sizeof b, " %08x:%d", v[k].second, v[k].first);
+			line += b;
+		}
+		log("profile t%u (%d samples):%s", rings[i].tid, ms, line.c_str());
+	}
+}
 #else
 void traceRegister(uint32_t) {}
 void traceDump() {}
+void traceProfile(int) {}
 #endif
 
 void fatal(const char* f, ...)

@@ -72,6 +72,7 @@ uint32_t makeTeb(uint32_t stackLow, uint32_t stackHigh, uint32_t tid);
 void setLastError(uint32_t e);
 void traceRegister(uint32_t tid);
 void traceDump();
+void traceProfile(int ms);
 // Starts a detached host thread with a large stack (bionic's default of 1 MiB is too small for lifted code).
 void spawnHostThread(std::function<void()> fn, size_t stackBytes = 64u << 20);
 

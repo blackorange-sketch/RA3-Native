@@ -103,7 +103,8 @@ int launch(const std::string& gameFile)
 			std::this_thread::sleep_for(std::chrono::seconds(20));
 			log("watchdog: %d s since start", i * 20);
 			dumpWaiters();
-			traceDump();
+			if (i <= 2) traceDump();
+			traceProfile(3000);
 		}
 	}).detach();
 	guest::init();
