@@ -54,9 +54,9 @@ GLuint compileStage(GLenum type, const std::string& src, const char* what)
 	glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
 	if (!ok)
 	{
-		char buf[1024];
+		char buf[1024] = {0};
 		glGetShaderInfoLog(s, sizeof buf, nullptr, buf);
-		log("GL: %s shader compile failed: %s", what, buf);
+		log("GL: %s shader compile failed (ctx %p, tid %d, glErr 0x%x, isShader %d): %s", what, (void*)eglGetCurrentContext(), (int)gettid(), glGetError(), (int)glIsShader(s), buf);
 		glDeleteShader(s);
 		return 0;
 	}
@@ -606,6 +606,7 @@ void clear(uint32_t count, uint32_t rects, uint32_t flags, uint32_t color, float
 
 void draw(const DrawCall& dc)
 {
+	{ static int n = 0; if (n++ < 5) log("GL: draw on tid %d ctx %p", (int)gettid(), (void*)eglGetCurrentContext()); }
 	if (!gOk) return;
 	ShaderObj *vs = dev.vs, *ps = dev.ps;
 	static int noShader = 0;
@@ -718,6 +719,7 @@ void draw(const DrawCall& dc)
 
 void present()
 {
+	{ static int n = 0; if (n++ < 5) log("GL: present on tid %d ctx %p", (int)gettid(), (void*)eglGetCurrentContext()); }
 	if (!gOk) { std::this_thread::sleep_for(std::chrono::milliseconds(16)); return; }
 	gfx::beginFrame();
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);

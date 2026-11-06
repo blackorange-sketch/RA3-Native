@@ -5,6 +5,11 @@
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
 #include <android/native_window.h>
+#include <unistd.h>
+#include <sys/syscall.h>
+#ifndef gettid
+#define gettid() ((int)syscall(SYS_gettid))
+#endif
 
 #include <atomic>
 #include <chrono>
@@ -169,7 +174,7 @@ bool acquire()
 	ownerIsGame = true;
 	bool ok = makeCurrentHere();
 	curValid = ok;
-	rt::log("EGL: game thread owns the context (%s)", ok ? "ok" : "FAILED");
+	rt::log("EGL: game thread owns the context (%s) tid %d", ok ? "ok" : "FAILED", (int)gettid());
 	return ok;
 }
 
