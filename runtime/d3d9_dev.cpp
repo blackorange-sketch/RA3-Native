@@ -186,6 +186,17 @@ static void doDraw(const DrawCall& dc)
 {
 	uint32_t n = ++drawCount;
 	if (n <= 12) log("d3d9: draw #%u prim %u count %u indexed %d vs %p ps %p vdecl %p fvf %x", n, dc.prim, dc.primCount, (int)dc.indexed, (void*)dev.vs, (void*)dev.ps, (void*)dev.vdecl, dev.fvf);
+	if (n >= 30000 && n < 30012)
+	{
+		Stream& st = dev.streams[0];
+		std::string vals;
+		if (st.vb && st.vb->data && st.stride)
+		{
+			const float* f = (const float*)((const uint8_t*)guest::host(st.vb->data) + st.offset + (dc.indexed ? 0 : (uint64_t)dc.baseVertex * st.stride));
+			for (uint32_t i = 0; i < std::min<uint32_t>(st.stride / 4 * 3, 24); i++) { char b[24]; snprintf(b, sizeof b, " %g", (double)f[i]); vals += b; }
+		}
+		log("d3d9: late draw #%u prim %u cnt %u stride %u vb %p vals:%s | rt %p tex0 %p tex1 %p", n, dc.prim, dc.primCount, st.stride, (void*)st.vb, vals.c_str(), (void*)dev.rt0, (void*)dev.tex[0], (void*)dev.tex[1]);
+	}
 	glr::draw(dc);
 }
 H("IDirect3DDevice9::DrawPrimitive")
