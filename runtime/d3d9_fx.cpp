@@ -1,4 +1,5 @@
 // ID3DXEffect: parameter storage and handles, technique/pass application onto the device state.
+#include <set>
 #include <mutex>
 #include <tuple>
 
@@ -375,9 +376,16 @@ H("ID3DXEffect::SetFloatArray") { PRef r = refOf(o, ARG(1)); if (r.valid() && AR
 static void noteBad(const char* m, uint32_t h, const PRef& r)
 {
 	static int n = 0;
-	if (n >= 25) return;
+	if (!r.valid() && n >= 25) return;
 	if (!r.valid()) { n++; const HRec* rc = getRec(h); log("fx: %s with invalid handle %x (rec %p kind %d)", m, h, (const void*)rc, rc ? (int)rc->kind : -1); }
-	else if (r.p->cls == 4 || r.p->type >= 5) { n++; log("fx: %s on object param '%s' type %u cls %u", m, r.p->name.c_str(), r.p->type, r.p->cls); }
+	else
+	{
+		static std::set<const void*> seen;
+		static int m2 = 0;
+		if (m2 < 120 && seen.insert(r.p).second) { m2++; log("fx: %s writes param '%s' type %u cls %u rows %u cols %u smpTex %u", m, r.p->name.c_str(), r.p->type, r.p->cls, r.p->rows, r.p->cols, r.p->smpTex); }
+	}
+	if (!r.valid()) {}
+	else if ((r.p->cls == 4 || r.p->type >= 5) && n < 25) { n++; log("fx: %s on object param '%s' type %u cls %u", m, r.p->name.c_str(), r.p->type, r.p->cls); }
 }
 H("ID3DXEffect::SetVector")
 {
