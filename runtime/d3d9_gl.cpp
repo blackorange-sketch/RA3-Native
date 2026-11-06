@@ -578,11 +578,22 @@ bool init()
 	return gOk;
 }
 
+// The GL context is bound lazily to the first thread that actually renders (the game creates the device on one thread and draws on another).
+bool ensureGl()
+{
+	if (!gInit)
+	{
+		bool a = gfx::acquire();
+		log("GL: first rendering call on tid %d (acquire %d)", (int)gettid(), (int)a);
+		init();
+	}
+	return gOk;
+}
 bool ready() { return gOk; }
 
 void clear(uint32_t count, uint32_t rects, uint32_t flags, uint32_t color, float z, uint32_t stencil)
 {
-	if (!gOk) return;
+	if (!ensureGl()) return;
 	bindTargets();
 	uint32_t tw, th;
 	targetSize(dev.rt0, tw, th);
@@ -612,7 +623,7 @@ void clear(uint32_t count, uint32_t rects, uint32_t flags, uint32_t color, float
 void draw(const DrawCall& dc)
 {
 	{ static int n = 0; if (n++ < 5) log("GL: draw on tid %d ctx %p", (int)gettid(), (void*)eglGetCurrentContext()); }
-	if (!gOk) return;
+	if (!ensureGl()) return;
 	ShaderObj *vs = dev.vs, *ps = dev.ps;
 	static int noShader = 0;
 	if (!vs || !ps)
@@ -725,7 +736,7 @@ void draw(const DrawCall& dc)
 void present()
 {
 	{ static int n = 0; if (n++ < 5) log("GL: present on tid %d ctx %p", (int)gettid(), (void*)eglGetCurrentContext()); }
-	if (!gOk) { std::this_thread::sleep_for(std::chrono::milliseconds(16)); return; }
+	if (!ensureGl()) { std::this_thread::sleep_for(std::chrono::milliseconds(16)); return; }
 	gfx::beginFrame();
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 	int sw = gfx::width(), sh = gfx::height();
@@ -757,7 +768,7 @@ void present()
 
 void stretchRect(Obj* src, const int32_t* sr, Obj* dst, const int32_t* dr, uint32_t filter)
 {
-	if (!gOk) return;
+	if (!ensureGl()) return;
 	uint32_t sw, sh, dw, dh;
 	targetSize(src, sw, sh);
 	targetSize(dst, dw, dh);

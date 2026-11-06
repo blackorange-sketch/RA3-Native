@@ -321,8 +321,6 @@ H("IDirect3D9::CreateDevice")
 	backW = w; backH = h;
 	log("D3D9 CreateDevice: %ux%u fmt %u windowed %u depth %u", w, h, guest::load<uint32_t>(pp + 8), guest::load<uint32_t>(pp + 32), guest::load<uint32_t>(pp + 40));
 	theDevice = newObj(IDevice);
-	gfx::acquire();
-	glr::init();
 	writeOut(ARG(6), theDevice);
 	SET(0);
 } END;
