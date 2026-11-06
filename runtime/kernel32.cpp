@@ -49,6 +49,7 @@ struct Waitable
 	int count = 0, maxCount = 1;   // semaphore
 	uint32_t owner = 0, depth = 0; // mutex
 	bool done = false;
+	uint32_t sets = 0, createdBy = 0;
 };
 std::atomic<bool> dummy;
 
@@ -250,10 +251,11 @@ IMP_STD(K, CreateEventA, 4)
 {
 	auto* w = new Waitable;
 	w->kind = KEvent; w->manual = ARG(1) != 0; w->signaled = ARG(2) != 0;
+	w->createdBy = thisThread().tid;
 	SET(newHandle(w, KEvent));
 }
 IMP_STD(K, OpenEventA, 3) { SET(0); setLastError(2); }
-IMP_STD(K, SetEvent, 1) { if (auto* w = asWaitable(ARG(0))) { std::lock_guard<std::mutex> l(waitMu); w->signaled = true; waitCv.notify_all(); } SET(1); }
+IMP_STD(K, SetEvent, 1) { if (auto* w = asWaitable(ARG(0))) { std::lock_guard<std::mutex> l(waitMu); w->signaled = true; w->sets++; waitCv.notify_all(); } SET(1); }
 IMP_STD(K, ResetEvent, 1) { if (auto* w = asWaitable(ARG(0))) { std::lock_guard<std::mutex> l(waitMu); w->signaled = false; } SET(1); }
 static void createMutex(CPU* c, int initialOwnerArg)
 {
@@ -277,6 +279,7 @@ IMP_STD(K, CreateSemaphoreA, 4)
 {
 	auto* w = new Waitable;
 	w->kind = KSem; w->count = (int)ARG(1); w->maxCount = (int)ARG(2);
+	w->createdBy = thisThread().tid;
 	SET(newHandle(w, KSem));
 }
 IMP_STD(K, ReleaseSemaphore, 3)
@@ -286,6 +289,7 @@ IMP_STD(K, ReleaseSemaphore, 3)
 	std::lock_guard<std::mutex> l(waitMu);
 	if (ARG(2)) guest::store<int32_t>(ARG(2), w->count);
 	w->count += (int)ARG(1);
+	w->sets++;
 	waitCv.notify_all();
 	SET(1);
 }
@@ -304,7 +308,13 @@ void dumpWaiters()
 {
 	std::lock_guard<std::mutex> l(waitMu);
 	std::string s;
-	for (auto& kv : gWaiting) { char b[64]; snprintf(b, sizeof b, " [t%u h%x ms%u]", kv.first, kv.second.first, kv.second.second); s += b; }
+	for (auto& kv : gWaiting)
+	{
+		char b[160];
+		Waitable* w = asWaitable(kv.second.first);
+		snprintf(b, sizeof b, " [t%u h%x ms%u kind %d sig %d cnt %d sets %u by t%u]", kv.first, kv.second.first, kv.second.second, w ? (int)w->kind : -1, w ? (int)w->signaled : -1, w ? w->count : -1, w ? w->sets : 0, w ? w->createdBy : 0);
+		s += b;
+	}
 	rt::log("stats: reads %llu (%llu bytes), waits %llu, blocked:%s", (unsigned long long)gReadCalls, (unsigned long long)gReadBytes, (unsigned long long)gWaitCalls, s.c_str());
 }
 IMP_STD(K, DuplicateHandle, 7) { guest::store<uint32_t>(ARG(3), ARG(1)); SET(1); }
