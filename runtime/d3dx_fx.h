@@ -17,6 +17,7 @@ struct FxAnn
 	std::string name, str;
 	uint32_t type = 0, cls = 0, rows = 1, cols = 1, elements = 0;
 	std::vector<uint32_t> vals;   // raw 32-bit values (numeric annotations)
+	uint32_t objId = 0xffffffffu;   // string annotations: id of the string object holding the value
 };
 // D3DXPARAMETER_CLASS: 0 scalar, 1 vector, 2 matrix rows, 3 matrix columns, 4 object, 5 struct
 // D3DXPARAMETER_TYPE: 0 void, 1 bool, 2 int, 3 float, 4 string, 5 texture, 6 texture1d, 7 texture2d, 8 texture3d, 9 texturecube,
@@ -40,6 +41,7 @@ struct FxParam
 	std::vector<FxAnn> anns;
 	FxType ty;
 	uint32_t dv = 0;          // default value offset (relative to base)
+	std::string str;          // string parameters: default value (resolved from the object table)
 	std::vector<uint32_t> val;   // current value, tightly packed (4 bytes per scalar); object params hold ids / unused
 	uint32_t texObj = 0;      // texture parameters: guest address of the bound texture object
 	uint32_t smpTex = 0;      // sampler parameters: index of the texture parameter it samples + 1
@@ -150,10 +152,7 @@ inline bool annotation(Rd& r, size_t base, size_t& p, FxAnn& a)
 	if (t.type == 4)   // string: value is the offset of a length-prefixed string
 	{
 		size_t vp = base + valOff;
-		uint32_t so = r.u32(vp);
-		Rd probe = r;
-		std::string s = probe.str(base, so);
-		if (probe.ok) a.str = s;
+		a.objId = r.u32(vp);   // D3DX stores string values in the object table; the value is the object id
 	}
 	else if (t.type >= 1 && t.type <= 3 && t.cls <= 3)
 	{
@@ -262,6 +261,20 @@ inline bool tryParse(const uint8_t* d, size_t n, uint32_t hdr, FxInfo& fx)
 			fx.res.push_back(e);
 		}
 	}
+	// resolve string annotations and string parameter defaults through the object table
+	auto cstr = [&](uint32_t id) -> std::string {
+		auto it = fx.objs.find(id);
+		if (it == fx.objs.end()) return "";
+		const char* sp = (const char*)d + it->second.first;
+		return std::string(sp, strnlen(sp, it->second.second));
+	};
+	auto fix = [&](std::vector<FxAnn>& v) { for (auto& a : v) if (a.type == 4 && a.objId != 0xffffffffu) a.str = cstr(a.objId); };
+	for (auto& pr : fx.params)
+	{
+		fix(pr.anns);
+		if (pr.type == 4 && pr.dv && base + pr.dv + 4 <= n) { uint32_t id; memcpy(&id, d + base + pr.dv, 4); pr.str = cstr(id); }
+	}
+	for (auto& t : fx.techs) { fix(t.anns); for (auto& ps : t.passes) fix(ps.anns); }
 	return true;
 }
 }   // namespace fxparse

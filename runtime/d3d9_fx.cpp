@@ -732,8 +732,10 @@ H("ID3DXEffect::GetAnnotationByName")
 H("ID3DXEffect::GetString")
 {
 	const FxAnn* an = annOf(ARG(1));
-	{ static int n = 0; if (n++ < 80) log("fx: GetString h %x -> %s '%s'", ARG(1), an ? "ann" : "NOT-ANN", an ? an->str.c_str() : ""); }
-	if (ARG(2)) guest::store<uint32_t>(ARG(2), newStr(an ? an->str : ""));
+	std::string sv = an ? an->str : "";
+	if (!an) { PRef pr = refOf(o, ARG(1)); if (pr.valid()) sv = pr.p->str; }
+	{ static int n = 0; if (n++ < 80) log("fx: GetString h %x -> %s '%s'", ARG(1), an ? "ann" : "param", sv.c_str()); }
+	if (ARG(2)) guest::store<uint32_t>(ARG(2), newStr(sv));
 	SET(0);
 } END;
 H("ID3DXEffect::SetTechnique") { uint32_t idx; if (F(o) && techOf(o, ARG(1), &idx)) F(o)->current = idx; SET(0); } END;
