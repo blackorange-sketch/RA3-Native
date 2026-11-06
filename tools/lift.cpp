@@ -448,7 +448,105 @@ struct Gen
 			e.line("if (" + c + ") " + jumpTo(t));
 		};
 
-		switch (id)
+		// ---- MMX: any instruction with an mm register operand (mm registers live in c->mm[])
+		bool mmxHandled = false;
+		{
+			auto isM = [&](const cs_x86_op& o) { return o.type == X86_OP_REG && o.reg >= X86_REG_MM0 && o.reg <= X86_REG_MM7; };
+			bool anyM = x.op_count > 0 && (isM(op(0)) || (x.op_count > 1 && isM(op(1))));
+			// SSE2 integer forms (xmm operands): lane-wise ops run the MMX helper on each 64-bit half
+			bool xmmInt = x.op_count == 2 && isX(op(0)) && (isX(op(1)) || op(1).type == X86_OP_MEM || op(1).type == X86_OP_IMM);
+			if (xmmInt)
+			{
+				const char* lane = nullptr; const char* full = nullptr; bool shiftByte = false;
+				switch (id)
+				{
+#define XLANE(ID, F) case X86_INS_##ID: lane = #F; break;
+#define XFULL(ID, F) case X86_INS_##ID: full = #F; break;
+				XLANE(PADDB, mm_paddb) XLANE(PADDW, mm_paddw) XLANE(PADDD, mm_paddd) XLANE(PSUBB, mm_psubb) XLANE(PSUBW, mm_psubw) XLANE(PSUBD, mm_psubd)
+				XLANE(PADDSB, mm_paddsb) XLANE(PADDSW, mm_paddsw) XLANE(PSUBSB, mm_psubsb) XLANE(PSUBSW, mm_psubsw)
+				XLANE(PADDUSB, mm_paddusb) XLANE(PADDUSW, mm_paddusw) XLANE(PSUBUSB, mm_psubusb) XLANE(PSUBUSW, mm_psubusw)
+				XLANE(PMULLW, mm_pmullw) XLANE(PMULHW, mm_pmulhw) XLANE(PMULHUW, mm_pmulhuw) XLANE(PMADDWD, mm_pmaddwd)
+				XLANE(PCMPEQB, mm_pcmpeqb) XLANE(PCMPEQW, mm_pcmpeqw) XLANE(PCMPEQD, mm_pcmpeqd)
+				XLANE(PCMPGTB, mm_pcmpgtb) XLANE(PCMPGTW, mm_pcmpgtw) XLANE(PCMPGTD, mm_pcmpgtd)
+				XLANE(PSLLW, mm_psllw) XLANE(PSLLD, mm_pslld) XLANE(PSLLQ, mm_psllq) XLANE(PSRLW, mm_psrlw) XLANE(PSRLD, mm_psrld) XLANE(PSRLQ, mm_psrlq)
+				XLANE(PSRAW, mm_psraw) XLANE(PSRAD, mm_psrad)
+				XLANE(PMAXSW, mm_pmaxsw) XLANE(PMINSW, mm_pminsw) XLANE(PMAXUB, mm_pmaxub) XLANE(PMINUB, mm_pminub) XLANE(PAVGB, mm_pavgb) XLANE(PAVGW, mm_pavgw) XLANE(PSADBW, mm_psadbw)
+				XFULL(PUNPCKLBW, xmm_punpcklbw) XFULL(PUNPCKHBW, xmm_punpckhbw) XFULL(PUNPCKLWD, xmm_punpcklwd) XFULL(PUNPCKHWD, xmm_punpckhwd)
+				XFULL(PUNPCKLDQ, xmm_punpckldq) XFULL(PUNPCKHDQ, xmm_punpckhdq) XFULL(PUNPCKLQDQ, xmm_punpcklqdq) XFULL(PUNPCKHQDQ, xmm_punpckhqdq)
+				XFULL(PACKSSWB, xmm_packsswb) XFULL(PACKUSWB, xmm_packuswb) XFULL(PACKSSDW, xmm_packssdw)
+#undef XLANE
+#undef XFULL
+				case X86_INS_PSLLDQ: full = "xmm_pslldq"; shiftByte = true; break;
+				case X86_INS_PSRLDQ: full = "xmm_psrldq"; shiftByte = true; break;
+				default: break;
+				}
+				bool shift = lane && (id == X86_INS_PSLLW || id == X86_INS_PSLLD || id == X86_INS_PSLLQ || id == X86_INS_PSRLW || id == X86_INS_PSRLD || id == X86_INS_PSRLQ || id == X86_INS_PSRAW || id == X86_INS_PSRAD);
+				if (lane)
+				{
+					std::string d = X(op(0));
+					if (shift && op(1).type == X86_OP_IMM) e.line(fmt("{ uint64_t n = %uu; %s.q[0] = %s(%s.q[0], n); %s.q[1] = %s(%s.q[1], n); }", (unsigned)op(1).imm & 0xffu, d.c_str(), lane, d.c_str(), d.c_str(), lane, d.c_str()));
+					else if (shift) e.line("{ uint64_t n = " + src128(op(1)) + ".q[0]; " + d + ".q[0] = " + lane + "(" + d + ".q[0], n); " + d + ".q[1] = " + lane + "(" + d + ".q[1], n); }");
+					else e.line("{ X128 b = " + src128(op(1)) + "; " + d + ".q[0] = " + lane + "(" + d + ".q[0], b.q[0]); " + d + ".q[1] = " + lane + "(" + d + ".q[1], b.q[1]); }");
+					mmxHandled = true;
+				}
+				else if (full && shiftByte && op(1).type == X86_OP_IMM) { e.line(X(op(0)) + " = " + full + "(" + X(op(0)) + fmt(", %uu);", (unsigned)op(1).imm & 0xffu)); mmxHandled = true; }
+				else if (full && !shiftByte) { e.line("{ X128 b = " + src128(op(1)) + "; " + X(op(0)) + " = " + full + "(" + X(op(0)) + ", b); }"); mmxHandled = true; }
+			}
+			if (mmxHandled) {}
+			else if (id == X86_INS_EMMS) { mmxHandled = true; e.line("/* emms */"); }
+			else if (anyM)
+			{
+				auto M = [&](const cs_x86_op& o) { return fmt("c->mm[%d]", (int)(o.reg - X86_REG_MM0)); };
+				auto S = [&](const cs_x86_op& o) -> std::string {
+					if (isM(o)) return M(o);
+					if (o.type == X86_OP_IMM) return fmt("(uint64_t)%uu", (unsigned)o.imm & 0xffu);
+					if (o.type == X86_OP_MEM) return "guest::load<uint64_t>(" + e.ea(o) + ")";
+					return "0";
+				};
+				const char* fn = nullptr;
+				switch (id)
+				{
+#define MMOP(ID, F) case X86_INS_##ID: fn = #F; break;
+				MMOP(PADDB, mm_paddb) MMOP(PADDW, mm_paddw) MMOP(PADDD, mm_paddd) MMOP(PSUBB, mm_psubb) MMOP(PSUBW, mm_psubw) MMOP(PSUBD, mm_psubd)
+				MMOP(PADDSB, mm_paddsb) MMOP(PADDSW, mm_paddsw) MMOP(PSUBSB, mm_psubsb) MMOP(PSUBSW, mm_psubsw)
+				MMOP(PADDUSB, mm_paddusb) MMOP(PADDUSW, mm_paddusw) MMOP(PSUBUSB, mm_psubusb) MMOP(PSUBUSW, mm_psubusw)
+				MMOP(PMULLW, mm_pmullw) MMOP(PMULHW, mm_pmulhw) MMOP(PMULHUW, mm_pmulhuw) MMOP(PMADDWD, mm_pmaddwd)
+				MMOP(PCMPEQB, mm_pcmpeqb) MMOP(PCMPEQW, mm_pcmpeqw) MMOP(PCMPEQD, mm_pcmpeqd)
+				MMOP(PCMPGTB, mm_pcmpgtb) MMOP(PCMPGTW, mm_pcmpgtw) MMOP(PCMPGTD, mm_pcmpgtd)
+				MMOP(PUNPCKLBW, mm_punpcklbw) MMOP(PUNPCKHBW, mm_punpckhbw) MMOP(PUNPCKLWD, mm_punpcklwd) MMOP(PUNPCKHWD, mm_punpckhwd)
+				MMOP(PUNPCKLDQ, mm_punpckldq) MMOP(PUNPCKHDQ, mm_punpckhdq)
+				MMOP(PACKSSWB, mm_packsswb) MMOP(PACKUSWB, mm_packuswb) MMOP(PACKSSDW, mm_packssdw)
+				MMOP(PSLLW, mm_psllw) MMOP(PSLLD, mm_pslld) MMOP(PSLLQ, mm_psllq) MMOP(PSRLW, mm_psrlw) MMOP(PSRLD, mm_psrld) MMOP(PSRLQ, mm_psrlq)
+				MMOP(PSRAW, mm_psraw) MMOP(PSRAD, mm_psrad)
+				MMOP(PMAXSW, mm_pmaxsw) MMOP(PMINSW, mm_pminsw) MMOP(PMAXUB, mm_pmaxub) MMOP(PMINUB, mm_pminub) MMOP(PAVGB, mm_pavgb) MMOP(PAVGW, mm_pavgw) MMOP(PSADBW, mm_psadbw)
+#undef MMOP
+				default: break;
+				}
+				if (fn && isM(op(0)) && x.op_count == 2)
+				{
+					e.line("{ uint64_t b = " + S(op(1)) + "; " + M(op(0)) + " = " + fn + "(" + M(op(0)) + ", b); }");
+					mmxHandled = true;
+				}
+				else if ((id == X86_INS_PAND || id == X86_INS_POR || id == X86_INS_PXOR || id == X86_INS_PANDN) && isM(op(0)))
+				{
+					const char* o = id == X86_INS_PAND ? "a & b" : id == X86_INS_POR ? "a | b" : id == X86_INS_PXOR ? "a ^ b" : "~a & b";
+					e.line("{ uint64_t a = " + M(op(0)) + ", b = " + S(op(1)) + "; " + M(op(0)) + " = " + o + "; }");
+					mmxHandled = true;
+				}
+				else if (id == X86_INS_MOVQ)
+				{
+					if (isM(op(0))) { e.line("{ uint64_t v = " + S(op(1)) + "; " + M(op(0)) + " = v; }"); mmxHandled = true; }
+					else if (isM(op(1)) && op(0).type == X86_OP_MEM) { e.line("guest::store<uint64_t>(" + e.ea(op(0)) + ", " + M(op(1)) + ");"); mmxHandled = true; }
+				}
+				else if (id == X86_INS_MOVD)
+				{
+					if (isM(op(0))) { e.line("{ uint32_t v = " + e.rd(op(1), nullptr, 4) + "; " + M(op(0)) + " = v; }"); mmxHandled = true; }
+					else if (isM(op(1))) { e.line(e.wr(op(0), "(uint32_t)" + M(op(1)))); mmxHandled = true; }
+				}
+				if (!mmxHandled) { ok = false; mmxHandled = true; }
+			}
+		}
+		if (!mmxHandled) switch (id)
 		{
 		case X86_INS_NOP: case X86_INS_PAUSE: case X86_INS_FNOP: break;
 

@@ -25,6 +25,7 @@ struct CPU
 	uint32_t fsbase;    // guest address of the TEB (fs:0)
 	uint32_t df;        // direction flag, kept across calls
 	X128 xmm[8];
+	uint64_t mm[8] = {};   // MMX registers (not aliased with the x87 stack)
 	double st[8];       // x87 stack as doubles (see docs/PLAN.md: precision follows the control word)
 	uint32_t top = 0;   // x87 TOP
 	uint16_t fcw = 0x37f;
