@@ -723,6 +723,16 @@ void draw(const DrawCall& dc)
 		boundBuf = gUpVbo;
 	}
 	const uint32_t nvAll = (uint32_t)primVertices(dc.prim, dc.primCount);
+	// exact vertex range from the indices: the game passes numVertices for a whole buffer
+	uint32_t useMin = dc.minIndex, useCount = dc.numVertices;
+	if (dc.indexed && !dc.upIdx && dev.ib && dev.ib->data && (uint64_t)(dc.startIndex + nvAll) * (dev.ib->fmt == 102 ? 4 : 2) <= dev.ib->size && nvAll)
+	{
+		const uint8_t* ip = (const uint8_t*)guest::host(dev.ib->data) + (uint64_t)dc.startIndex * (dev.ib->fmt == 102 ? 4 : 2);
+		uint32_t lo = 0xffffffffu, hi = 0;
+		if (dev.ib->fmt == 102) for (uint32_t i = 0; i < nvAll; i++) { uint32_t v; memcpy(&v, ip + 4 * i, 4); lo = std::min(lo, v); hi = std::max(hi, v); }
+		else for (uint32_t i = 0; i < nvAll; i++) { uint16_t v; memcpy(&v, ip + 2 * i, 2); lo = std::min<uint32_t>(lo, v); hi = std::max<uint32_t>(hi, v); }
+		useMin = lo; useCount = hi - lo + 1;
+	}
 	int64_t ringBase[16];
 	for (int i = 0; i < 16; i++) ringBase[i] = -2; // -2: not tried yet, -1: not on the ring
 	for (auto& e : els)
@@ -751,13 +761,13 @@ void draw(const DrawCall& dc)
 				ringBase[si] = -1;
 				if ((st.vb->usage & 0x200) && st.vb->data && stride)
 				{
-					int64_t first = dc.indexed ? (int64_t)dc.baseVertex + dc.minIndex : dc.baseVertex;
-					int64_t count = dc.indexed ? dc.numVertices : nvAll;
+					int64_t first = dc.indexed ? (int64_t)dc.baseVertex + useMin : dc.baseVertex;
+					int64_t count = dc.indexed ? useCount : nvAll;
 					int64_t avail = ((int64_t)st.vb->size - (int64_t)st.offset) / (int64_t)stride - first;
 					if (count > avail) count = avail;
 					if (first >= 0 && count > 0)
 					{
-						uint32_t head = dc.indexed ? dc.minIndex * stride : 0;
+						uint32_t head = dc.indexed ? useMin * stride : 0;
 						int64_t at = ringPut(GL_ARRAY_BUFFER, gRingVbo, gRingVPos, kRingV, nullptr, head,
 							(const uint8_t*)guest::host(st.vb->data) + st.offset + (uint64_t)first * stride, (uint32_t)(count * stride));
 						if (at >= 0) ringBase[si] = at - head;
