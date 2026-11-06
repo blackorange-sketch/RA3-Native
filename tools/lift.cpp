@@ -1121,7 +1121,8 @@ Result liftFunction(Reader& r, uint32_t entry, const Options& opt)
 					for (uint32_t k = 0; k < 2048; k++)
 					{
 						uint32_t v;
-						if (!r.read(tb + k * 4, (uint8_t*)&v, 4) || !r.isCode(v) || isEntryOther(v)) break;
+						if (!r.read(tb + k * 4, (uint8_t*)&v, 4) || !r.isCode(v)) break;
+						if (isEntryOther(v)) continue;   // a case that is another function's entry: reached via the default tail call
 						in.succ.push_back(v);
 						work.push_back(v);
 					}
