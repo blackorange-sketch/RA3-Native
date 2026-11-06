@@ -116,3 +116,49 @@ IMP_ID(U, "MessageBoxA", MessageBoxA, 16) { log("MessageBoxA: %s | %s", gstr(ARG
 IMP_ID(U, "MessageBoxW", MessageBoxW, 16) { log("MessageBoxW: %s | %s", utf16to8(gwstr(ARG(2))).c_str(), utf16to8(gwstr(ARG(1))).c_str()); SET(1); }
 IMP_ID("GDI32.dll", "GetStockObject", GetStockObject, 4) { SET(0x50001); }
 IMP_ID("NETAPI32.dll", "Netbios", Netbios, 4) { SET(0x0b); }
+
+// ---- window messages: the message queue is empty for now (input is delivered later by the Android layer)
+IMP_ID(U, "PeekMessageA", PeekMessageA, 20) { SET(0); }
+IMP_ID(U, "GetMessageA", GetMessageA, 16)
+{
+	usleep(10000);
+	if (ARG(0)) memset(guest::host(ARG(0)), 0, 28);   // WM_NULL
+	SET(1);
+}
+IMP_ID(U, "TranslateMessage", TranslateMessage, 4) { SET(0); }
+IMP_ID(U, "DispatchMessageA", DispatchMessageA, 4) { SET(0); }
+IMP_ID(U, "PostQuitMessage", PostQuitMessage, 4) { log("PostQuitMessage(%d)", (int)ARG(0)); SET(0); }
+IMP_ID(U, "GetWindowRect", GetWindowRect, 8) { uint32_t r = ARG(1); guest::store<uint32_t>(r, 0); guest::store<uint32_t>(r + 4, 0); guest::store<uint32_t>(r + 8, 800); guest::store<uint32_t>(r + 12, 600); SET(1); }
+IMP_ID(U, "ScreenToClient", ScreenToClient, 8) { SET(1); }
+IMP_ID(U, "SetWindowTextA", SetWindowTextA, 8) { SET(1); }
+IMP_ID(U, "FindWindowA", FindWindowA, 8) { SET(0); }
+IMP_ID(U, "GetSystemMenu", GetSystemMenu, 8) { SET(0); }
+IMP_ID(U, "DeleteMenu", DeleteMenu, 12) { SET(0); }
+IMP_ID(U, "DrawMenuBar", DrawMenuBar, 4) { SET(1); }
+IMP_ID(U, "EnumDisplayDevicesA", EnumDisplayDevicesA, 16) { SET(0); }
+IMP_ID(U, "GetKeyboardLayoutList", GetKeyboardLayoutList, 8) { if (ARG(0) && ARG(1)) guest::store<uint32_t>(ARG(1), 0x04090409); SET(1); }
+IMP_ID(U, "EmptyClipboard", EmptyClipboard, 0) { SET(1); }
+IMP_ID(U, "SetClipboardData", SetClipboardData, 8) { SET(0); }
+IMP_ID(U, "IsClipboardFormatAvailable", IsClipboardFormatAvailable, 4) { SET(0); }
+IMP_ID(U, "GetDlgItem", GetDlgItem, 8) { SET(0); }
+IMP_ID(U, "SendDlgItemMessageA", SendDlgItemMessageA, 20) { SET(0); }
+IMP_ID(U, "EndDialog", EndDialog, 8) { SET(1); }
+IMP_ID(U, "DialogBoxIndirectParamA", DialogBoxIndirectParamA, 20) { log("DialogBoxIndirectParamA (ignored)"); SET(1); }
+
+// ---- other missing imports (fail cleanly / report "nothing available")
+IMP_ID(SHE, "ShellExecuteA", ShellExecuteA, 24) { SET(33); }
+IMP_ID(ADV, "OpenProcessToken", OpenProcessToken, 12) { SET(0); }
+IMP_ID(ADV, "OpenThreadToken", OpenThreadToken, 16) { SET(0); }
+IMP_ID(ADV, "LookupPrivilegeValueA", LookupPrivilegeValueA, 12) { SET(0); }
+IMP_ID(ADV, "AdjustTokenPrivileges", AdjustTokenPrivileges, 24) { SET(0); }
+IMP_ID("USP10.dll", "ScriptItemize", ScriptItemize, 28) { SET(0x80004005); }
+IMP_ID("USP10.dll", "ScriptBreak", ScriptBreak, 16) { SET(0x80004005); }
+IMP_ID("WS2_32.dll", "WSARecv", WSARecv, 28) { SET(0xffffffff); }
+IMP_ID("WS2_32.dll", "WSARecvFrom", WSARecvFrom, 36) { SET(0xffffffff); }
+IMP_ID("WS2_32.dll", "WSAGetOverlappedResult", WSAGetOverlappedResult, 20) { SET(0); }
+
+// msvcp80!_FInf: float infinity constant (data export)
+namespace
+{
+struct FInfReg { FInfReg() { imports::registerData("msvcp80.dll", "_FInf", 16, []() -> uint32_t { return 0x7f800000u; }); } } fInfReg;
+}

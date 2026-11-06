@@ -305,6 +305,44 @@ IMP_C(DLL, fgets)
 	SET(r ? ARG(0) : 0);
 }
 IMP_C(DLL, _fileno) { SET(guest::load<uint32_t>(ARG(0) + 16)); }
+IMP_C(DLL, _fstat64i32)
+{
+	// fd is the fake id stored in the guest FILE; struct _stat64i32 is 48 bytes
+	FILE* f = nullptr;
+	{
+		std::lock_guard<std::mutex> l(fmu);
+		for (auto& [g, hf] : files) if (guest::load<uint32_t>(g + 16) == ARG(0)) { f = hf; break; }
+	}
+	struct stat st{};
+	if (!f || fstat(fileno(f), &st) != 0) { SET((uint32_t)-1); return; }
+	uint32_t o = ARG(1);
+	memset(guest::host(o), 0, 48);
+	guest::store<uint16_t>(o + 6, (uint16_t)(S_ISDIR(st.st_mode) ? 0x4000 : 0x8000));
+	guest::store<uint16_t>(o + 8, 1);
+	guest::store<uint32_t>(o + 20, (uint32_t)st.st_size);
+	guest::store<uint64_t>(o + 24, (uint64_t)st.st_atime);
+	guest::store<uint64_t>(o + 32, (uint64_t)st.st_mtime);
+	guest::store<uint64_t>(o + 40, (uint64_t)st.st_ctime);
+	SET(0);
+}
+IMP_C(DLL, mbstowcs)
+{
+	std::u16string w = utf8to16(gstr(ARG(1)));
+	if (!ARG(0)) { SET((uint32_t)w.size()); return; }
+	uint32_t n = std::min<uint32_t>((uint32_t)w.size(), ARG(2));
+	for (uint32_t i = 0; i < n; i++) guest::store<uint16_t>(ARG(0) + 2 * i, w[i]);
+	if (n < ARG(2)) guest::store<uint16_t>(ARG(0) + 2 * n, 0);
+	SET(n);
+}
+// fscanf: scans one line per call (enough for the line-oriented config files the game reads)
+IMP_C(DLL, fscanf)
+{
+	FILE* f = hostFile(ARG(0));
+	char line[2048];
+	if (!f || !fgets(line, sizeof line, f)) { SET((uint32_t)-1); return; }
+	ArgReader ap{c->r[ESP] + 12};
+	SET((uint32_t)scanA(line, gstr(ARG(1)), ap));
+}
 IMP_C(DLL, remove) { SET((uint32_t)remove(hostPath(gstr(ARG(0))).c_str())); }
 IMP_C(DLL, _unlink) { SET((uint32_t)unlink(hostPath(gstr(ARG(0))).c_str())); }
 IMP_C(DLL, rename) { SET((uint32_t)rename(hostPath(gstr(ARG(0))).c_str(), hostPath(gstr(ARG(1))).c_str())); }

@@ -745,4 +745,34 @@ IMP_STD(K, FindNextFileW, 2)
 	fillFind(ARG(1), fo->dirHost, fo->names[fo->pos++], true);
 	SET(1);
 }
+IMP_STD(K, FindNextFileA, 2)
+{
+	auto* fo = (FindObj*)getHandle(ARG(0), KFind);
+	if (!fo || fo->pos >= fo->names.size()) { setLastError(18); SET(0); return; }
+	fillFind(ARG(1), fo->dirHost, fo->names[fo->pos++], false);
+	SET(1);
+}
+IMP_STD(K, lstrcpyW, 2)
+{
+	uint32_t d = ARG(0), sp = ARG(1), i = 0;
+	for (;; i++) { uint16_t ch = guest::load<uint16_t>(sp + 2 * i); guest::store<uint16_t>(d + 2 * i, ch); if (!ch) break; }
+	SET(d);
+}
+IMP_STD(K, ExitProcess, 1) { log("ExitProcess(%u)", ARG(0)); traceDump(); fflush(nullptr); _exit((int)ARG(0)); }
+IMP_STD(K, TerminateProcess, 2) { log("TerminateProcess(%u)", ARG(1)); traceDump(); fflush(nullptr); _exit((int)ARG(1)); }
+IMP_STD(K, AllocConsole, 0) { SET(1); }
+IMP_STD(K, SetConsoleTitleA, 1) { SET(1); }
+IMP_STD(K, GetConsoleTitleA, 2) { if (ARG(1)) guest::store<uint8_t>(ARG(0), 0); SET(0); }
+IMP_STD(K, SetConsoleCtrlHandler, 2) { SET(1); }
+IMP_STD(K, SetConsoleCursorInfo, 2) { SET(1); }
+IMP_STD(K, SetConsoleMode, 2) { SET(1); }
+IMP_STD(K, SetConsoleWindowInfo, 3) { SET(1); }
+IMP_STD(K, GetDiskFreeSpaceA, 5)
+{
+	if (ARG(1)) guest::store<uint32_t>(ARG(1), 8);
+	if (ARG(2)) guest::store<uint32_t>(ARG(2), 512);
+	if (ARG(3)) guest::store<uint32_t>(ARG(3), 4000000);
+	if (ARG(4)) guest::store<uint32_t>(ARG(4), 8000000);
+	SET(1);
+}
 IMP_STD(K, FindClose, 1) { if (auto* fo = (FindObj*)getHandle(ARG(0), KFind)) { delete fo; closeHandle(ARG(0)); } SET(1); }
