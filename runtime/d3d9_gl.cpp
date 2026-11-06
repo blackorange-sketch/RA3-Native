@@ -648,7 +648,12 @@ static int64_t ringPut(GLenum target, GLuint& buf, uint32_t& pos, uint32_t cap, 
 	pos = (pos + 15) & ~15u;
 	if (pos + total > cap) { glBufferData(target, cap, nullptr, GL_STREAM_DRAW); pos = 0; }
 	uint32_t at = pos + headBytes;
-	if (bytes) glBufferSubData(target, at, bytes, data);
+	if (bytes)
+	{
+		void* m = glMapBufferRange(target, at, bytes, GL_MAP_WRITE_BIT | GL_MAP_UNSYNCHRONIZED_BIT | GL_MAP_INVALIDATE_RANGE_BIT);
+		if (m) { memcpy(m, data, bytes); glUnmapBuffer(target); }
+		else glBufferSubData(target, at, bytes, data);
+	}
 	pos += total;
 	(void)head;
 	return at;
