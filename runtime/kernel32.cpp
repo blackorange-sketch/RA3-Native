@@ -544,10 +544,19 @@ static void scanBig(int fd, const std::string& name)
 }
 
 // ================= files
+// Intro/cutscene videos are not supported yet (decoder output never reaches a texture): hide them so the game skips them.
+static bool isMovieFile(const std::string& p)
+{
+	std::string l;
+	for (char ch : p) l += ch == '\\' ? '/' : (char)tolower((unsigned char)ch);
+	if (getenv("RA3_PLAY_MOVIES")) return false;
+	return l.find("/movies/") != std::string::npos && (l.size() > 4 && (l.compare(l.size() - 4, 4, ".vp6") == 0 || l.compare(l.size() - 4, 4, ".snd") == 0));
+}
 static FileObj* fileOf(uint32_t h) { return (FileObj*)getHandle(h, KFile); }
 static void openFile(CPU* c, const std::string& winPath, uint32_t access, uint32_t share, uint32_t disp)
 {
 	(void)share;
+	if (isMovieFile(winPath)) { log("open hidden (movie): '%s'", winPath.c_str()); setLastError(2); SET(0xffffffff); return; }
 	std::string hp = hostPath(winPath);
 	int flags = (access & 0x40000000) ? ((access & 0x80000000) ? O_RDWR : O_WRONLY) : O_RDONLY;
 	switch (disp)
@@ -723,7 +732,8 @@ static void findFirst(CPU* c, const std::string& winPattern, uint32_t out, bool 
 	std::string hp = hostPath(dirWin);
 	auto* fo = new FindObj;
 	fo->dirHost = hp;
-	if (DIR* d = opendir(hp.c_str()))
+	if (isMovieFile(winPattern)) {}
+	else if (DIR* d = opendir(hp.c_str()))
 	{
 		while (auto* e = readdir(d)) if (wildMatch(pat.c_str(), e->d_name)) fo->names.push_back(e->d_name);
 		closedir(d);
