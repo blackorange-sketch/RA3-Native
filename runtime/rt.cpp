@@ -52,10 +52,15 @@ void traceDump()
 {
 	for (int i = 0; i < ringCount && i < 32; i++)
 	{
-		fprintf(stderr, "-- thread %u%s, last functions (oldest first):", rings[i].tid, rings[i].ring == ra3_ring ? " (CURRENT)" : "");
-		uint32_t p = *rings[i].pos;
-		for (uint32_t k = 0; k < 256; k++) fprintf(stderr, " %08x", rings[i].ring[(p - 256 + k) & 255]);
-		fprintf(stderr, "\n");
+		for (FILE* f : {stderr, logFp})
+		{
+			if (!f) continue;
+			fprintf(f, "-- thread %u%s, last functions (oldest first):", rings[i].tid, rings[i].ring == ra3_ring ? " (CURRENT)" : "");
+			uint32_t p = *rings[i].pos;
+			for (uint32_t k = 0; k < 256; k++) fprintf(f, " %08x", rings[i].ring[(p - 256 + k) & 255]);
+			fprintf(f, "\n");
+			fflush(f);
+		}
 	}
 }
 #else
