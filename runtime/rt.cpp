@@ -366,6 +366,11 @@ void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, 
 		if (k < 6 || k == 500)
 		{
 			rt::log("hook apply-params this=%08x masks lo=%08x hi=%08x", ecx, a0, a1);
+			{
+				uint32_t o = guest::load<uint32_t>(ecx + 0x74);
+				uint32_t vt = o ? guest::load<uint32_t>(o) : 0;
+				rt::log("   texobj [this+0x74]=%08x vtbl %08x slot4 %08x mask %08x:%08x  [this+0x60]=%08x [this+0x68]=%08x [this+0x6c]=%08x", o, vt, vt ? guest::load<uint32_t>(vt + 0x10) : 0, o ? guest::load<uint32_t>(o + 0x34) : 0, o ? guest::load<uint32_t>(o + 0x30) : 0, guest::load<uint32_t>(ecx + 0x60), guest::load<uint32_t>(ecx + 0x68), guest::load<uint32_t>(ecx + 0x6c));
+			}
 			uint32_t p = guest::load<uint32_t>(ecx + 0x24);
 			int n = 0;
 			while (p && n < 60)
