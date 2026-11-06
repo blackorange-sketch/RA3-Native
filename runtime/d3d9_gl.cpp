@@ -453,6 +453,16 @@ void bindSamplers(Prog* p, ShaderObj* ps)
 		if (t && targetOf(texOwner(t)) == target)
 		{
 			name = ensureTexture(t);
+			{
+				static int nlog = 0;
+				Obj* ow = texOwner(t);
+				if (nlog++ < 60)
+				{
+					const uint8_t* px = ow->data ? (const uint8_t*)guest::host(ow->data + ow->levelOff[0]) : nullptr;
+					log("GL: sampler %d tex fmt %u %ux%u lv %u usage %x rt %d ver %u gl %u px %02x %02x %02x %02x", i, ow->fmt, ow->w, ow->h, ow->levels, ow->usage, (int)ow->rtTex, ow->ver, name,
+					    px ? px[0] : 0, px ? px[1] : 0, px ? px[2] : 0, px ? px[3] : 0);
+				}
+			}
 			noFilter = texFmtOf(texOwner(t)->fmt).floatNoFilter;
 		}
 		glBindTexture(target, name ? name : dummyTex(target));
