@@ -619,6 +619,7 @@ IMP_ID(DX, "D3DXCreateEffectEx", D3DXCreateEffectEx, 40)
 			std::string tl;
 			for (auto& t : info->techs) tl += (tl.empty() ? "" : ",") + t.name + "/" + std::to_string(t.passes.size());
 			log("   effect parsed: %zu params, %zu techniques [%s], hdr %u", info->params.size(), info->techs.size(), tl.c_str(), info->base);
+			d3d::fxrt::initParams(*info);
 			fx->fx = info;
 		}
 		else log("   effect NOT parsed (fake technique T)");
