@@ -1,4 +1,6 @@
 // Shared start-up: maps the PE, creates the main guest thread and runs the entry point.
+#include <chrono>
+#include <thread>
 #include "launch.h"
 
 #include <algorithm>
@@ -93,6 +95,15 @@ int launch(const std::string& gameFile)
 		sigaction(SIGFPE, &sa, nullptr);
 	}
 	installAltStack();
+	// Progress watchdog: every 20 s dump what every thread has been doing (hang vs. busy diagnosis).
+	std::thread([] {
+		for (int i = 1; i <= 15; i++)
+		{
+			std::this_thread::sleep_for(std::chrono::seconds(20));
+			log("watchdog: %d s since start", i * 20);
+			traceDump();
+		}
+	}).detach();
 	guest::init();
 	heapInit();
 	pe::Image img;
