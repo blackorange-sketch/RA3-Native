@@ -720,6 +720,7 @@ H("ID3DXEffect::GetAnnotationByName")
 	const std::vector<FxAnn>* l = annListOf(o, ARG(1), &kind, &a, &b);
 	if (!l || !ARG(2)) { SET(0); return; }
 	std::string n = gstr(ARG(2));
+	{ static int cn = 0; if (cn++ < 60) { std::string all; for (auto& a : *l) all += a.name + ","; log("fx: GetAnnotationByName '%s' among [%s]", n.c_str(), all.c_str()); } }
 	for (size_t i = 0; i < l->size(); i++)
 		if ((*l)[i].name == n)
 		{
@@ -731,6 +732,7 @@ H("ID3DXEffect::GetAnnotationByName")
 H("ID3DXEffect::GetString")
 {
 	const FxAnn* an = annOf(ARG(1));
+	{ static int n = 0; if (n++ < 80) log("fx: GetString h %x -> %s '%s'", ARG(1), an ? "ann" : "NOT-ANN", an ? an->str.c_str() : ""); }
 	if (ARG(2)) guest::store<uint32_t>(ARG(2), newStr(an ? an->str : ""));
 	SET(0);
 } END;
