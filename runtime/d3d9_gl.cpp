@@ -240,6 +240,7 @@ GLuint ensureTexture(Obj* o0)
 	return o->glTex;
 }
 
+uint64_t gUpBytes, gUpFull, gUpSub, gUpCnt;
 GLuint ensureBuffer(Obj* o, GLenum target)
 {
 	if (!o->glBuf) { glGenBuffers(1, &o->glBuf); o->glVer = 0; }
@@ -247,10 +248,11 @@ GLuint ensureBuffer(Obj* o, GLenum target)
 	{
 		glBindBuffer(target, o->glBuf);
 		if (o->glVer && o->glSize == o->size && o->dirtyLo < o->dirtyHi)
-			glBufferSubData(target, o->dirtyLo, o->dirtyHi - o->dirtyLo, (const uint8_t*)guest::host(o->data) + o->dirtyLo);
+			{ glBufferSubData(target, o->dirtyLo, o->dirtyHi - o->dirtyLo, (const uint8_t*)guest::host(o->data) + o->dirtyLo); gUpBytes += o->dirtyHi - o->dirtyLo; gUpSub++; }
 		else
 		{
 			glBufferData(target, o->size, guest::host(o->data), GL_DYNAMIC_DRAW);
+			gUpBytes += o->size; gUpFull++;
 			o->glSize = o->size;
 		}
 		o->dirtyLo = 0xffffffffu; o->dirtyHi = 0;
@@ -784,6 +786,8 @@ void present()
 	if (gFrameNo % 300 == 0)
 	{
 		static uint64_t last = 0; uint64_t n = nowUs();
+		log("perf: upload %llu KB, %llu full, %llu sub", (unsigned long long)(gUpBytes >> 10), (unsigned long long)gUpFull, (unsigned long long)gUpSub);
+		gUpBytes = gUpFull = gUpSub = 0;
 		log("perf: 300 frames in %llu ms; per draw us: prog %llu state %llu uni %llu samp %llu attr %llu draw %llu (n %llu)", (unsigned long long)((n - last) / 1000), (unsigned long long)(tProg / std::max<uint64_t>(1, nDraw)), (unsigned long long)(tState / std::max<uint64_t>(1, nDraw)), (unsigned long long)(tUni / std::max<uint64_t>(1, nDraw)), (unsigned long long)(tSamp / std::max<uint64_t>(1, nDraw)), (unsigned long long)(tAttr / std::max<uint64_t>(1, nDraw)), (unsigned long long)(tDraw / std::max<uint64_t>(1, nDraw)), (unsigned long long)nDraw);
 		last = n; tProg = tState = tUni = tSamp = tAttr = tDraw = nDraw = 0;
 	}
