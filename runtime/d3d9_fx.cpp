@@ -350,7 +350,17 @@ H("ID3DXEffect::SetValue")
 	PRef r = refOf(o, ARG(1));
 	if (r.valid() && ARG(2))
 	{
-		if (r.ty->cls == 4) { SET(0); return; }
+		if (r.ty->cls == 4)
+		{
+			if (r.p->type >= 5 && r.p->type <= 9)
+			{
+				r.p->texObj = guest::load<uint32_t>(ARG(2));
+				static int nl = 0;
+				if (nl++ < 40) log("fx: SetValue texture '%s' -> %x", r.p->name.c_str(), r.p->texObj);
+			}
+			SET(0);
+			return;
+		}
 		uint32_t n = std::min(ARG(3) / 4, (uint32_t)r.p->val.size() - std::min<uint32_t>(r.off, (uint32_t)r.p->val.size()));
 		memcpy(r.p->val.data() + r.off, guest::host(ARG(2)), 4ull * n);
 	}
