@@ -1,5 +1,6 @@
 // Shared pieces of the runtime: logging, guest strings, import macros, guest calls, path mapping.
 #pragma once
+#include <atomic>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -111,3 +112,5 @@ extern TlsInfo tls;
 uint32_t newGuestStack(uint32_t& low);   // allocates a thread stack, returns the top
 uint32_t spawnMainThread(CPU* c);        // sets up TEB/TLS/stack for the calling (main) thread, returns stack top
 }
+
+namespace rt { extern std::atomic<uint32_t> gLowerCallers[64], gLowerKeys[64]; }

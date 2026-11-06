@@ -1,3 +1,4 @@
+#include <atomic>
 // MSVCR80 replacement: the C runtime the game imports.
 #include <algorithm>
 #include <cmath>
@@ -100,7 +101,7 @@ CTYPE(ispunct, ch >= 0 && ch < 256 && ispunct(ch)) CTYPE(isprint, ch >= 0 && ch 
 CTYPE(isxdigit, ch >= 0 && ch < 256 && isxdigit(ch)) CTYPE(iswspace, ch == ' ' || (ch >= 9 && ch <= 13)) CTYPE(iswalpha, iswalpha((wint_t)ch))
 CTYPE(iswalnum, iswalnum((wint_t)ch)) CTYPE(_ismbblead, false)
 IMP_C(DLL, toupper) { int ch = (int)ARG(0); SET(ch >= 0 && ch < 256 ? toupper(ch) : ch); }
-IMP_C(DLL, tolower) { int ch = (int)ARG(0); SET(ch >= 0 && ch < 256 ? tolower(ch) : ch); }
+IMP_C(DLL, tolower) { { uint32_t ra = guest::load<uint32_t>(c->r[ESP]); uint32_t h = (ra >> 2) & 63; gLowerKeys[h] = ra; gLowerCallers[h]++; } int ch = (int)ARG(0); SET(ch >= 0 && ch < 256 ? tolower(ch) : ch); }
 IMP_C(DLL, towlower) { SET(towlower((wint_t)ARG(0))); }
 
 // ---- strings

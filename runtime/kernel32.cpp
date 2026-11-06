@@ -249,7 +249,7 @@ IMP_STD(K, SetThreadIdealProcessor, 2) { SET(0); }
 IMP_STD(K, SetProcessAffinityMask, 2) { SET(1); }
 IMP_STD(K, GetProcessAffinityMask, 3) { guest::store<uint32_t>(ARG(1), 0xff); guest::store<uint32_t>(ARG(2), 0xff); SET(1); }
 IMP_STD(K, Sleep, 1) { std::this_thread::sleep_for(std::chrono::milliseconds(ARG(0))); }
-IMP_STD(K, SleepEx, 2) { std::this_thread::sleep_for(std::chrono::milliseconds(ARG(0))); SET(0); }
+IMP_STD(K, SleepEx, 2) { uint32_t ms = ARG(0); if (ms) std::this_thread::sleep_for(std::chrono::milliseconds(ms)); else std::this_thread::sleep_for(std::chrono::microseconds(100)); SET(0); }
 
 IMP_STD(K, CreateEventA, 4)
 {

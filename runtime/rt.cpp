@@ -76,6 +76,7 @@ void traceDump()
 		}
 	}
 }
+std::atomic<uint32_t> gLowerCallers[64], gLowerKeys[64];
 void callStats()
 {
 	std::vector<std::pair<uint64_t, std::string>> v;
@@ -90,6 +91,7 @@ void callStats()
 	std::string l2;
 	for (size_t i = 0; i < w.size() && i < 60; i++) l2 += " " + w[i].second + "=" + std::to_string(w[i].first);
 	log("calls-other:%s", l2.c_str());
+	{ std::string t; for (int i = 0; i < 64; i++) if (gLowerCallers[i] > 100000) { char b[32]; snprintf(b, sizeof b, " %x=", (unsigned)gLowerKeys[i].load()); t += b + std::to_string(gLowerCallers[i].load()); } log("tolower callers:%s", t.c_str()); }
 }
 void traceProfile(int ms)
 {
