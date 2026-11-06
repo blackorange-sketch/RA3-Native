@@ -633,6 +633,27 @@ void clear(uint32_t count, uint32_t rects, uint32_t flags, uint32_t color, float
 	if (n++ < 4) log("d3d9: Clear flags %x color %08x z %g -> %s", flags, color, (double)z, isBack(dev.rt0) ? "back buffer" : "render target");
 }
 
+// Streaming rings for dynamic buffers: the game Locks a dynamic buffer for every draw, so writing into the
+// one GL buffer stalls the driver on draws still in flight. Each draw instead copies just the range it uses
+// to a fresh spot in a ring (orphaned when full), which never touches data an earlier draw reads.
+static GLuint gRingVbo = 0, gRingIbo = 0;
+static uint32_t gRingVPos = 0, gRingIPos = 0;
+static const uint32_t kRingV = 16u << 20, kRingI = 4u << 20;
+static int64_t ringPut(GLenum target, GLuint& buf, uint32_t& pos, uint32_t cap, const void* head, uint32_t headBytes, const void* data, uint32_t bytes)
+{
+	uint32_t total = headBytes + bytes;
+	if (total > cap / 2) return -1;
+	if (!buf) { glGenBuffers(1, &buf); glBindBuffer(target, buf); glBufferData(target, cap, nullptr, GL_STREAM_DRAW); pos = 0; }
+	glBindBuffer(target, buf);
+	pos = (pos + 15) & ~15u;
+	if (pos + total > cap) { glBufferData(target, cap, nullptr, GL_STREAM_DRAW); pos = 0; }
+	uint32_t at = pos + headBytes;
+	if (bytes) glBufferSubData(target, at, bytes, data);
+	pos += total;
+	(void)head;
+	return at;
+}
+
 #include <chrono>
 static inline uint64_t nowUs() { return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 static uint64_t tProg, tState, tUni, tSamp, tAttr, tDraw, nDraw;
@@ -701,6 +722,9 @@ void draw(const DrawCall& dc)
 		glBufferData(GL_ARRAY_BUFFER, upBytes, dc.upVerts, GL_STREAM_DRAW);
 		boundBuf = gUpVbo;
 	}
+	const uint32_t nvAll = (uint32_t)primVertices(dc.prim, dc.primCount);
+	int64_t ringBase[16];
+	for (int i = 0; i < 16; i++) ringBase[i] = -2; // -2: not tried yet, -1: not on the ring
 	for (auto& e : els)
 	{
 		int loc = shdr::attrLocation(e.usage, e.index);
@@ -720,9 +744,36 @@ void draw(const DrawCall& dc)
 		else
 		{
 			if (!st.vb) continue;
-			glBindBuffer(GL_ARRAY_BUFFER, ensureBuffer(st.vb, GL_ARRAY_BUFFER));
 			stride = st.stride;
-			off += st.offset + (int64_t)dc.baseVertex * (int64_t)stride * (dc.indexed ? 1 : 0);
+			int si = e.stream < 16 ? e.stream : 0;
+			if (ringBase[si] == -2)
+			{
+				ringBase[si] = -1;
+				if ((st.vb->usage & 0x200) && st.vb->data && stride)
+				{
+					int64_t first = dc.indexed ? (int64_t)dc.baseVertex + dc.minIndex : dc.baseVertex;
+					int64_t count = dc.indexed ? dc.numVertices : nvAll;
+					int64_t avail = ((int64_t)st.vb->size - (int64_t)st.offset) / (int64_t)stride - first;
+					if (count > avail) count = avail;
+					if (first >= 0 && count > 0)
+					{
+						uint32_t head = dc.indexed ? dc.minIndex * stride : 0;
+						int64_t at = ringPut(GL_ARRAY_BUFFER, gRingVbo, gRingVPos, kRingV, nullptr, head,
+							(const uint8_t*)guest::host(st.vb->data) + st.offset + (uint64_t)first * stride, (uint32_t)(count * stride));
+						if (at >= 0) ringBase[si] = at - head;
+					}
+				}
+			}
+			if (ringBase[si] >= 0)
+			{
+				glBindBuffer(GL_ARRAY_BUFFER, gRingVbo);
+				off += (uint64_t)ringBase[si];
+			}
+			else
+			{
+				glBindBuffer(GL_ARRAY_BUFFER, ensureBuffer(st.vb, GL_ARRAY_BUFFER));
+				off += st.offset + (int64_t)dc.baseVertex * (int64_t)stride;
+			}
 		}
 		if (e.type == 4) bgra |= 1u << loc;
 		glEnableVertexAttribArray(loc);
@@ -737,7 +788,7 @@ void draw(const DrawCall& dc)
 	uint32_t nv = (uint32_t)primVertices(dc.prim, dc.primCount);
 	if (!dc.indexed)
 	{
-		glDrawArrays(mode, dc.upVerts ? 0 : dc.baseVertex, nv);
+		glDrawArrays(mode, 0, nv);
 	}
 	else if (dc.upIdx)
 	{
@@ -749,8 +800,18 @@ void draw(const DrawCall& dc)
 	else if (dev.ib)
 	{
 		bool wide = dev.ib->fmt == 102;
-		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ensureBuffer(dev.ib, GL_ELEMENT_ARRAY_BUFFER));
-		glDrawElements(mode, nv, wide ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT, (const void*)(uintptr_t)(dc.startIndex * (wide ? 4 : 2)));
+		uint32_t isz = wide ? 4 : 2;
+		int64_t iat = -1;
+		if ((dev.ib->usage & 0x200) && dev.ib->data && (uint64_t)(dc.startIndex + nv) * isz <= dev.ib->size)
+			iat = ringPut(GL_ELEMENT_ARRAY_BUFFER, gRingIbo, gRingIPos, kRingI, nullptr, 0,
+				(const uint8_t*)guest::host(dev.ib->data) + (uint64_t)dc.startIndex * isz, nv * isz);
+		if (iat >= 0)
+			glDrawElements(mode, nv, wide ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT, (const void*)(uintptr_t)iat);
+		else
+		{
+			glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ensureBuffer(dev.ib, GL_ELEMENT_ARRAY_BUFFER));
+			glDrawElements(mode, nv, wide ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT, (const void*)(uintptr_t)(dc.startIndex * isz));
+		}
 	}
 	uint64_t t6 = nowUs();
 	tProg += t1 - t0; tState += t2 - t1; tUni += t3 - t2; tSamp += t4 - t3; tAttr += t5 - t4; tDraw += t6 - t5; nDraw++;
