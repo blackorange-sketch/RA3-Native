@@ -639,14 +639,17 @@ void clear(uint32_t count, uint32_t rects, uint32_t flags, uint32_t color, float
 static GLuint gRingVbo = 0, gRingIbo = 0;
 static uint32_t gRingVPos = 0, gRingIPos = 0;
 static const uint32_t kRingV = 16u << 20, kRingI = 4u << 20;
+static uint64_t gRingUs, gRingOrph, gRingBytes, gRingCalls, gRingNs;
+static inline uint64_t ringNow() { return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 static int64_t ringPut(GLenum target, GLuint& buf, uint32_t& pos, uint32_t cap, const void* head, uint32_t headBytes, const void* data, uint32_t bytes)
 {
 	uint32_t total = headBytes + bytes;
-	if (total > cap / 2) return -1;
+	if (total > cap / 2) { gRingNs++; return -1; }
+	uint64_t rt0 = ringNow(); gRingCalls++; gRingBytes += bytes;
 	if (!buf) { glGenBuffers(1, &buf); glBindBuffer(target, buf); glBufferData(target, cap, nullptr, GL_STREAM_DRAW); pos = 0; }
 	glBindBuffer(target, buf);
 	pos = (pos + 15) & ~15u;
-	if (pos + total > cap) { glBufferData(target, cap, nullptr, GL_STREAM_DRAW); pos = 0; }
+	if (pos + total > cap) { glBufferData(target, cap, nullptr, GL_STREAM_DRAW); pos = 0; gRingOrph++; }
 	uint32_t at = pos + headBytes;
 	if (bytes)
 	{
@@ -655,6 +658,7 @@ static int64_t ringPut(GLenum target, GLuint& buf, uint32_t& pos, uint32_t cap, 
 		else glBufferSubData(target, at, bytes, data);
 	}
 	pos += total;
+	gRingUs += ringNow() - rt0;
 	(void)head;
 	return at;
 }
@@ -866,6 +870,8 @@ void present()
 	if (gFrameNo % 300 == 0)
 	{
 		static uint64_t last = 0; uint64_t n = nowUs();
+		log("perf: ring %llu calls %llu KB %llu us, %llu orphans, %llu too big", (unsigned long long)gRingCalls, (unsigned long long)(gRingBytes >> 10), (unsigned long long)gRingUs, (unsigned long long)gRingOrph, (unsigned long long)gRingNs);
+		gRingCalls = gRingBytes = gRingUs = gRingOrph = gRingNs = 0;
 		log("perf: upload %llu KB, %llu full, %llu sub, %llu us, max buf %llu, dynamic %llu", (unsigned long long)(gUpBytes >> 10), (unsigned long long)gUpFull, (unsigned long long)gUpSub, (unsigned long long)gUpUs, (unsigned long long)gUpMaxSize, (unsigned long long)gUpDyn);
 		gUpUs = gUpMaxSize = gUpDyn = 0;
 		gUpBytes = gUpFull = gUpSub = 0;
