@@ -2,6 +2,7 @@
 // method is a dynamically created import stub that lands in comDispatch(). This first version is a "null"
 // device: resources have real storage (Lock/Unlock work) but nothing is drawn yet.
 #include "d3d9.h"
+#include "d3dx_fx.h"
 
 #include <sys/stat.h>
 
@@ -9,6 +10,8 @@
 #include <map>
 #include <mutex>
 #include <thread>
+#include <strings.h>
+#include <tuple>
 #include <unordered_map>
 
 using namespace rt;
@@ -487,23 +490,241 @@ H("IDirect3DSwapChain9::GetBackBuffer") { Obj* s = makeSurface(backW, backH, 22,
 H("ID3DXBuffer::GetBufferPointer") { SET(o->data); } END;
 H("ID3DXBuffer::GetBufferSize") { SET(o->size); } END;
 
-// ---- effects (parameters are opaque handles = guest strings)
-H("ID3DXEffect::GetDesc") { uint32_t p = ARG(1); memset(guest::host(p), 0, 16); guest::store<uint32_t>(p + 8, 1); SET(0); } END;
-H("ID3DXEffect::GetTechniqueDesc") { uint32_t p = ARG(2); memset(guest::host(p), 0, 12); guest::store<uint32_t>(p, newStr("T")); guest::store<uint32_t>(p + 4, 1); SET(0); } END;
-H("ID3DXEffect::GetPassDesc") { uint32_t p = ARG(2); memset(guest::host(p), 0, 32); SET(0); } END;
-H("ID3DXEffect::GetParameter") { SET(newStr("param")); } END;
-H("ID3DXEffect::GetParameterByName") { SET(ARG(2) ? newStr(gstr(ARG(2))) : 0); } END;
-H("ID3DXEffect::GetParameterBySemantic") { SET(ARG(2) ? newStr(gstr(ARG(2))) : 0); } END;
-H("ID3DXEffect::GetParameterElement") { SET(newStr("elem")); } END;
-H("ID3DXEffect::GetTechnique") { SET(0x7e01); } END;
-H("ID3DXEffect::GetTechniqueByName") { SET(0x7e01); } END;
-H("ID3DXEffect::GetPass") { SET(0x7e02); } END;
-H("ID3DXEffect::GetPassByName") { SET(0x7e02); } END;
-H("ID3DXEffect::GetCurrentTechnique") { SET(0x7e01); } END;
-H("ID3DXEffect::Begin") { if (ARG(1)) guest::store<uint32_t>(ARG(1), 1); SET(0); } END;
-H("ID3DXEffect::FindNextValidTechnique") { if (ARG(2)) guest::store<uint32_t>(ARG(2), 0x7e01); SET(0); } END;
+// ---- effects: handles index a table of parsed parameters / techniques / passes / annotations
+// (names that are not found are treated as plain strings, like D3DX does for LPCSTR handles)
+struct HRec { FxInfo* fx; int kind; uint32_t a, b, c; };   // kind: 1 param, 2 tech, 3 pass, 4/5/6 annotation of param/tech/pass
+std::vector<HRec> hrecs;
+std::map<std::tuple<FxInfo*, int, uint32_t, uint32_t, uint32_t>, uint32_t> hmap;
+std::mutex hMu;
+constexpr uint32_t HBase = 0x7e000000;
+
+uint32_t mkHandle(FxInfo* fx, int kind, uint32_t a, uint32_t b = 0, uint32_t c = 0)
+{
+	std::lock_guard<std::mutex> l(hMu);
+	auto k = std::make_tuple(fx, kind, a, b, c);
+	auto it = hmap.find(k);
+	if (it != hmap.end()) return it->second;
+	hrecs.push_back({fx, kind, a, b, c});
+	uint32_t h = HBase + 4 * (uint32_t)hrecs.size();
+	hmap[k] = h;
+	return h;
+}
+const HRec* getRec(uint32_t h)
+{
+	if (h <= HBase || h > HBase + 0x01000000) return nullptr;
+	std::lock_guard<std::mutex> l(hMu);
+	uint32_t i = (h - HBase) / 4 - 1;
+	return i < hrecs.size() ? &hrecs[i] : nullptr;
+}
+FxInfo* F(Obj* o) { return o->fx.get(); }
+// Resolves a technique handle (record or name string).
+const FxTech* techOf(Obj* o, uint32_t h, uint32_t* idx = nullptr)
+{
+	FxInfo* fx = F(o);
+	if (!fx) return nullptr;
+	if (const HRec* r = getRec(h)) { if (r->kind == 2 && r->fx == fx && r->a < fx->techs.size()) { if (idx) *idx = r->a; return &fx->techs[r->a]; } return nullptr; }
+	if (h) { std::string n = gstr(h); for (size_t i = 0; i < fx->techs.size(); i++) if (fx->techs[i].name == n) { if (idx) *idx = (uint32_t)i; return &fx->techs[i]; } }
+	return nullptr;
+}
+const FxParam* paramOf(Obj* o, uint32_t h)
+{
+	FxInfo* fx = F(o);
+	if (!fx) return nullptr;
+	if (const HRec* r = getRec(h)) return r->kind == 1 && r->fx == fx && r->a < fx->params.size() ? &fx->params[r->a] : nullptr;
+	if (h) { std::string n = gstr(h); for (auto& p : fx->params) if (p.name == n) return &p; }
+	return nullptr;
+}
+const FxAnn* annOf(uint32_t h)
+{
+	const HRec* r = getRec(h);
+	if (!r || r->kind < 4) return nullptr;
+	FxInfo* fx = r->fx;
+	if (r->kind == 4) return r->a < fx->params.size() && r->b < fx->params[r->a].anns.size() ? &fx->params[r->a].anns[r->b] : nullptr;
+	if (r->kind == 5) return r->a < fx->techs.size() && r->b < fx->techs[r->a].anns.size() ? &fx->techs[r->a].anns[r->b] : nullptr;
+	return r->a < fx->techs.size() && r->b < fx->techs[r->a].passes.size() && r->c < fx->techs[r->a].passes[r->b].anns.size() ? &fx->techs[r->a].passes[r->b].anns[r->c] : nullptr;
+}
+const std::vector<FxAnn>* annListOf(Obj* o, uint32_t h, int* kind, uint32_t* a, uint32_t* b)
+{
+	FxInfo* fx = F(o);
+	if (!fx) return nullptr;
+	if (const HRec* r = getRec(h))
+	{
+		if (r->fx != fx) return nullptr;
+		*a = r->a; *b = r->b;
+		if (r->kind == 1 && r->a < fx->params.size()) { *kind = 4; return &fx->params[r->a].anns; }
+		if (r->kind == 2 && r->a < fx->techs.size()) { *kind = 5; return &fx->techs[r->a].anns; }
+		if (r->kind == 3 && r->a < fx->techs.size() && r->b < fx->techs[r->a].passes.size()) { *kind = 6; return &fx->techs[r->a].passes[r->b].anns; }
+		return nullptr;
+	}
+	if (h) { std::string n = gstr(h); for (size_t i = 0; i < fx->params.size(); i++) if (fx->params[i].name == n) { *kind = 4; *a = (uint32_t)i; *b = 0; return &fx->params[i].anns; } }
+	return nullptr;
+}
+
+H("ID3DXEffect::GetDesc")
+{
+	uint32_t p = ARG(1);
+	memset(guest::host(p), 0, 16);
+	FxInfo* fx = F(o);
+	guest::store<uint32_t>(p + 4, fx ? (uint32_t)fx->params.size() : 0);
+	guest::store<uint32_t>(p + 8, fx ? (uint32_t)fx->techs.size() : 1);
+	SET(0);
+} END;
+H("ID3DXEffect::GetTechniqueDesc")
+{
+	uint32_t p = ARG(2);
+	memset(guest::host(p), 0, 12);
+	if (const FxTech* t = techOf(o, ARG(1)))
+	{
+		guest::store<uint32_t>(p, newStr(t->name));
+		guest::store<uint32_t>(p + 4, (uint32_t)t->passes.size());
+		guest::store<uint32_t>(p + 8, (uint32_t)t->anns.size());
+	}
+	else { guest::store<uint32_t>(p, newStr("T")); guest::store<uint32_t>(p + 4, 1); }
+	SET(0);
+} END;
+H("ID3DXEffect::GetPassDesc")
+{
+	uint32_t p = ARG(2);
+	memset(guest::host(p), 0, 16);
+	if (const HRec* r = getRec(ARG(1)); r && r->kind == 3 && r->fx == F(o) && r->a < r->fx->techs.size() && r->b < r->fx->techs[r->a].passes.size())
+	{
+		const FxPass& ps = r->fx->techs[r->a].passes[r->b];
+		guest::store<uint32_t>(p, newStr(ps.name));
+		guest::store<uint32_t>(p + 4, (uint32_t)ps.anns.size());
+	}
+	SET(0);
+} END;
+H("ID3DXEffect::GetParameterDesc")
+{
+	uint32_t p = ARG(2);
+	memset(guest::host(p), 0, 44);
+	const FxParam* pr = paramOf(o, ARG(1));
+	const FxAnn* an = pr ? nullptr : annOf(ARG(1));
+	if (!pr && !an) { SET(0x8876086c); return; }   // D3DERR_INVALIDCALL
+	std::string name = pr ? pr->name : an->name, sem = pr ? pr->semantic : "";
+	uint32_t cls = pr ? pr->cls : an->cls, type = pr ? pr->type : an->type, rows = pr ? pr->rows : an->rows, cols = pr ? pr->cols : an->cols, el = pr ? pr->elements : an->elements;
+	guest::store<uint32_t>(p, newStr(name));
+	guest::store<uint32_t>(p + 4, sem.empty() ? 0 : newStr(sem));
+	guest::store<uint32_t>(p + 8, cls);
+	guest::store<uint32_t>(p + 12, type);
+	guest::store<uint32_t>(p + 16, rows);
+	guest::store<uint32_t>(p + 20, cols);
+	guest::store<uint32_t>(p + 24, el);
+	guest::store<uint32_t>(p + 28, pr ? (uint32_t)pr->anns.size() : 0);
+	guest::store<uint32_t>(p + 32, pr ? pr->members : 0);
+	guest::store<uint32_t>(p + 36, pr ? pr->flags : 0);
+	guest::store<uint32_t>(p + 40, 4 * rows * cols * std::max(1u, el));
+	SET(0);
+} END;
+H("ID3DXEffect::GetParameter")
+{
+	FxInfo* fx = F(o);
+	if (!fx) { SET(newStr("param")); return; }
+	uint32_t idx = ARG(2);
+	if (!ARG(1) && idx < fx->params.size()) SET(mkHandle(fx, 1, idx)); else SET(0);
+} END;
+H("ID3DXEffect::GetParameterByName")
+{
+	FxInfo* fx = F(o);
+	if (!ARG(2)) { SET(0); return; }
+	std::string n = gstr(ARG(2));
+	if (!fx) { SET(newStr(n)); return; }
+	if (ARG(1)) { SET(newStr(n)); return; }   // member of a struct: keep the old opaque behaviour
+	for (size_t i = 0; i < fx->params.size(); i++) if (fx->params[i].name == n) { SET(mkHandle(fx, 1, (uint32_t)i)); return; }
+	SET(0);
+} END;
+H("ID3DXEffect::GetParameterBySemantic")
+{
+	FxInfo* fx = F(o);
+	if (!ARG(2)) { SET(0); return; }
+	std::string n = gstr(ARG(2));
+	if (!fx) { SET(newStr(n)); return; }
+	for (size_t i = 0; i < fx->params.size(); i++) if (strcasecmp(fx->params[i].semantic.c_str(), n.c_str()) == 0) { SET(mkHandle(fx, 1, (uint32_t)i)); return; }
+	SET(0);
+} END;
+H("ID3DXEffect::GetParameterElement") { SET(F(o) && getRec(ARG(1)) ? ARG(1) : newStr("elem")); } END;
+H("ID3DXEffect::GetTechnique")
+{
+	FxInfo* fx = F(o);
+	if (!fx) { SET(0x7e01); return; }
+	SET(ARG(1) < fx->techs.size() ? mkHandle(fx, 2, ARG(1)) : 0);
+} END;
+H("ID3DXEffect::GetTechniqueByName")
+{
+	FxInfo* fx = F(o);
+	if (!fx) { SET(0x7e01); return; }
+	uint32_t idx;
+	SET(ARG(1) && techOf(o, ARG(1), &idx) ? mkHandle(fx, 2, idx) : 0);
+} END;
+H("ID3DXEffect::GetPass")
+{
+	FxInfo* fx = F(o);
+	uint32_t ti;
+	if (!fx) { SET(0x7e02); return; }
+	const FxTech* t = techOf(o, ARG(1), &ti);
+	SET(t && ARG(2) < t->passes.size() ? mkHandle(fx, 3, ti, ARG(2)) : 0);
+} END;
+H("ID3DXEffect::GetPassByName")
+{
+	FxInfo* fx = F(o);
+	uint32_t ti;
+	if (!fx) { SET(0x7e02); return; }
+	const FxTech* t = techOf(o, ARG(1), &ti);
+	if (t && ARG(2))
+	{
+		std::string n = gstr(ARG(2));
+		for (size_t i = 0; i < t->passes.size(); i++) if (t->passes[i].name == n) { SET(mkHandle(fx, 3, ti, (uint32_t)i)); return; }
+	}
+	SET(0);
+} END;
+H("ID3DXEffect::GetAnnotation")
+{
+	int kind; uint32_t a, b;
+	const std::vector<FxAnn>* l = annListOf(o, ARG(1), &kind, &a, &b);
+	if (!l || ARG(2) >= l->size()) { SET(0); return; }
+	SET(kind == 6 ? mkHandle(F(o), kind, a, b, ARG(2)) : mkHandle(F(o), kind, a, ARG(2)));
+} END;
+H("ID3DXEffect::GetAnnotationByName")
+{
+	int kind; uint32_t a, b;
+	const std::vector<FxAnn>* l = annListOf(o, ARG(1), &kind, &a, &b);
+	if (!l || !ARG(2)) { SET(0); return; }
+	std::string n = gstr(ARG(2));
+	for (size_t i = 0; i < l->size(); i++)
+		if ((*l)[i].name == n)
+		{
+			SET(kind == 6 ? mkHandle(F(o), kind, a, b, (uint32_t)i) : mkHandle(F(o), kind, a, (uint32_t)i));
+			return;
+		}
+	SET(0);
+} END;
+H("ID3DXEffect::GetString")
+{
+	const FxAnn* an = annOf(ARG(1));
+	if (ARG(2)) guest::store<uint32_t>(ARG(2), newStr(an ? an->str : ""));
+	SET(0);
+} END;
+H("ID3DXEffect::GetInt") { const FxAnn* an = annOf(ARG(1)); if (ARG(2)) guest::store<uint32_t>(ARG(2), an && !an->vals.empty() ? (an->type == 3 ? (uint32_t)(int)*(float*)&an->vals[0] : an->vals[0]) : 0); SET(0); } END;
+H("ID3DXEffect::GetBool") { const FxAnn* an = annOf(ARG(1)); if (ARG(2)) guest::store<uint32_t>(ARG(2), an && !an->vals.empty() && an->vals[0] ? 1 : 0); SET(0); } END;
+H("ID3DXEffect::GetFloat") { const FxAnn* an = annOf(ARG(1)); float v = 0.f; if (an && !an->vals.empty()) { if (an->type == 3) memcpy(&v, &an->vals[0], 4); else v = (float)(int)an->vals[0]; } if (ARG(2)) guest::store<float>(ARG(2), v); SET(0); } END;
+H("ID3DXEffect::SetTechnique") { uint32_t idx; if (F(o) && techOf(o, ARG(1), &idx)) F(o)->current = idx; SET(0); } END;
+H("ID3DXEffect::GetCurrentTechnique") { FxInfo* fx = F(o); SET(fx && fx->current < fx->techs.size() ? mkHandle(fx, 2, fx->current) : 0x7e01); } END;
+H("ID3DXEffect::ValidateTechnique") { SET(0); } END;
+H("ID3DXEffect::Begin")
+{
+	FxInfo* fx = F(o);
+	if (ARG(1)) guest::store<uint32_t>(ARG(1), fx && fx->current < fx->techs.size() ? (uint32_t)fx->techs[fx->current].passes.size() : 1);
+	SET(0);
+} END;
+H("ID3DXEffect::FindNextValidTechnique")
+{
+	FxInfo* fx = F(o);
+	uint32_t idx = 0, next = 0;
+	if (fx && ARG(1) && techOf(o, ARG(1), &idx)) next = idx + 1;
+	if (ARG(2)) guest::store<uint32_t>(ARG(2), fx ? (next < fx->techs.size() ? mkHandle(fx, 2, next) : 0) : 0x7e01);
+	SET(0);
+} END;
 H("ID3DXEffect::IsParameterUsed") { SET(1); } END;
-H("ID3DXEffect::GetFloat") { if (ARG(2)) guest::store<float>(ARG(2), 0.f); SET(0); } END;
 
 // ---- exports
 }
@@ -611,6 +832,17 @@ IMP_ID(DX, "D3DXCreateEffectEx", D3DXCreateEffectEx, 40)
 	if (FILE* f = fopen(path.c_str(), "wb")) { fwrite(guest::host(src), 1, n, f); fclose(f); }
 	log("D3DXCreateEffectEx: %u bytes (first dword %08x) saved to %s", n, n >= 4 ? guest::load<uint32_t>(src) : 0, path.c_str());
 	d3d::Obj* fx = d3d::newObj(d3d::IEffect);
+	{
+		auto info = std::make_shared<d3d::FxInfo>();
+		if (d3d::parseEffect((const uint8_t*)guest::host(src), n, *info))
+		{
+			std::string tl;
+			for (auto& t : info->techs) tl += (tl.empty() ? "" : ",") + t.name + "/" + std::to_string(t.passes.size());
+			log("   effect parsed: %zu params, %zu techniques [%s], hdr %u", info->params.size(), info->techs.size(), tl.c_str(), info->base);
+			fx->fx = info;
+		}
+		else log("   effect NOT parsed (fake technique T)");
+	}
 	guest::store<uint32_t>(ARG(8), fx->addr);
 	if (ARG(9)) guest::store<uint32_t>(ARG(9), 0);
 	SET(0);

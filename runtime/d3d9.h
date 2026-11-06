@@ -1,5 +1,6 @@
 // Direct3D 9 layer interface (d3d9.cpp).
 #pragma once
+#include <memory>
 #include <vector>
 
 #include "rt.h"
@@ -8,6 +9,7 @@ namespace d3d
 {
 enum Iface { IDirect3D9, IDevice, ITexture, ICube, IVolume, ISurface, IVB, IIB, IVDecl, IVS, IPS, IQuery, ISB, ISwap, IBuffer, IEffect, INumIfaces };
 
+struct FxInfo;
 struct Obj
 {
 	uint32_t addr = 0;     // guest address of the COM object
@@ -22,6 +24,7 @@ struct Obj
 	uint32_t pitch = 0;               // surface pitch
 	bool ownsData = true;
 	std::vector<uint8_t> blob;        // shader byte code, declarations, effect source...
+	std::shared_ptr<FxInfo> fx;       // parsed effect (IEffect)
 };
 
 using Handler = void (*)(CPU*, Obj*);
