@@ -98,7 +98,7 @@ void comDispatch(CPU* c)
 		SET(0);
 		return;
 	}
-	if (imports::current->calls == 1 && (imports::current->name.find("ID3DXEffect") != std::string::npos || imports::current->name.find("Texture") != std::string::npos))
+	if (imports::current->calls == 1 && true)
 		log("d3d9: first call %s", imports::current->name.c_str());
 	h(c, objectAt(ARG(0)));
 }
@@ -343,6 +343,7 @@ H("IDirect3DDevice9::CreateTexture")
 	if (t->levels == 0) { uint32_t m = std::max(t->w, t->h); t->levels = 1; while (m >>= 1) t->levels++; }
 	allocLevels(t, 1);
 	t->rtTex = (t->usage & 3) != 0;
+	{ static int n = 0; static int total = 0; total++; if (n++ < 30 || total % 100 == 0) log("d3d9: CreateTexture #%d %ux%u lv %u usage %x fmt %u pool %u", total, t->w, t->h, t->levels, t->usage, t->fmt, t->pool); }
 	writeOut(ARG(7), t);
 	SET(0);
 } END;
