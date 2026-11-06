@@ -131,6 +131,9 @@ int main(int argc, char** argv)
 	std::set<uint32_t> tableTargets;
 	std::map<std::string, uint64_t> exotic;
 
+	std::set<uint32_t> immCand;
+	auto drain = [&]()
+	{
 	while (!work.empty())
 	{
 		uint32_t pc = work.back();
@@ -182,6 +185,7 @@ int main(int argc, char** argv)
 							uint8_t prev = 0;
 							if (v >= imageBase && isCode(v) && readVA(v - 1, &prev, 1) && (prev == 0xcc || prev == 0xc3 || prev == 0x90 || prev == 0xc2) && !funcs.count(v))
 							{ addFunc(v); st["imm_code_seed"]++; }
+							else if (v >= imageBase && isCode(v)) immCand.insert(v);
 						}
 				if (id == X86_INS_CALL || id == X86_INS_JMP || (insn->detail->groups_count && false)) {}
 				bool isJcc = false, isCall = id == X86_INS_CALL, isJmp = id == X86_INS_JMP;
@@ -232,6 +236,19 @@ int main(int argc, char** argv)
 		}
 	}
 
+	};
+	drain();
+	// Immediates that point right after an unconditional jump/ret that has been decoded, at an address no decoded
+	// instruction covers, are function pointers too (e.g. `mov [eax], offset fn` where fn follows a short jmp).
+	for (bool again = true; again;)
+	{
+		again = false;
+		auto at = [&](uint32_t va, uint8_t b) { uint8_t x = 0; return seenInsn.count(va) && readVA(va, &x, 1) && x == b; };
+		for (uint32_t v : immCand)
+			if (!funcs.count(v) && !seenInsn.count(v) && (at(v - 2, 0xeb) || at(v - 5, 0xe9) || at(v - 1, 0xc3) || at(v - 3, 0xc2)))
+			{ addFunc(v); st["imm_code_seed2"]++; again = true; }
+		if (again) drain();
+	}
 	printf("image base 0x%x entry 0x%x\n", imageBase, imageBase + entryRva);
 	printf("functions: %zu (seeds from data pointers: %zu)\n", funcs.size(), dataPtrs);
 	printf("distinct jump-table targets: %zu\n", tableTargets.size());
