@@ -6,6 +6,7 @@
 
 #include <sys/stat.h>
 
+#include <atomic>
 #include <chrono>
 #include <map>
 #include <mutex>
@@ -318,7 +319,14 @@ H("IDirect3DDevice9::ShowCursor") { SET(0); } END;
 H("IDirect3DDevice9::GetNumberOfSwapChains") { SET(1); } END;
 H("IDirect3DDevice9::GetSwapChain") { Obj* s = newObj(ISwap); writeOut(ARG(2), s); SET(0); } END;
 H("IDirect3DDevice9::Reset") { uint32_t pp = ARG(1); if (guest::load<uint32_t>(pp) && guest::load<uint32_t>(pp + 4)) { backW = guest::load<uint32_t>(pp); backH = guest::load<uint32_t>(pp + 4); } SET(0); } END;
-H("IDirect3DDevice9::Present") { std::this_thread::sleep_for(std::chrono::milliseconds(16)); SET(0); } END;
+H("IDirect3DDevice9::Present")
+{
+	static std::atomic<uint32_t> frames{0};
+	uint32_t n = ++frames;
+	if (n == 1 || n % 300 == 0) log("d3d9: Present #%u", n);
+	std::this_thread::sleep_for(std::chrono::milliseconds(16));
+	SET(0);
+} END;
 H("IDirect3DDevice9::GetBackBuffer")
 {
 	static Obj* back = nullptr;
