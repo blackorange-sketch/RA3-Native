@@ -409,6 +409,10 @@ H("ID3DXEffect::SetTexture")
 {
 	PRef r = refOf(o, ARG(1));
 	if (r.valid()) r.p->texObj = ARG(2);
+	{
+		static int nl = 0;
+		if (nl++ < 40) log("fx: SetTexture handle %x valid %d name '%s' tex %x", ARG(1), (int)r.valid(), r.valid() ? r.p->name.c_str() : "", ARG(2));
+	}
 	SET(0);
 } END;
 H("ID3DXEffect::SetString") { SET(0); } END;
@@ -567,10 +571,14 @@ void fxApplyPass(Obj* o)
 				int k = fxrt::findParam(*fx, c.name);
 				if (k < 0 || c.regIndex >= 16) continue;
 				const FxParam& sp = fx->params[k];
+				{
+					static int nl = 0;
+					if (nl++ < 40) log("fx: sampler '%s' reg %u param %d smpTex %u texObj %x linkedTex %x", c.name.c_str(), c.regIndex, k, sp.smpTex, sp.texObj, sp.smpTex ? fx->params[sp.smpTex - 1].texObj : 0u);
+				}
 				if (sp.smpTex)
 				{
 					uint32_t t = fx->params[sp.smpTex - 1].texObj;
-					dev.tex[c.regIndex] = t ? objectAt(t) : nullptr;
+					if (t) dev.tex[c.regIndex] = objectAt(t);
 				}
 				else if (sp.texObj) dev.tex[c.regIndex] = objectAt(sp.texObj);
 				for (auto& s : sp.smp) if (s.op < 16) dev.samp[c.regIndex][s.op] = s.v;
