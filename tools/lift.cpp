@@ -533,6 +533,12 @@ struct Gen
 			if (sz != 4) { ok = false; break; }
 			e.line("{ uint32_t v = G32(esp); esp += 4; " + e.wr(op(0), "v") + " }");
 			break;
+		case X86_INS_PUSHAL:
+			e.line("{ uint32_t t = esp; esp -= 4; S32(esp, eax); esp -= 4; S32(esp, ecx); esp -= 4; S32(esp, edx); esp -= 4; S32(esp, ebx); esp -= 4; S32(esp, t); esp -= 4; S32(esp, ebp); esp -= 4; S32(esp, esi); esp -= 4; S32(esp, edi); }");
+			break;
+		case X86_INS_POPAL:
+			e.line("{ edi = G32(esp); esp += 4; esi = G32(esp); esp += 4; ebp = G32(esp); esp += 8; ebx = G32(esp); esp += 4; edx = G32(esp); esp += 4; ecx = G32(esp); esp += 4; eax = G32(esp); esp += 4; }");
+			break;
 		case X86_INS_LEAVE: e.line("esp = ebp; ebp = G32(esp); esp += 4;"); break;
 
 		case X86_INS_ADD: alu("add"); break;
