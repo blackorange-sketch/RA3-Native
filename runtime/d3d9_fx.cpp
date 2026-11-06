@@ -372,15 +372,24 @@ H("ID3DXEffect::SetFloat") { PRef r = refOf(o, ARG(1)); if (r.valid()) { uint32_
 H("ID3DXEffect::SetBoolArray") { PRef r = refOf(o, ARG(1)); if (r.valid() && ARG(2)) { std::vector<uint32_t> v(ARG(3)); for (uint32_t i = 0; i < ARG(3); i++) v[i] = guest::load<uint32_t>(ARG(2) + 4 * i) ? 1 : 0; writeVals(r, v.data(), ARG(3), 1); } SET(0); } END;
 H("ID3DXEffect::SetIntArray") { PRef r = refOf(o, ARG(1)); if (r.valid() && ARG(2)) writeVals(r, (const uint32_t*)guest::host(ARG(2)), ARG(3), 2); SET(0); } END;
 H("ID3DXEffect::SetFloatArray") { PRef r = refOf(o, ARG(1)); if (r.valid() && ARG(2)) writeVals(r, (const uint32_t*)guest::host(ARG(2)), ARG(3), 3); SET(0); } END;
+static void noteBad(const char* m, uint32_t h, const PRef& r)
+{
+	static int n = 0;
+	if (n >= 25) return;
+	if (!r.valid()) { n++; const HRec* rc = getRec(h); log("fx: %s with invalid handle %x (rec %p kind %d)", m, h, (const void*)rc, rc ? (int)rc->kind : -1); }
+	else if (r.p->cls == 4 || r.p->type >= 5) { n++; log("fx: %s on object param '%s' type %u cls %u", m, r.p->name.c_str(), r.p->type, r.p->cls); }
+}
 H("ID3DXEffect::SetVector")
 {
 	PRef r = refOf(o, ARG(1));
+	noteBad("SetVector", ARG(1), r);
 	if (r.valid() && ARG(2)) writeVals(r, (const uint32_t*)guest::host(ARG(2)), std::min(r.ty->scalars(), 4u), 3);
 	SET(0);
 } END;
 H("ID3DXEffect::SetVectorArray")
 {
 	PRef r = refOf(o, ARG(1));
+	noteBad("SetVectorArray", ARG(1), r);
 	if (r.valid() && ARG(2))
 	{
 		uint32_t per = std::min(r.ty->scalars(), 4u), stride = r.ty->scalars();
@@ -396,6 +405,7 @@ H("ID3DXEffect::SetVectorArray")
 static void setMatrices(CPU* c, Obj* o, bool transpose, bool array, bool pointers)
 {
 	PRef r = refOf(o, ARG(1));
+	noteBad("SetMatrix*", ARG(1), r);
 	if (r.valid() && ARG(2))
 	{
 		uint32_t n = array ? ARG(3) : 1, stride = r.ty->scalars();
