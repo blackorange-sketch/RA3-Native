@@ -123,6 +123,7 @@ void threadMain(ThreadObj* t)
 	traceRegister(t->tid);
 	cpu.fsbase = tctx.teb;
 	cpu.r[ESP] = top - 16;
+	if (t->fn == 0xa2b5e0 || t->fn == 0xa2b850) log("thread %u starts: wrapper %08x real fn %08x arg %08x", t->tid, t->fn, guest::load<uint32_t>(t->arg + 0x10), guest::load<uint32_t>(t->arg + 0x14));
 	uint32_t r = callGuestRet(&cpu, t->fn, {t->arg}, 4);
 	std::lock_guard<std::mutex> l(waitMu);
 	t->exitCode = r;
