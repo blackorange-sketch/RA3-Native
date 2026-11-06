@@ -638,17 +638,76 @@ void clear(uint32_t count, uint32_t rects, uint32_t flags, uint32_t color, float
 // to a fresh spot in a ring (orphaned when full), which never touches data an earlier draw reads.
 static GLuint gRingVbo = 0, gRingIbo = 0;
 static uint32_t gRingVPos = 0, gRingIPos = 0;
-static const uint32_t kRingV = 16u << 20, kRingI = 4u << 20;
+static const uint32_t kRingV = 32u << 20, kRingI = 8u << 20;
 static uint64_t gRingUs, gRingOrph, gRingBytes, gRingCalls, gRingNs;
 static inline uint64_t ringNow() { return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+typedef void (*PFN_bufStorage)(GLenum, GLsizeiptr, const void*, GLbitfield);
+struct PRing
+{
+	uint8_t* ptr = nullptr;
+	GLsync fence[4] = {};
+	int seg = 0;
+	bool tried = false, ok = false;
+};
+static PRing gPV, gPI;
+static PFN_bufStorage pBufStorage = nullptr;
 static int64_t ringPut(GLenum target, GLuint& buf, uint32_t& pos, uint32_t cap, const void* head, uint32_t headBytes, const void* data, uint32_t bytes)
 {
 	uint32_t total = headBytes + bytes;
 	if (total > cap / 2) { gRingNs++; return -1; }
 	uint64_t rt0 = ringNow(); gRingCalls++; gRingBytes += bytes;
-	if (!buf) { glGenBuffers(1, &buf); glBindBuffer(target, buf); glBufferData(target, cap, nullptr, GL_STREAM_DRAW); pos = 0; }
+	PRing& pr = (target == GL_ARRAY_BUFFER) ? gPV : gPI;
+	if (!buf)
+	{
+		glGenBuffers(1, &buf); glBindBuffer(target, buf);
+		if (!pr.tried)
+		{
+			// try the persistent path: the buffer name is replaced inside
+			const char* ext = (const char*)glGetString(GL_EXTENSIONS);
+			if (ext && strstr(ext, "GL_EXT_buffer_storage"))
+			{
+				if (!pBufStorage) pBufStorage = (PFN_bufStorage)eglGetProcAddress("glBufferStorageEXT");
+				if (pBufStorage)
+				{
+					const GLbitfield fl = 0x0002 | 0x0040 | 0x0080;
+					GLuint nb; glGenBuffers(1, &nb); glBindBuffer(target, nb);
+					pBufStorage(target, cap, nullptr, fl);
+					uint8_t* p = (uint8_t*)glMapBufferRange(target, 0, cap, fl);
+					if (p && glGetError() == GL_NO_ERROR) { glDeleteBuffers(1, &buf); buf = nb; pr.ptr = p; pr.ok = true; log("GL: persistent ring %u KB target %x", cap >> 10, target); }
+					else { glDeleteBuffers(1, &nb); log("GL: persistent mapping failed"); }
+				}
+			}
+			pr.tried = true;
+		}
+		if (!pr.ok) { glBindBuffer(target, buf); glBufferData(target, cap, nullptr, GL_STREAM_DRAW); }
+		pos = 0;
+	}
 	glBindBuffer(target, buf);
 	pos = (pos + 15) & ~15u;
+	if (pr.ok)
+	{
+		const uint32_t segSz = cap / 4;
+		if (pos + total > cap) pos = 0;
+		// entering a new segment: fence the one we left, wait for the one we enter
+		int segNow = (int)((pos + total - 1) / segSz);
+		if (segNow != pr.seg)
+		{
+			if (pr.fence[pr.seg]) glDeleteSync(pr.fence[pr.seg]);
+			pr.fence[pr.seg] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+			if (pr.fence[segNow])
+			{
+				glClientWaitSync(pr.fence[segNow], GL_SYNC_FLUSH_COMMANDS_BIT, 200000000ull);
+				glDeleteSync(pr.fence[segNow]);
+				pr.fence[segNow] = nullptr;
+			}
+			pr.seg = segNow;
+		}
+		uint32_t at = pos + headBytes;
+		if (bytes) memcpy(pr.ptr + at, data, bytes);
+		pos += total;
+		gRingUs += ringNow() - rt0;
+		return at;
+	}
 	if (pos + total > cap) { glBufferData(target, cap, nullptr, GL_STREAM_DRAW); pos = 0; gRingOrph++; }
 	uint32_t at = pos + headBytes;
 	if (bytes)
