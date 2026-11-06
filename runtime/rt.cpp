@@ -359,6 +359,13 @@ void unsupported(CPU* c, uint32_t va, const char* what)
 
 void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t ecx)
 {
+	if (fn != 0x9ff320u)
+	{
+		static std::atomic<int> cnt[2];
+		int k = fn == 0x9bfca0u ? 0 : 1;
+		if (cnt[k]++ < 60) rt::log("hook %08x(ecx=%08x, %08x, %08x, %08x) -> eax=%08x", fn, ecx, a0, a1, a2, c->r[EAX]);
+		return;
+	}
 	rt::log("hook %08x(ecx=%08x, %08x, %08x, %08x) -> eax=%08x", fn, ecx, a0, a1, a2, c->r[EAX]);
 	auto tryStr = [](uint32_t p) -> std::string {
 		if (p < 0x400000 || (p >= 0x60000000 && p < 0x71000000) || p >= 0x7f000000) return "";
