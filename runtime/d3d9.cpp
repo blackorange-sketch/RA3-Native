@@ -98,6 +98,8 @@ void comDispatch(CPU* c)
 		SET(0);
 		return;
 	}
+	if (imports::current->calls == 1 && (imports::current->name.find("ID3DXEffect") != std::string::npos || imports::current->name.find("Texture") != std::string::npos))
+		log("d3d9: first call %s", imports::current->name.c_str());
 	h(c, objectAt(ARG(0)));
 }
 
