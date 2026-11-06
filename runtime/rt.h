@@ -29,7 +29,7 @@ void log(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 [[noreturn]] void fatal(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 
 // ---- guest memory layout
-constexpr uint32_t HeapBase = 0x10000000, HeapEnd = 0x60000000;      // malloc arena
+constexpr uint32_t HeapBase = 0x01000000, HeapEnd = 0x60000000;      // malloc arena
 constexpr uint32_t VmBase = 0x60000000, VmEnd = 0x6f000000;           // VirtualAlloc
 constexpr uint32_t ThreadBase = 0x71000000, ThreadEnd = 0x7f000000;   // thread stacks and TEBs
 constexpr uint32_t StackSize = 0x400000;

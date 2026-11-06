@@ -443,6 +443,13 @@ H("IDirect3DCubeTexture9::LockRect")
 	guest::store<uint32_t>(pLocked + 4, o->data + o->levelOff[face * o->levels + lvl]);
 	SET(0);
 } END;
+H("IDirect3DVolumeTexture9::GetLevelDesc")
+{
+	uint32_t p = ARG(2), l = ARG(1);
+	guest::store<uint32_t>(p, o->fmt); guest::store<uint32_t>(p + 4, 4); guest::store<uint32_t>(p + 8, o->usage); guest::store<uint32_t>(p + 12, o->pool);
+	guest::store<uint32_t>(p + 16, std::max(1u, o->w >> l)); guest::store<uint32_t>(p + 20, std::max(1u, o->h >> l)); guest::store<uint32_t>(p + 24, std::max(1u, o->d >> l));
+	SET(0);
+} END;
 H("IDirect3DVolumeTexture9::GetLevelCount") { SET(o->levels); } END;
 H("IDirect3DVolumeTexture9::LockBox")
 {

@@ -17,21 +17,27 @@ void watchLog(const char* what, uint32_t p, uint32_t sz)
 // two from 32 bytes; larger blocks come straight from the arena and are recycled by exact size.
 constexpr uint32_t Magic = 0xa110ca7e;
 std::mutex mu;
-uint32_t bump = HeapBase, committedTo = HeapBase;
+uint32_t bump = HeapBase, committedTo = HeapBase, lastReq = 0;
+uint64_t liveBytes = 0, freeBytes = 0;
 std::map<uint32_t, std::vector<uint32_t>> freeBySize;   // class size -> payload addresses
 
 uint32_t classOf(uint32_t n)
 {
-	uint32_t s = 32;
-	while (s < n) s <<= 1;
-	return s;
+	// Tight classes keep fragmentation and waste low: powers of two up to 256 B, quarter-octave steps up to
+	// 1 MiB, 64 KiB multiples above (big stream buffers).
+	if (n <= 256) { uint32_t s = 32; while (s < n) s <<= 1; return s; }
+	if (n > (1u << 20)) return (n + 0xffffu) & ~0xffffu;
+	uint32_t s = 256;
+	while (s * 2 < n) s <<= 1;
+	uint32_t step = s / 4;
+	return (n + step - 1) / step * step;
 }
 
 void commitTo(uint32_t end)
 {
 	if (end <= committedTo) return;
 	uint32_t newEnd = (end + 0xfffff) & ~0xfffffu;   // 1 MiB steps
-	if (newEnd > HeapEnd) fatal("guest heap exhausted");
+	if (newEnd > HeapEnd) fatal("guest heap exhausted (request %u bytes, live %llu MiB, free-listed %llu MiB)", lastReq, (unsigned long long)(liveBytes >> 20), (unsigned long long)(freeBytes >> 20));
 	if (!guest::commit(committedTo, newEnd - committedTo)) fatal("cannot commit guest heap");
 	committedTo = newEnd;
 }
@@ -44,9 +50,10 @@ uint32_t gmalloc(uint32_t size, uint32_t align)
 	std::lock_guard<std::mutex> l(mu);
 	uint32_t cls = classOf(size ? size : 1);
 	if (align > 16) cls = classOf(cls + align);
+	lastReq = size;
 	auto& fl = freeBySize[cls];
 	uint32_t block;
-	if (!fl.empty()) { block = fl.back(); fl.pop_back(); }
+	if (!fl.empty()) { block = fl.back(); fl.pop_back(); freeBytes -= cls; }
 	else
 	{
 		block = (bump + 15) & ~15u;
@@ -60,6 +67,7 @@ uint32_t gmalloc(uint32_t size, uint32_t align)
 		payload = (block + align - 1) & ~(align - 1);
 		if (payload == block) payload += align;   // keep room for the header
 	}
+	liveBytes += cls;
 	guest::store<uint32_t>(payload - 16, cls);
 	guest::store<uint32_t>(payload - 12, Magic);
 	guest::store<uint32_t>(payload - 8, block);   // original block start (differs when over-aligned)
@@ -77,6 +85,7 @@ void gfree(uint32_t p)
 	if (watchAddr && p <= watchAddr && watchAddr < p + guest::load<uint32_t>(p - 16)) watchLog("free", p, 0);
 	guest::store<uint32_t>(p - 12, 0);
 	freeBySize[cls].push_back(block);
+	liveBytes -= cls; freeBytes += cls;
 }
 
 uint32_t gsize(uint32_t p) { return p ? guest::load<uint32_t>(p - 4) : 0; }
