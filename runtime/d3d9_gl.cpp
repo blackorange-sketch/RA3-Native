@@ -444,10 +444,18 @@ void bindSamplers(Prog* p, ShaderObj* ps)
 	for (int i = 0; i < 16; i++)
 	{
 		int st = ps->info.samplerType[i];
+		{
+			static int nl3 = 0;
+			if ((st || p->s[i] >= 0) && nl3++ < 40) log("GL: sampler slot %d psType %d loc %d", i, st, p->s[i]);
+		}
 		if (!st || p->s[i] < 0) continue;
 		GLenum target = st == 3 ? GL_TEXTURE_CUBE_MAP : st == 4 ? GL_TEXTURE_3D : GL_TEXTURE_2D;
 		glActiveTexture(GL_TEXTURE0 + i);
 		Obj* t = dev.tex[i];
+		{
+			static int nl2 = 0;
+			if (nl2++ < 40) log("GL: ps sampler %d type %d tex %p (iface %d) loc %d", i, st, (void*)t, t ? (int)texOwner(t)->iface : -1, p->s[i]);
+		}
 		GLuint name = 0;
 		bool noFilter = false;
 		if (t && targetOf(texOwner(t)) == target)
