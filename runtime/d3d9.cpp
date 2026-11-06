@@ -546,7 +546,7 @@ static Image parseImage(uint32_t p, uint32_t n)
 		im.cube = (caps2 & 0x200) != 0;
 		if (flags & 0x800000) { im.vol = true; im.d = guest::load<uint32_t>(p + 24); im.type = 4; }
 		if (im.cube) im.type = 5;
-		im.fmt = ddsFormat(p + 4);
+		im.fmt = ddsFormat(p);
 		im.dataOff = 128;
 	}
 	else
