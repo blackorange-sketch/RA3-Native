@@ -655,7 +655,7 @@ IMP_STD(K, ReadFile, 5)
 		if (++total % 3000 == 0)
 		{
 			std::string o;
-			for (auto& kv : per) { size_t k = kv.first.rfind('\\'); o += " " + (k == std::string::npos ? kv.first : kv.first.substr(k + 1)) + "=" + std::to_string(kv.second.first) + "/" + std::to_string(kv.second.second >> 10) + "K"; }
+			for (auto& kv : per) { size_t k = kv.first.rfind('/'); o += " " + (k == std::string::npos ? kv.first : kv.first.substr(k + 1)) + "=" + std::to_string(kv.second.first) + "/" + std::to_string(kv.second.second >> 10) + "K"; }
 			log("io: reads=%llu%s", (unsigned long long)total, o.c_str());
 		}
 	}
