@@ -5,6 +5,11 @@
 #ifdef __ANDROID__
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
+#include <unistd.h>
+#include <sys/syscall.h>
+#ifndef gettid
+#define gettid() ((int)syscall(SYS_gettid))
+#endif
 
 #include <atomic>
 #include <chrono>
