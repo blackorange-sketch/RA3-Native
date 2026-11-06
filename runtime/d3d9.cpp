@@ -414,7 +414,7 @@ H("IDirect3DDevice9::GetSoftwareVertexProcessing") { SET(0); } END;
 // ---- resources: textures
 H("IDirect3DTexture9::GetLevelCount") { SET(o->levels); } END;
 H("IDirect3DTexture9::GetLevelDesc") { Obj tmp = *o; tmp.w = std::max(1u, o->w >> ARG(1)); tmp.h = std::max(1u, o->h >> ARG(1)); fillDesc(ARG(2), &tmp); SET(0); } END;
-H("IDirect3DTexture9::GetSurfaceLevel") { writeOut(ARG(3), surfaceOfLevel(o, ARG(1), 0)); SET(0); } END;
+H("IDirect3DTexture9::GetSurfaceLevel") { writeOut(ARG(2), surfaceOfLevel(o, ARG(1), 0)); SET(0); } END;
 H("IDirect3DTexture9::LockRect")
 {
 	uint32_t lvl = ARG(1), pLocked = ARG(2), pRect = ARG(3);
@@ -432,7 +432,7 @@ H("IDirect3DTexture9::LockRect")
 H("IDirect3DTexture9::UnlockRect") { SET(0); } END;
 H("IDirect3DCubeTexture9::GetLevelCount") { SET(o->levels); } END;
 H("IDirect3DCubeTexture9::GetLevelDesc") { Obj tmp = *o; tmp.w = tmp.h = std::max(1u, o->w >> ARG(1)); fillDesc(ARG(2), &tmp); SET(0); } END;
-H("IDirect3DCubeTexture9::GetCubeMapSurface") { writeOut(ARG(4), surfaceOfLevel(o, ARG(2), ARG(1))); SET(0); } END;
+H("IDirect3DCubeTexture9::GetCubeMapSurface") { writeOut(ARG(3), surfaceOfLevel(o, ARG(2), ARG(1))); SET(0); } END;
 H("IDirect3DCubeTexture9::LockRect")
 {
 	uint32_t face = ARG(1), lvl = ARG(2), pLocked = ARG(3);
