@@ -779,6 +779,28 @@ void draw(const DrawCall& dc)
 					{ char b5[96]; const float* f = dev.vsF + 4 * (cc.regIndex + r); snprintf(b5, sizeof b5, " [%g %g %g %g]", (double)f[0], (double)f[1], (double)f[2], (double)f[3]); vv += b5; }
 				log("DD   VS c %s r%u x%u:%s", cc.name.c_str(), cc.regIndex, cc.regCount, vv.c_str());
 			}
+		if (dn < 8 && dev.streams[0].vb && dev.streams[0].vb->data && dev.streams[0].stride)
+		{
+			Stream& s0 = dev.streams[0];
+			std::string o;
+			for (uint32_t k = 0; k < 6; k++)
+			{
+				int64_t vi = dc.baseVertex + (dc.indexed ? 0 : 0);
+				if (dc.indexed && dev.ib && dev.ib->data)
+				{
+					const uint8_t* ip = (const uint8_t*)guest::host(dev.ib->data);
+					vi += dev.ib->fmt == 102 ? ((const uint32_t*)ip)[dc.startIndex + k] : ((const uint16_t*)ip)[dc.startIndex + k];
+				}
+				else vi += k;
+				const float* f = (const float*)((const uint8_t*)guest::host(s0.vb->data) + s0.offset + (uint64_t)vi * s0.stride);
+				const float* m = dev.vsF + 44;   // World at r11 (checked above)
+				float cx = f[0] * m[0] + f[1] * m[4] + f[2] * m[8] + m[12], cy = f[0] * m[1] + f[1] * m[5] + f[2] * m[9] + m[13];
+				float cz = f[0] * m[2] + f[1] * m[6] + f[2] * m[10] + m[14], cw = f[0] * m[3] + f[1] * m[7] + f[2] * m[11] + m[15];
+				char b6[160]; snprintf(b6, sizeof b6, " v%lld(%g %g %g)->clip(%g %g %g %g)", (long long)vi, (double)f[0], (double)f[1], (double)f[2], (double)cx, (double)cy, (double)cz, (double)cw);
+				o += b6;
+			}
+			log("DD   verts%s", o.c_str());
+		}
 		log("DD #%d prim %u cnt %u vs %p ps %p%s | z %u zw %u blend %u src %u dst %u cull %u at %u | rt %p", dn++, dc.prim, dc.primCount, (void*)vs, (void*)ps, tx.c_str(),
 			dev.rs[7], dev.rs[14], dev.rs[27], dev.rs[19], dev.rs[20], dev.rs[22], dev.rs[15], (void*)dev.rt0);
 	}
