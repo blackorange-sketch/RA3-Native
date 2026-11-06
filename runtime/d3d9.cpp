@@ -584,6 +584,7 @@ static void dxTexture(CPU* c, d3d::Iface kind, uint32_t srcIdx, uint32_t outIdx)
 	t->w = im.w; t->h = im.h; t->d = im.d; t->fmt = im.fmt; t->levels = im.levels; t->pool = 1;
 	d3d::allocLevels(t, kind == d3d::ICube ? 6 : 1);
 	loadPayload(t, src, n, im);
+	{ static int cnt = 0; cnt++; if (cnt <= 40 || cnt % 50 == 0) log("d3d9: D3DXCreateTexture #%d kind %d %ux%u lv %u fmt %x (%u bytes) -> %08x", cnt, (int)kind, t->w, t->h, t->levels, t->fmt, n, t->addr); }
 	guest::store<uint32_t>(ARG(outIdx), t->addr);
 	SET(0);
 }
