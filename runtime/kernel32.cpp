@@ -648,6 +648,17 @@ IMP_STD(K, ReadFile, 5)
 	}
 	if (n < 0) { SET(0); return; }
 	gReadCalls++; gReadBytes += (uint64_t)n;
+	{
+		static std::mutex m; static std::map<std::string, std::pair<uint64_t, uint64_t>> per; static uint64_t total = 0;
+		std::lock_guard<std::mutex> g(m);
+		auto& e = per[f->path]; e.first++; e.second += (uint64_t)n;
+		if (++total % 3000 == 0)
+		{
+			std::string o;
+			for (auto& kv : per) { size_t k = kv.first.rfind('\\'); o += " " + (k == std::string::npos ? kv.first : kv.first.substr(k + 1)) + "=" + std::to_string(kv.second.first) + "/" + std::to_string(kv.second.second >> 10) + "K"; }
+			log("io: reads=%llu%s", (unsigned long long)total, o.c_str());
+		}
+	}
 	if (ARG(3)) guest::store<uint32_t>(ARG(3), (uint32_t)n);
 	SET(1);
 }
