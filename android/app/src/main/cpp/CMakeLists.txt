@@ -11,7 +11,7 @@ add_library(ra3native SHARED
   android_main.cpp
   ${GLUE}/android_native_app_glue.c
   ${RT}/guest.cpp ${RT}/imports.cpp ${RT}/pe_loader.cpp ${RT}/heap.cpp ${RT}/rt.cpp ${RT}/fmt.cpp
-  ${RT}/crt.cpp ${RT}/kernel32.cpp ${RT}/misc.cpp ${RT}/ws2.cpp ${RT}/dsound.cpp ${RT}/d3d9.cpp ${RT}/gfx_gles.cpp ${RT}/launch.cpp
+  ${RT}/crt.cpp ${RT}/kernel32.cpp ${RT}/misc.cpp ${RT}/ws2.cpp ${RT}/dsound.cpp ${RT}/d3d9.cpp ${RT}/d3d9_dev.cpp ${RT}/d3d9_fx.cpp ${RT}/d3d9_gl.cpp ${RT}/gfx_gles.cpp ${RT}/launch.cpp
   ${LIFTED_SRC})
 target_include_directories(ra3native PRIVATE ${GLUE} ${RT} ${LIFTED_DIR})
 target_compile_definitions(ra3native PRIVATE RA3_TRACE)

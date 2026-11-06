@@ -149,8 +149,9 @@ struct Translator
 		{
 			if (!r.rel && defC.count(r.num)) { snprintf(b, sizeof b, "d%d", r.num); return b; }
 			si.numC = std::max(si.numC, r.num + 1);
-			if (r.rel) snprintf(b, sizeof b, "c[%d + int(a0.%s)]", r.num, compName(r.relComp).c_str());
-			else snprintf(b, sizeof b, "c[%d]", r.num);
+			if (r.rel) si.numC = 256;
+			if (r.rel) snprintf(b, sizeof b, "%sc[%d + int(a0.%s)]", si.isVs ? "v" : "p", r.num, compName(r.relComp).c_str());
+			else snprintf(b, sizeof b, "%sc[%d]", si.isVs ? "v" : "p", r.num);
 			return b;
 		}
 		case 3:   // vs: a0; ps: t#
@@ -169,14 +170,14 @@ struct Translator
 			return b;
 		case 7:
 			if (defI.count(r.num)) { snprintf(b, sizeof b, "di%d", r.num); return b; }
-			snprintf(b, sizeof b, "ci[%d]", r.num);
+			snprintf(b, sizeof b, "%sci[%d]", si.isVs ? "v" : "p", r.num);
 			return b;
 		case 8: ocUsed.insert(r.num); snprintf(b, sizeof b, "oC%d", r.num); return b;
 		case 9: si.writesDepth = true; return "oDepth";
 		case 10: snprintf(b, sizeof b, "s%d", r.num); return b;
 		case 14:
 			if (defB.count(r.num)) return defB[r.num] ? "true" : "false";
-			snprintf(b, sizeof b, "cb[%d]", r.num);
+			snprintf(b, sizeof b, "%scb[%d]", si.isVs ? "v" : "p", r.num);
 			return b;
 		case 17:
 			if (r.num == 0) { si.usesFragCoord = true; return "vPos"; }
@@ -500,9 +501,10 @@ inline bool translate(const uint8_t* bytes, size_t n, ShaderInfo& si)
 	std::string decl;
 	char buf[256];
 	// uniforms
-	snprintf(buf, sizeof buf, "uniform vec4 c[%d];\nuniform ivec4 ci[16];\nuniform bool cb[16];\n", si.isVs ? 256 : 224);
+	snprintf(buf, sizeof buf, "uniform vec4 %sc[%d];\nuniform ivec4 %sci[16];\nuniform bool %scb[16];\n", si.isVs ? "v" : "p", si.isVs ? 256 : 224, si.isVs ? "v" : "p", si.isVs ? "v" : "p");
 	decl += buf;
-	if (si.isVs) decl += "uniform float u_flip;\n";
+	if (si.isVs) decl += "uniform float u_flip;\nuniform int u_bgra;\n";
+	else decl += "uniform vec4 u_at;\n";
 	for (int i = 0; i < 16; i++)
 		if (si.samplerType[i])
 		{
@@ -536,7 +538,7 @@ inline bool translate(const uint8_t* bytes, size_t n, ShaderInfo& si)
 			snprintf(buf, sizeof buf, "layout(location = %d) in vec4 %s;\n", loc, nm.c_str());
 			decl += buf;
 			si.inputs[nm] = loc;
-			pre += "  vec4 i" + std::to_string(r) + " = " + nm + ";\n";
+			pre += "  vec4 i" + std::to_string(r) + " = ((u_bgra >> " + std::to_string(loc) + ") & 1) != 0 ? " + nm + ".zyxw : " + nm + ";\n";
 		}
 		// outputs
 		std::string post;
@@ -610,6 +612,10 @@ inline bool translate(const uint8_t* bytes, size_t n, ShaderInfo& si)
 			si.psOutputs |= 1 << r;
 		}
 		std::string post;
+		if (t.ocUsed.count(0))
+			post += "  if (u_at.x > 0.5) {\n    float aa = oC0.w, ar = u_at.y;\n    int af = int(u_at.x + 0.5);\n"
+			        "    bool ap = af == 1 ? false : af == 2 ? aa < ar : af == 3 ? aa == ar : af == 4 ? aa <= ar : af == 5 ? aa > ar : af == 6 ? aa != ar : af == 7 ? aa >= ar : true;\n"
+			        "    if (!ap) discard;\n  }\n";
 		for (int r : t.ocUsed) post += "  o_C" + std::to_string(r) + " = oC" + std::to_string(r) + ";\n";
 		if (si.writesDepth) { pre += "  vec4 oDepth = vec4(0.0);\n"; post += "  gl_FragDepth = oDepth.x;\n"; }
 		si.decls = decl + kHelpers;

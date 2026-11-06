@@ -83,7 +83,7 @@ void initOverlayGL()
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 }
 
-void drawOverlay()   // caller owns the context
+void drawOverlayImpl()   // caller owns the context
 {
 	std::lock_guard<std::mutex> l(mu);
 	if (overlay.empty()) return;
@@ -109,11 +109,9 @@ void setWindow(void* w)
 	{
 		if (surf != EGL_NO_SURFACE)
 		{
-			if (!ownerIsGame || true) eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+			if (!ownerIsGame) { eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT); curValid = false; }
 			eglDestroySurface(dpy, surf);
 			surf = EGL_NO_SURFACE;
-			curValid = false;
-			ownerIsGame = false;
 			surfGen++;
 		}
 		win = nullptr;
@@ -140,9 +138,15 @@ void setWindow(void* w)
 	egl("eglCreateWindowSurface");
 	surfGen++;
 	if (surf == EGL_NO_SURFACE) return;
+	if (ownerIsGame)
+	{
+		eglQuerySurface(dpy, surf, EGL_WIDTH, &surfW);
+		eglQuerySurface(dpy, surf, EGL_HEIGHT, &surfH);
+		rt::log("EGL: new surface %dx%d (the game thread picks it up at the next present)", surfW, surfH);
+		return;
+	}
 	owner = std::this_thread::get_id();
-	ownerIsGame = false;
-	makeCurrentHere();
+	curValid = makeCurrentHere();
 	rt::log("EGL: surface %dx%d, GL %s / %s", surfW, surfH, (const char*)glGetString(GL_VERSION), (const char*)glGetString(GL_RENDERER));
 }
 
@@ -196,7 +200,7 @@ void drawOverlayAndPresent()
 	}
 	glClearColor(0.06f, 0.08f, 0.1f, 1.f);
 	glClear(GL_COLOR_BUFFER_BIT);
-	drawOverlay();
+	drawOverlayImpl();
 	eglSwapBuffers(dpy, surf);
 }
 
@@ -210,21 +214,16 @@ void beginFrame()
 	}
 }
 
-void clear(uint32_t flags, uint32_t c, float z, uint32_t st)
+void swap()
 {
 	if (!ownerIsGame || surf == EGL_NO_SURFACE) return;
-	GLbitfield m = 0;
-	if (flags & 1) { glColorMask(1, 1, 1, 1); glClearColor(((c >> 16) & 255) / 255.f, ((c >> 8) & 255) / 255.f, (c & 255) / 255.f, ((c >> 24) & 255) / 255.f); m |= GL_COLOR_BUFFER_BIT; }
-	if (flags & 2) { glDepthMask(GL_TRUE); glClearDepthf(z); m |= GL_DEPTH_BUFFER_BIT; }
-	if (flags & 4) { glClearStencil((GLint)st); m |= GL_STENCIL_BUFFER_BIT; }
-	if (m) glClear(m);
+	eglSwapBuffers(dpy, surf);
 }
 
-void present(bool drewAnything)
+void drawOverlay()
 {
 	if (!ownerIsGame || surf == EGL_NO_SURFACE) return;
-	if (!drewAnything) drawOverlay();   // nothing rendered yet: show the console
-	eglSwapBuffers(dpy, surf);
+	drawOverlayImpl();
 }
 }   // namespace gfx
 #endif

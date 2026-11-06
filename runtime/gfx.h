@@ -18,8 +18,8 @@ void drawOverlayAndPresent();               // platform thread, when it owns the
 bool ownedByGame();
 // per-frame hooks for the D3D layer (game thread)
 void beginFrame();
-void present(bool drewAnything);
-void clear(uint32_t flags, uint32_t d3dColor, float z, uint32_t stencil);
+void swap();                  // present the window surface (game thread, after it drew the frame)
+void drawOverlay();           // paint the console picture over the current frame
 #else
 inline void setWindow(void*) {}
 inline bool ready() { return false; }
@@ -31,7 +31,7 @@ inline void postOverlay(const uint32_t*, int, int) {}
 inline void drawOverlayAndPresent() {}
 inline bool ownedByGame() { return false; }
 inline void beginFrame() {}
-inline void present(bool) {}
-inline void clear(uint32_t, uint32_t, float, uint32_t) {}
+inline void swap() {}
+inline void drawOverlay() {}
 #endif
 }

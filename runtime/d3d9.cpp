@@ -1,7 +1,8 @@
 // Direct3D 9 / D3DX9 layer. Guest COM objects are small guest-memory blocks {vtable, refcount, id}; every
 // method is a dynamically created import stub that lands in comDispatch(). This first version is a "null"
 // device: resources have real storage (Lock/Unlock work) but nothing is drawn yet.
-#include "d3d9.h"
+#include "d3d9_fxrt.h"
+#include "d3d9_int.h"
 #include "d3dx_fx.h"
 #include "gfx.h"
 
@@ -20,6 +21,9 @@ using namespace rt;
 
 namespace d3d
 {
+std::map<std::string, Handler>& handlers() { static std::map<std::string, Handler> h; return h; }
+Reg::Reg(const char* name, Handler h) { handlers()[name] = h; }
+uint32_t backW = 1280, backH = 720;
 namespace
 {
 struct Method { const char* name; int nargs; };
@@ -31,18 +35,11 @@ std::vector<Method> resourceM() { return cat(unknown(), {{"GetDevice", 1}, {"Set
 std::vector<Method> baseTexM() { return cat(resourceM(), {{"SetLOD", 1}, {"GetLOD", 0}, {"GetLevelCount", 0}, {"SetAutoGenFilterType", 1}, {"GetAutoGenFilterType", 0}, {"GenerateMipSubLevels", 0}}); }
 
 IfaceDef defs[INumIfaces];
-std::map<std::string, Handler>& handlers() { static std::map<std::string, Handler> h; return h; }
 struct MethodInfo { Handler h; };
 std::vector<MethodInfo> methodInfos;
 std::mutex objMu;
 std::unordered_map<uint32_t, Obj*> objs;
 bool defsReady = false;
-
-struct Reg { Reg(const char* name, Handler h) { handlers()[name] = h; } };
-#define H(name) static Reg CAT(reg_, __LINE__)(name, [](CPU* c, Obj* o) -> void
-#define CAT2(a, b) a##b
-#define CAT(a, b) CAT2(a, b)
-#define END )
 
 void initDefs()
 {
@@ -131,7 +128,23 @@ void buildVtable(IfaceDef& d)
 
 Obj* theDevice = nullptr;
 Obj* theD3D = nullptr;
-uint32_t backW = 1280, backH = 720;
+}
+
+ShaderObj* getShader(const uint8_t* code, size_t n)
+{
+	static std::map<uint64_t, std::unique_ptr<ShaderObj>> cache;
+	static std::mutex mu;
+	uint64_t h = 1469598103934665603ull;
+	for (size_t i = 0; i < n; i++) h = (h ^ code[i]) * 1099511628211ull;
+	std::lock_guard<std::mutex> l(mu);
+	auto it = cache.find(h);
+	if (it != cache.end()) return it->second.get();
+	auto sh = std::make_unique<ShaderObj>();
+	sh->code.assign(code, code + n);
+	sh->hash = h;
+	sh->ok = shdr::translate(code, n, sh->info);
+	if (!sh->ok) log("d3d9: shader %016llx translate FAILED: %s", (unsigned long long)h, sh->info.err.c_str());
+	return (cache[h] = std::move(sh)).get();
 }
 
 Obj* objectAt(uint32_t addr)
@@ -157,9 +170,9 @@ Obj* newObj(Iface i)
 }
 
 // ---- formats
-static bool isBlock(uint32_t f) { return f == 0x31545844 || f == 0x32545844 || f == 0x33545844 || f == 0x34545844 || f == 0x35545844; }
-static uint32_t blockBytes(uint32_t f) { return f == 0x31545844 ? 8 : 16; }
-static uint32_t bpp(uint32_t f)
+bool isBlock(uint32_t f) { return f == 0x31545844 || f == 0x32545844 || f == 0x33545844 || f == 0x34545844 || f == 0x35545844; }
+uint32_t blockBytes(uint32_t f) { return f == 0x31545844 ? 8 : 16; }
+uint32_t bpp(uint32_t f)
 {
 	switch (f)
 	{
@@ -172,8 +185,8 @@ static uint32_t bpp(uint32_t f)
 	default: return 4;
 	}
 }
-static uint32_t levelPitch(uint32_t f, uint32_t w) { return isBlock(f) ? std::max(1u, (w + 3) / 4) * blockBytes(f) : w * bpp(f); }
-static uint32_t levelBytes(uint32_t f, uint32_t w, uint32_t h) { return isBlock(f) ? std::max(1u, (w + 3) / 4) * std::max(1u, (h + 3) / 4) * blockBytes(f) : levelPitch(f, w) * h; }
+uint32_t levelPitch(uint32_t f, uint32_t w) { return isBlock(f) ? std::max(1u, (w + 3) / 4) * blockBytes(f) : w * bpp(f); }
+uint32_t levelBytes(uint32_t f, uint32_t w, uint32_t h) { return isBlock(f) ? std::max(1u, (w + 3) / 4) * std::max(1u, (h + 3) / 4) * blockBytes(f) : levelPitch(f, w) * h; }
 
 void allocLevels(Obj* o, uint32_t faces)
 {
@@ -191,9 +204,9 @@ void allocLevels(Obj* o, uint32_t faces)
 	memset(guest::host(o->data), 0, total);
 }
 
-static void writeOut(uint32_t pp, Obj* o) { if (pp) guest::store<uint32_t>(pp, o->addr); }
+void writeOut(uint32_t pp, Obj* o) { if (pp) guest::store<uint32_t>(pp, o->addr); }
 
-static Obj* makeSurface(uint32_t w, uint32_t h, uint32_t fmt, uint32_t usage, uint32_t pool)
+Obj* makeSurface(uint32_t w, uint32_t h, uint32_t fmt, uint32_t usage, uint32_t pool)
 {
 	Obj* s = newObj(ISurface);
 	s->w = w; s->h = h; s->fmt = fmt; s->usage = usage; s->pool = pool; s->levels = 1;
@@ -215,6 +228,7 @@ static Obj* surfaceOfLevel(Obj* tex, uint32_t level, uint32_t face)
 	s->ownsData = false;
 	s->parent = tex->addr;
 	s->level = level; s->face = face;
+	s->rtTex = tex->rtTex;
 	guest::store<uint32_t>(tex->addr + 4, guest::load<uint32_t>(tex->addr + 4));   // keep texture alive while surfaces exist
 	return s;
 }
@@ -305,6 +319,8 @@ H("IDirect3D9::CreateDevice")
 	backW = w; backH = h;
 	log("D3D9 CreateDevice: %ux%u fmt %u windowed %u depth %u", w, h, guest::load<uint32_t>(pp + 8), guest::load<uint32_t>(pp + 32), guest::load<uint32_t>(pp + 40));
 	theDevice = newObj(IDevice);
+	gfx::acquire();
+	glr::init();
 	writeOut(ARG(6), theDevice);
 	SET(0);
 } END;
@@ -320,51 +336,13 @@ H("IDirect3DDevice9::ShowCursor") { SET(0); } END;
 H("IDirect3DDevice9::GetNumberOfSwapChains") { SET(1); } END;
 H("IDirect3DDevice9::GetSwapChain") { Obj* s = newObj(ISwap); writeOut(ARG(2), s); SET(0); } END;
 H("IDirect3DDevice9::Reset") { uint32_t pp = ARG(1); if (guest::load<uint32_t>(pp) && guest::load<uint32_t>(pp + 4)) { backW = guest::load<uint32_t>(pp); backH = guest::load<uint32_t>(pp + 4); } SET(0); } END;
-static Obj* gBack = nullptr;
-static bool gOffscreenRT = false;   // render target 0 is not the back buffer
-H("IDirect3DDevice9::SetRenderTarget")
-{
-	if (ARG(1) == 0) { Obj* so = objectAt(ARG(2)); gOffscreenRT = so && gBack && so != gBack; }
-	SET(0);
-} END;
-H("IDirect3DDevice9::Clear")
-{
-	static std::atomic<uint32_t> n{0};
-	uint32_t k = ++n;
-	uint32_t zb = ARG(5); float zf; memcpy(&zf, &zb, 4);
-	if (k <= 5) log("d3d9: Clear flags %x color %08x z %g offscreen %d", ARG(3), ARG(4), (double)zf, (int)gOffscreenRT);
-	if (!gOffscreenRT)
-	{
-		if (!gfx::ownedByGame()) gfx::acquire();
-		gfx::clear(ARG(3), ARG(4), zf, ARG(6));
-	}
-	SET(0);
-} END;
-H("IDirect3DDevice9::Present")
-{
-	static std::atomic<uint32_t> frames{0};
-	uint32_t n = ++frames;
-	if (n == 1 || n % 300 == 0) log("d3d9: Present #%u", n);
-	if (!gfx::ownedByGame()) gfx::acquire();
-	gfx::beginFrame();
-	gfx::present(false);
-	std::this_thread::sleep_for(std::chrono::milliseconds(16));
-	SET(0);
-} END;
-H("IDirect3DDevice9::GetBackBuffer")
-{
-	Obj*& back = gBack;
-	if (!back) back = makeSurface(backW, backH, 22, 1, 0);
-	back->ref++;
-	writeOut(ARG(4), back);
-	SET(0);
-} END;
 H("IDirect3DDevice9::CreateTexture")
 {
 	Obj* t = newObj(ITexture);
 	t->w = ARG(1); t->h = ARG(2); t->levels = ARG(3); t->usage = ARG(4); t->fmt = ARG(5); t->pool = ARG(6);
 	if (t->levels == 0) { uint32_t m = std::max(t->w, t->h); t->levels = 1; while (m >>= 1) t->levels++; }
 	allocLevels(t, 1);
+	t->rtTex = (t->usage & 3) != 0;
 	writeOut(ARG(7), t);
 	SET(0);
 } END;
@@ -403,11 +381,9 @@ H("IDirect3DDevice9::CreateIndexBuffer")
 	writeOut(ARG(5), b);
 	SET(0);
 } END;
-H("IDirect3DDevice9::CreateRenderTarget") { writeOut(ARG(7), makeSurface(ARG(1), ARG(2), ARG(3), 1, 0)); SET(0); } END;
-H("IDirect3DDevice9::CreateDepthStencilSurface") { writeOut(ARG(7), makeSurface(ARG(1), ARG(2), ARG(3), 2, 0)); SET(0); } END;
+H("IDirect3DDevice9::CreateRenderTarget") { Obj* sf = makeSurface(ARG(1), ARG(2), ARG(3), 1, 0); sf->rtTex = true; writeOut(ARG(7), sf); SET(0); } END;
+H("IDirect3DDevice9::CreateDepthStencilSurface") { Obj* sf = makeSurface(ARG(1), ARG(2), ARG(3), 2, 0); sf->rtTex = true; writeOut(ARG(7), sf); SET(0); } END;
 H("IDirect3DDevice9::CreateOffscreenPlainSurface") { writeOut(ARG(5), makeSurface(ARG(1), ARG(2), ARG(3), 0, ARG(4))); SET(0); } END;
-H("IDirect3DDevice9::GetRenderTarget") { static Obj* rt = nullptr; if (!rt) rt = makeSurface(backW, backH, 22, 1, 0); rt->ref++; writeOut(ARG(2), rt); SET(0); } END;
-H("IDirect3DDevice9::GetDepthStencilSurface") { static Obj* ds = nullptr; if (!ds) ds = makeSurface(backW, backH, 75, 2, 0); ds->ref++; writeOut(ARG(1), ds); SET(0); } END;
 H("IDirect3DDevice9::CreateVertexDeclaration")
 {
 	Obj* d = newObj(IVDecl);
@@ -423,6 +399,7 @@ H("IDirect3DDevice9::CreateVertexShader")
 	uint32_t p = ARG(1), n = 0;
 	while (guest::load<uint32_t>(p + 4 * n) != 0x0000ffff) n++;   // D3DSIO_END
 	s->blob.assign(guest::host(p), guest::host(p) + 4 * (n + 1));
+	s->sh = getShader(s->blob.data(), s->blob.size());
 	writeOut(ARG(2), s);
 	SET(0);
 } END;
@@ -432,18 +409,14 @@ H("IDirect3DDevice9::CreatePixelShader")
 	uint32_t p = ARG(1), n = 0;
 	while (guest::load<uint32_t>(p + 4 * n) != 0x0000ffff) n++;
 	s->blob.assign(guest::host(p), guest::host(p) + 4 * (n + 1));
+	s->sh = getShader(s->blob.data(), s->blob.size());
 	writeOut(ARG(2), s);
 	SET(0);
 } END;
 H("IDirect3DDevice9::CreateQuery") { if (ARG(2)) { Obj* q = newObj(IQuery); q->type = ARG(1); writeOut(ARG(2), q); } SET(0); } END;
 H("IDirect3DDevice9::CreateStateBlock") { writeOut(ARG(2), newObj(ISB)); SET(0); } END;
 H("IDirect3DDevice9::EndStateBlock") { writeOut(ARG(1), newObj(ISB)); SET(0); } END;
-H("IDirect3DDevice9::GetRenderState") { if (ARG(2)) guest::store<uint32_t>(ARG(2), 0); SET(0); } END;
-H("IDirect3DDevice9::GetSamplerState") { if (ARG(3)) guest::store<uint32_t>(ARG(3), 0); SET(0); } END;
-H("IDirect3DDevice9::GetTextureStageState") { if (ARG(3)) guest::store<uint32_t>(ARG(3), 0); SET(0); } END;
 H("IDirect3DDevice9::ValidateDevice") { if (ARG(1)) guest::store<uint32_t>(ARG(1), 1); SET(0); } END;
-H("IDirect3DDevice9::GetViewport") { uint32_t p = ARG(1); guest::store<uint32_t>(p, 0); guest::store<uint32_t>(p + 4, 0); guest::store<uint32_t>(p + 8, backW); guest::store<uint32_t>(p + 12, backH); guest::store<float>(p + 16, 0.f); guest::store<float>(p + 20, 1.f); SET(0); } END;
-H("IDirect3DDevice9::SetStreamSourceFreq") { SET(0); } END;
 H("IDirect3DDevice9::GetSoftwareVertexProcessing") { SET(0); } END;
 
 // ---- resources: textures
@@ -464,7 +437,11 @@ H("IDirect3DTexture9::LockRect")
 	guest::store<uint32_t>(pLocked + 4, base);
 	SET(0);
 } END;
-H("IDirect3DTexture9::UnlockRect") { SET(0); } END;
+H("IDirect3DTexture9::UnlockRect") { o->ver++; SET(0); } END;
+H("IDirect3DCubeTexture9::UnlockRect") { o->ver++; SET(0); } END;
+H("IDirect3DVolumeTexture9::UnlockBox") { o->ver++; SET(0); } END;
+H("IDirect3DVertexBuffer9::Unlock") { o->ver++; SET(0); } END;
+H("IDirect3DIndexBuffer9::Unlock") { o->ver++; SET(0); } END;
 H("IDirect3DCubeTexture9::GetLevelCount") { SET(o->levels); } END;
 H("IDirect3DCubeTexture9::GetLevelDesc") { Obj tmp = *o; tmp.w = tmp.h = std::max(1u, o->w >> ARG(1)); fillDesc(ARG(2), &tmp); SET(0); } END;
 H("IDirect3DCubeTexture9::GetCubeMapSurface") { writeOut(ARG(3), surfaceOfLevel(o, ARG(2), ARG(1))); SET(0); } END;
@@ -507,7 +484,7 @@ H("IDirect3DSurface9::LockRect")
 	guest::store<uint32_t>(ARG(1) + 4, base);
 	SET(0);
 } END;
-H("IDirect3DSurface9::UnlockRect") { SET(0); } END;
+H("IDirect3DSurface9::UnlockRect") { o->ver++; if (o->parent) if (Obj* t = objectAt(o->parent)) t->ver++; SET(0); } END;
 H("IDirect3DSurface9::GetContainer") { if (o->parent) { guest::store<uint32_t>(ARG(2), o->parent); if (Obj* p = objectAt(o->parent)) p->ref++; SET(0); } else SET(0x80004002); } END;
 H("IDirect3DVertexBuffer9::Lock") { guest::store<uint32_t>(ARG(3), o->data + ARG(1)); SET(0); } END;
 H("IDirect3DVertexBuffer9::GetDesc") { uint32_t p = ARG(1); guest::store<uint32_t>(p, 0); guest::store<uint32_t>(p + 4, 3); guest::store<uint32_t>(p + 8, o->usage); guest::store<uint32_t>(p + 12, o->pool); guest::store<uint32_t>(p + 16, o->size); guest::store<uint32_t>(p + 20, o->fvf); SET(0); } END;
@@ -528,242 +505,6 @@ H("IDirect3DQuery9::GetDataSize") { SET(4); } END;
 H("IDirect3DSwapChain9::GetBackBuffer") { Obj* s = makeSurface(backW, backH, 22, 1, 0); writeOut(ARG(3), s); SET(0); } END;
 H("ID3DXBuffer::GetBufferPointer") { SET(o->data); } END;
 H("ID3DXBuffer::GetBufferSize") { SET(o->size); } END;
-
-// ---- effects: handles index a table of parsed parameters / techniques / passes / annotations
-// (names that are not found are treated as plain strings, like D3DX does for LPCSTR handles)
-struct HRec { FxInfo* fx; int kind; uint32_t a, b, c; };   // kind: 1 param, 2 tech, 3 pass, 4/5/6 annotation of param/tech/pass
-std::vector<HRec> hrecs;
-std::map<std::tuple<FxInfo*, int, uint32_t, uint32_t, uint32_t>, uint32_t> hmap;
-std::mutex hMu;
-constexpr uint32_t HBase = 0x7e000000;
-
-uint32_t mkHandle(FxInfo* fx, int kind, uint32_t a, uint32_t b = 0, uint32_t c = 0)
-{
-	std::lock_guard<std::mutex> l(hMu);
-	auto k = std::make_tuple(fx, kind, a, b, c);
-	auto it = hmap.find(k);
-	if (it != hmap.end()) return it->second;
-	hrecs.push_back({fx, kind, a, b, c});
-	uint32_t h = HBase + 4 * (uint32_t)hrecs.size();
-	hmap[k] = h;
-	return h;
-}
-const HRec* getRec(uint32_t h)
-{
-	if (h <= HBase || h > HBase + 0x01000000) return nullptr;
-	std::lock_guard<std::mutex> l(hMu);
-	uint32_t i = (h - HBase) / 4 - 1;
-	return i < hrecs.size() ? &hrecs[i] : nullptr;
-}
-FxInfo* F(Obj* o) { return o->fx.get(); }
-// Resolves a technique handle (record or name string).
-const FxTech* techOf(Obj* o, uint32_t h, uint32_t* idx = nullptr)
-{
-	FxInfo* fx = F(o);
-	if (!fx) return nullptr;
-	if (const HRec* r = getRec(h)) { if (r->kind == 2 && r->fx == fx && r->a < fx->techs.size()) { if (idx) *idx = r->a; return &fx->techs[r->a]; } return nullptr; }
-	if (h) { std::string n = gstr(h); for (size_t i = 0; i < fx->techs.size(); i++) if (fx->techs[i].name == n) { if (idx) *idx = (uint32_t)i; return &fx->techs[i]; } }
-	return nullptr;
-}
-const FxParam* paramOf(Obj* o, uint32_t h)
-{
-	FxInfo* fx = F(o);
-	if (!fx) return nullptr;
-	if (const HRec* r = getRec(h)) return r->kind == 1 && r->fx == fx && r->a < fx->params.size() ? &fx->params[r->a] : nullptr;
-	if (h) { std::string n = gstr(h); for (auto& p : fx->params) if (p.name == n) return &p; }
-	return nullptr;
-}
-const FxAnn* annOf(uint32_t h)
-{
-	const HRec* r = getRec(h);
-	if (!r || r->kind < 4) return nullptr;
-	FxInfo* fx = r->fx;
-	if (r->kind == 4) return r->a < fx->params.size() && r->b < fx->params[r->a].anns.size() ? &fx->params[r->a].anns[r->b] : nullptr;
-	if (r->kind == 5) return r->a < fx->techs.size() && r->b < fx->techs[r->a].anns.size() ? &fx->techs[r->a].anns[r->b] : nullptr;
-	return r->a < fx->techs.size() && r->b < fx->techs[r->a].passes.size() && r->c < fx->techs[r->a].passes[r->b].anns.size() ? &fx->techs[r->a].passes[r->b].anns[r->c] : nullptr;
-}
-const std::vector<FxAnn>* annListOf(Obj* o, uint32_t h, int* kind, uint32_t* a, uint32_t* b)
-{
-	FxInfo* fx = F(o);
-	if (!fx) return nullptr;
-	if (const HRec* r = getRec(h))
-	{
-		if (r->fx != fx) return nullptr;
-		*a = r->a; *b = r->b;
-		if (r->kind == 1 && r->a < fx->params.size()) { *kind = 4; return &fx->params[r->a].anns; }
-		if (r->kind == 2 && r->a < fx->techs.size()) { *kind = 5; return &fx->techs[r->a].anns; }
-		if (r->kind == 3 && r->a < fx->techs.size() && r->b < fx->techs[r->a].passes.size()) { *kind = 6; return &fx->techs[r->a].passes[r->b].anns; }
-		return nullptr;
-	}
-	if (h) { std::string n = gstr(h); for (size_t i = 0; i < fx->params.size(); i++) if (fx->params[i].name == n) { *kind = 4; *a = (uint32_t)i; *b = 0; return &fx->params[i].anns; } }
-	return nullptr;
-}
-
-H("ID3DXEffect::GetDesc")
-{
-	uint32_t p = ARG(1);
-	memset(guest::host(p), 0, 16);
-	FxInfo* fx = F(o);
-	guest::store<uint32_t>(p + 4, fx ? (uint32_t)fx->params.size() : 0);
-	guest::store<uint32_t>(p + 8, fx ? (uint32_t)fx->techs.size() : 1);
-	SET(0);
-} END;
-H("ID3DXEffect::GetTechniqueDesc")
-{
-	uint32_t p = ARG(2);
-	memset(guest::host(p), 0, 12);
-	if (const FxTech* t = techOf(o, ARG(1)))
-	{
-		guest::store<uint32_t>(p, newStr(t->name));
-		guest::store<uint32_t>(p + 4, (uint32_t)t->passes.size());
-		guest::store<uint32_t>(p + 8, (uint32_t)t->anns.size());
-	}
-	else { guest::store<uint32_t>(p, newStr("T")); guest::store<uint32_t>(p + 4, 1); }
-	SET(0);
-} END;
-H("ID3DXEffect::GetPassDesc")
-{
-	uint32_t p = ARG(2);
-	memset(guest::host(p), 0, 16);
-	if (const HRec* r = getRec(ARG(1)); r && r->kind == 3 && r->fx == F(o) && r->a < r->fx->techs.size() && r->b < r->fx->techs[r->a].passes.size())
-	{
-		const FxPass& ps = r->fx->techs[r->a].passes[r->b];
-		guest::store<uint32_t>(p, newStr(ps.name));
-		guest::store<uint32_t>(p + 4, (uint32_t)ps.anns.size());
-	}
-	SET(0);
-} END;
-H("ID3DXEffect::GetParameterDesc")
-{
-	uint32_t p = ARG(2);
-	memset(guest::host(p), 0, 44);
-	const FxParam* pr = paramOf(o, ARG(1));
-	const FxAnn* an = pr ? nullptr : annOf(ARG(1));
-	if (!pr && !an) { SET(0x8876086c); return; }   // D3DERR_INVALIDCALL
-	std::string name = pr ? pr->name : an->name, sem = pr ? pr->semantic : "";
-	uint32_t cls = pr ? pr->cls : an->cls, type = pr ? pr->type : an->type, rows = pr ? pr->rows : an->rows, cols = pr ? pr->cols : an->cols, el = pr ? pr->elements : an->elements;
-	guest::store<uint32_t>(p, newStr(name));
-	guest::store<uint32_t>(p + 4, sem.empty() ? 0 : newStr(sem));
-	guest::store<uint32_t>(p + 8, cls);
-	guest::store<uint32_t>(p + 12, type);
-	guest::store<uint32_t>(p + 16, rows);
-	guest::store<uint32_t>(p + 20, cols);
-	guest::store<uint32_t>(p + 24, el);
-	guest::store<uint32_t>(p + 28, pr ? (uint32_t)pr->anns.size() : 0);
-	guest::store<uint32_t>(p + 32, pr ? pr->members : 0);
-	guest::store<uint32_t>(p + 36, pr ? pr->flags : 0);
-	guest::store<uint32_t>(p + 40, 4 * rows * cols * std::max(1u, el));
-	SET(0);
-} END;
-H("ID3DXEffect::GetParameter")
-{
-	FxInfo* fx = F(o);
-	if (!fx) { SET(newStr("param")); return; }
-	uint32_t idx = ARG(2);
-	if (!ARG(1) && idx < fx->params.size()) SET(mkHandle(fx, 1, idx)); else SET(0);
-} END;
-H("ID3DXEffect::GetParameterByName")
-{
-	FxInfo* fx = F(o);
-	if (!ARG(2)) { SET(0); return; }
-	std::string n = gstr(ARG(2));
-	if (!fx) { SET(newStr(n)); return; }
-	if (ARG(1)) { SET(newStr(n)); return; }   // member of a struct: keep the old opaque behaviour
-	for (size_t i = 0; i < fx->params.size(); i++) if (fx->params[i].name == n) { SET(mkHandle(fx, 1, (uint32_t)i)); return; }
-	SET(0);
-} END;
-H("ID3DXEffect::GetParameterBySemantic")
-{
-	FxInfo* fx = F(o);
-	if (!ARG(2)) { SET(0); return; }
-	std::string n = gstr(ARG(2));
-	if (!fx) { SET(newStr(n)); return; }
-	for (size_t i = 0; i < fx->params.size(); i++) if (strcasecmp(fx->params[i].semantic.c_str(), n.c_str()) == 0) { SET(mkHandle(fx, 1, (uint32_t)i)); return; }
-	SET(0);
-} END;
-H("ID3DXEffect::GetParameterElement") { SET(F(o) && getRec(ARG(1)) ? ARG(1) : newStr("elem")); } END;
-H("ID3DXEffect::GetTechnique")
-{
-	FxInfo* fx = F(o);
-	if (!fx) { SET(0x7e01); return; }
-	SET(ARG(1) < fx->techs.size() ? mkHandle(fx, 2, ARG(1)) : 0);
-} END;
-H("ID3DXEffect::GetTechniqueByName")
-{
-	FxInfo* fx = F(o);
-	if (!fx) { SET(0x7e01); return; }
-	uint32_t idx;
-	SET(ARG(1) && techOf(o, ARG(1), &idx) ? mkHandle(fx, 2, idx) : 0);
-} END;
-H("ID3DXEffect::GetPass")
-{
-	FxInfo* fx = F(o);
-	uint32_t ti;
-	if (!fx) { SET(0x7e02); return; }
-	const FxTech* t = techOf(o, ARG(1), &ti);
-	SET(t && ARG(2) < t->passes.size() ? mkHandle(fx, 3, ti, ARG(2)) : 0);
-} END;
-H("ID3DXEffect::GetPassByName")
-{
-	FxInfo* fx = F(o);
-	uint32_t ti;
-	if (!fx) { SET(0x7e02); return; }
-	const FxTech* t = techOf(o, ARG(1), &ti);
-	if (t && ARG(2))
-	{
-		std::string n = gstr(ARG(2));
-		for (size_t i = 0; i < t->passes.size(); i++) if (t->passes[i].name == n) { SET(mkHandle(fx, 3, ti, (uint32_t)i)); return; }
-	}
-	SET(0);
-} END;
-H("ID3DXEffect::GetAnnotation")
-{
-	int kind; uint32_t a, b;
-	const std::vector<FxAnn>* l = annListOf(o, ARG(1), &kind, &a, &b);
-	if (!l || ARG(2) >= l->size()) { SET(0); return; }
-	SET(kind == 6 ? mkHandle(F(o), kind, a, b, ARG(2)) : mkHandle(F(o), kind, a, ARG(2)));
-} END;
-H("ID3DXEffect::GetAnnotationByName")
-{
-	int kind; uint32_t a, b;
-	const std::vector<FxAnn>* l = annListOf(o, ARG(1), &kind, &a, &b);
-	if (!l || !ARG(2)) { SET(0); return; }
-	std::string n = gstr(ARG(2));
-	for (size_t i = 0; i < l->size(); i++)
-		if ((*l)[i].name == n)
-		{
-			SET(kind == 6 ? mkHandle(F(o), kind, a, b, (uint32_t)i) : mkHandle(F(o), kind, a, (uint32_t)i));
-			return;
-		}
-	SET(0);
-} END;
-H("ID3DXEffect::GetString")
-{
-	const FxAnn* an = annOf(ARG(1));
-	if (ARG(2)) guest::store<uint32_t>(ARG(2), newStr(an ? an->str : ""));
-	SET(0);
-} END;
-H("ID3DXEffect::GetInt") { const FxAnn* an = annOf(ARG(1)); if (ARG(2)) guest::store<uint32_t>(ARG(2), an && !an->vals.empty() ? (an->type == 3 ? (uint32_t)(int)*(float*)&an->vals[0] : an->vals[0]) : 0); SET(0); } END;
-H("ID3DXEffect::GetBool") { const FxAnn* an = annOf(ARG(1)); if (ARG(2)) guest::store<uint32_t>(ARG(2), an && !an->vals.empty() && an->vals[0] ? 1 : 0); SET(0); } END;
-H("ID3DXEffect::GetFloat") { const FxAnn* an = annOf(ARG(1)); float v = 0.f; if (an && !an->vals.empty()) { if (an->type == 3) memcpy(&v, &an->vals[0], 4); else v = (float)(int)an->vals[0]; } if (ARG(2)) guest::store<float>(ARG(2), v); SET(0); } END;
-H("ID3DXEffect::SetTechnique") { uint32_t idx; if (F(o) && techOf(o, ARG(1), &idx)) F(o)->current = idx; SET(0); } END;
-H("ID3DXEffect::GetCurrentTechnique") { FxInfo* fx = F(o); SET(fx && fx->current < fx->techs.size() ? mkHandle(fx, 2, fx->current) : 0x7e01); } END;
-H("ID3DXEffect::ValidateTechnique") { SET(0); } END;
-H("ID3DXEffect::Begin")
-{
-	FxInfo* fx = F(o);
-	if (ARG(1)) guest::store<uint32_t>(ARG(1), fx && fx->current < fx->techs.size() ? (uint32_t)fx->techs[fx->current].passes.size() : 1);
-	SET(0);
-} END;
-H("ID3DXEffect::FindNextValidTechnique")
-{
-	FxInfo* fx = F(o);
-	uint32_t idx = 0, next = 0;
-	if (fx && ARG(1) && techOf(o, ARG(1), &idx)) next = idx + 1;
-	if (ARG(2)) guest::store<uint32_t>(ARG(2), fx ? (next < fx->techs.size() ? mkHandle(fx, 2, next) : 0) : 0x7e01);
-	SET(0);
-} END;
-H("ID3DXEffect::IsParameterUsed") { SET(1); } END;
 
 // ---- exports
 }

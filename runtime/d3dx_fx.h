@@ -1,10 +1,12 @@
-// Parser for compiled Direct3D 9 effects (D3DX "FX 9" binary, tag 0xfeff0901): parameters, techniques, passes and
-// their annotations (names, types, simple values). Shader byte code / state values are not interpreted yet.
-// Everything is bounds-checked; a malformed blob simply fails to parse.
+// Parser for compiled Direct3D 9 effects (D3DX "FX 9" binary, tag 0xfeff0901): parameters (with full types), techniques,
+// passes with their states, the string/shader object table and the resource records (shaders, array selectors,
+// parameter references). Everything is bounds-checked; a malformed blob simply fails to parse.
 #pragma once
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -16,17 +18,41 @@ struct FxAnn
 	uint32_t type = 0, cls = 0, rows = 1, cols = 1, elements = 0;
 	std::vector<uint32_t> vals;   // raw 32-bit values (numeric annotations)
 };
+// D3DXPARAMETER_CLASS: 0 scalar, 1 vector, 2 matrix rows, 3 matrix columns, 4 object, 5 struct
+// D3DXPARAMETER_TYPE: 0 void, 1 bool, 2 int, 3 float, 4 string, 5 texture, 6 texture1d, 7 texture2d, 8 texture3d, 9 texturecube,
+//                     10 sampler, 11 sampler1d, 12 sampler2d, 13 sampler3d, 14 samplercube, 15 pixelshader, 16 vertexshader
+struct FxType
+{
+	uint32_t type = 0, cls = 0, rows = 1, cols = 1, elements = 0;
+	std::string name, semantic;
+	std::vector<FxType> members;
+	uint32_t scalars() const   // scalar count of one element
+	{
+		if (cls == 5) { uint32_t n = 0; for (auto& m : members) n += m.scalars() * std::max(1u, m.elements); return n; }
+		if (cls == 4) return 1;
+		return rows * cols;
+	}
+};
 struct FxParam
 {
 	std::string name, semantic;
 	uint32_t type = 0, cls = 0, rows = 1, cols = 1, elements = 0, flags = 0, members = 0;
 	std::vector<FxAnn> anns;
+	FxType ty;
+	uint32_t dv = 0;          // default value offset (relative to base)
+	std::vector<uint32_t> val;   // current value, tightly packed (4 bytes per scalar); object params hold ids / unused
+	uint32_t texObj = 0;      // texture parameters: guest address of the bound texture object
+	uint32_t smpTex = 0;      // sampler parameters: index of the texture parameter it samples + 1
+	struct SS { uint32_t op, v; };
+	std::vector<SS> smp;      // sampler parameters: states (D3DSAMP_* id, value)
 };
+struct FxState { uint32_t op = 0, index = 0, vo = 0, typeCls = 0, typeType = 0; };
 struct FxPass
 {
 	std::string name;
 	std::vector<FxAnn> anns;
 	uint32_t states = 0;
+	std::vector<FxState> sts;
 };
 struct FxTech
 {
@@ -34,12 +60,21 @@ struct FxTech
 	std::vector<FxAnn> anns;
 	std::vector<FxPass> passes;
 };
+struct FxRes   // a state value that is not a plain constant
+{
+	uint32_t tech = 0, pass = 0, el = 0, state = 0, usage = 0;   // usage: 0 shader/constant data, 1 parameter reference, 2 array selector
+	uint32_t off = 0, size = 0;                                  // data (relative to blob start)
+};
 struct FxInfo
 {
 	std::vector<FxParam> params;
 	std::vector<FxTech> techs;
 	uint32_t current = 0;
 	uint32_t base = 0;   // header size that offsets are relative to (4 or 8)
+	std::vector<uint8_t> blob;
+	std::map<uint32_t, std::pair<uint32_t, uint32_t>> objs;   // object id -> (offset, size) of its data in blob
+	std::vector<FxRes> res;
+	uint32_t u32(size_t p) const { uint32_t v = 0; if (p + 4 <= blob.size()) memcpy(&v, blob.data() + p, 4); return v; }
 };
 
 namespace fxparse
@@ -70,11 +105,10 @@ struct Rd
 	}
 };
 
-// Typedef at `off` (relative to base). Fills type/class/name/semantic/size info.
-inline bool typedefAt(Rd& r, size_t base, uint32_t off, FxParam& out, int depth = 0)
+// Typedef at stream position p (members follow inline).
+inline bool typedefAtPos(Rd& r, size_t base, size_t& p, FxType& out, int depth = 0)
 {
-	if (depth > 4) return false;
-	size_t p = base + off;
+	if (depth > 6) return false;
 	out.type = r.u32(p);
 	out.cls = r.u32(p);
 	uint32_t nameOff = r.u32(p), semOff = r.u32(p);
@@ -85,36 +119,32 @@ inline bool typedefAt(Rd& r, size_t base, uint32_t off, FxParam& out, int depth 
 	if (!r.ok) return false;
 	switch (out.cls)
 	{
-	case 0: case 1: case 2: case 3:
-		out.cols = r.u32(p);
-		out.rows = r.u32(p);
-		if (out.cols > 16 || out.rows > 16) return false;
-		break;
+	case 0: out.rows = out.cols = 1; r.u32(p); r.u32(p); break;
+	case 1: out.cols = r.u32(p); out.rows = r.u32(p); if (out.rows > 16 || out.cols > 16) return false; break;
+	case 2: case 3: out.rows = r.u32(p); out.cols = r.u32(p); if (out.rows > 16 || out.cols > 16) return false; break;
 	case 5:
 	{
-		out.members = r.u32(p);
-		if (out.members > 256) return false;
-		for (uint32_t i = 0; i < out.members; i++)
-		{
-			// members are inline typedefs; parse and discard (their size is needed to continue)
-			FxParam m;
-			uint32_t mt = r.u32(p), mc = r.u32(p), mn = r.u32(p), ms = r.u32(p), me = r.u32(p);
-			(void)mn; (void)ms; (void)me;
-			if (mc <= 3) { r.u32(p); r.u32(p); }
-			else if (mc == 5) return true;   // nested structs: give up on exact layout
-			(void)mt;
-		}
+		uint32_t m = r.u32(p);
+		if (m > 256) return false;
+		out.members.resize(m);
+		for (uint32_t i = 0; i < m; i++)
+			if (!typedefAtPos(r, base, p, out.members[i], depth + 1)) return false;
 		break;
 	}
 	default: break;
 	}
 	return r.ok;
 }
+inline bool typedefAt(Rd& r, size_t base, uint32_t off, FxType& out)
+{
+	size_t p = base + off;
+	return typedefAtPos(r, base, p, out);
+}
 
 inline bool annotation(Rd& r, size_t base, size_t& p, FxAnn& a)
 {
 	uint32_t tdOff = r.u32(p), valOff = r.u32(p);
-	FxParam t;
+	FxType t;
 	if (!r.ok || !typedefAt(r, base, tdOff, t)) return false;
 	a.name = t.name; a.type = t.type; a.cls = t.cls; a.rows = t.rows; a.cols = t.cols; a.elements = t.elements;
 	if (t.type == 4)   // string: value is the offset of a length-prefixed string
@@ -143,17 +173,20 @@ inline bool tryParse(const uint8_t* d, size_t n, uint32_t hdr, FxInfo& fx)
 	size_t base = hdr;
 	p = base + start;
 	uint32_t nParam = r.u32(p), nTech = r.u32(p);
-	r.u32(p);              // unknown
-	r.u32(p);              // object count
+	r.u32(p);              // shared object count
+	uint32_t nObjs = r.u32(p);
+	(void)nObjs;
 	if (!r.ok || nParam > 4096 || nTech > 512) return false;
 	for (uint32_t i = 0; i < nParam; i++)
 	{
 		FxParam prm;
 		uint32_t tdOff = r.u32(p);
-		r.u32(p);                              // default value offset
+		prm.dv = r.u32(p);
 		prm.flags = r.u32(p);
 		uint32_t nAnn = r.u32(p);
-		if (!r.ok || nAnn > 256 || !typedefAt(r, base, tdOff, prm)) return false;
+		if (!r.ok || nAnn > 256 || !typedefAt(r, base, tdOff, prm.ty)) return false;
+		prm.name = prm.ty.name; prm.semantic = prm.ty.semantic; prm.type = prm.ty.type; prm.cls = prm.ty.cls;
+		prm.rows = prm.ty.rows; prm.cols = prm.ty.cols; prm.elements = prm.ty.elements; prm.members = (uint32_t)prm.ty.members.size();
 		for (uint32_t k = 0; k < nAnn; k++)
 		{
 			FxAnn a;
@@ -189,14 +222,47 @@ inline bool tryParse(const uint8_t* d, size_t n, uint32_t hdr, FxInfo& fx)
 				if (!annotation(r, base, p, a)) return false;
 				ps.anns.push_back(std::move(a));
 			}
-			p += 16ull * st;   // states: operation, index, typedef offset, value offset
-			if (p > n) return false;
+			for (uint32_t j = 0; j < st; j++)
+			{
+				FxState s;
+				s.op = r.u32(p); s.index = r.u32(p);
+				uint32_t td = r.u32(p);
+				s.vo = r.u32(p);
+				FxType ty;
+				if (r.ok && typedefAt(r, base, td, ty)) { s.typeCls = ty.cls; s.typeType = ty.type; }
+				ps.sts.push_back(s);
+			}
+			if (!r.ok) return false;
 			t.passes.push_back(std::move(ps));
 		}
 		fx.techs.push_back(std::move(t));
 	}
 	fx.base = hdr;
-	return r.ok;
+	if (!r.ok) return false;
+	// object table and resource records (optional: a truncated tail only disables shaders)
+	uint32_t nStr = r.u32(p), nRes = r.u32(p);
+	if (r.ok && nStr < 100000 && nRes < 100000)
+	{
+		bool ok = true;
+		for (uint32_t k = 0; k < nStr && ok; k++)
+		{
+			uint32_t id = r.u32(p), sz = r.u32(p);
+			if (!r.ok || p + sz > n) { ok = false; break; }
+			fx.objs[id] = {(uint32_t)p, sz};
+			p += (sz + 3) & ~3u;
+		}
+		for (uint32_t k = 0; k < nRes && ok; k++)
+		{
+			FxRes e;
+			e.tech = r.u32(p); e.pass = r.u32(p); e.el = r.u32(p); e.state = r.u32(p); e.usage = r.u32(p);
+			e.size = r.u32(p);
+			if (!r.ok || p + e.size > n) { ok = false; break; }
+			e.off = (uint32_t)p;
+			p += (e.size + 3) & ~3u;
+			fx.res.push_back(e);
+		}
+	}
+	return true;
 }
 }   // namespace fxparse
 
@@ -209,7 +275,12 @@ inline bool parseEffect(const uint8_t* d, size_t n, FxInfo& fx)
 	for (uint32_t hdr : {8u, 4u})
 	{
 		FxInfo t;
-		if (fxparse::tryParse(d, n, hdr, t) && !t.techs.empty()) { fx = std::move(t); return true; }
+		if (fxparse::tryParse(d, n, hdr, t) && !t.techs.empty())
+		{
+			t.blob.assign(d, d + n);
+			fx = std::move(t);
+			return true;
+		}
 	}
 	return false;
 }
