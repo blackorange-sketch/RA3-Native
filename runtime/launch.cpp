@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <vector>
 #include <csignal>
+#include <atomic>
+#include <sys/mman.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <cstdio>
@@ -26,8 +28,37 @@ static void emit(const char* s)
 	fputs(s, stderr);
 }
 
+static std::atomic<uint32_t> gWatchPage{0};
+static std::atomic<int> gWatchHits{0};
+void watchArm(uint32_t ga)
+{
+	uint32_t pg = ga & ~0xfffu;
+	gWatchPage = pg;
+	mprotect(guest::base + pg, 4096, PROT_READ);
+}
+bool watchHit(uint32_t ga)
+{
+	uint32_t pg = gWatchPage.load();
+	if (!pg || (ga & ~0xfffu) != pg) return false;
+	mprotect(guest::base + pg, 4096, PROT_READ | PROT_WRITE);
+	gWatchPage = 0;
+	int n = gWatchHits++;
+	if (n < 80)
+	{
+		char buf[128];
+		snprintf(buf, sizeof buf, "WATCH write #%d at guest %08x (page %08x)\n", n, ga, pg);
+		emit(buf);
+		traceDumpCurrent(32);
+	}
+	return true;
+}
+
 static void onFault(int sig, siginfo_t* si, void*)
 {
+	{
+		uintptr_t a0 = (uintptr_t)si->si_addr, b0 = (uintptr_t)guest::base;
+		if (a0 >= b0 && a0 < b0 + (1ull << 32) && watchHit((uint32_t)(a0 - b0))) return;
+	}
 	// Deliberately lock-free: the fault may have happened inside log().
 	char buf[256];
 	uintptr_t a = (uintptr_t)si->si_addr, b = (uintptr_t)guest::base;

@@ -489,6 +489,11 @@ static void setMatrices(CPU* c, Obj* o, bool transpose, bool array, bool pointer
 				for (int k = 0; k < 16; k++) if (m[k] != 0.f) nz = true;
 				total++;
 				if (nz) nonzero++;
+				{
+					static uint32_t W = 0; static bool inited = false;
+					if (!inited && total >= 3000) { inited = true; W = ARG(2); log("fx: watching the ViewProjection buffer at %08x", W); }
+					if (W && ARG(2) == W) rt::watchArm(W);
+				}
 				if (total == 1 || total == 3000 || total == 20000 || total == 40000)
 				{
 					std::string st;

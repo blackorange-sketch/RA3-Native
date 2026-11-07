@@ -73,6 +73,9 @@ uint32_t makeTeb(uint32_t stackLow, uint32_t stackHigh, uint32_t tid);
 void setLastError(uint32_t e);
 void traceRegister(uint32_t tid);
 void traceDump();
+void traceDumpCurrent(int n);   // ring of the calling thread only
+void watchArm(uint32_t guestAddr);   // write-protect the page; the next write is logged with the writer's call ring
+bool watchHit(uint32_t guestAddr);
 void traceProfile(int ms);
 void callStats();
 // Starts a detached host thread with a large stack (bionic's default of 1 MiB is too small for lifted code).

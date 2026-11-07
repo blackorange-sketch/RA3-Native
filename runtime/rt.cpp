@@ -76,6 +76,25 @@ void traceDump()
 		}
 	}
 }
+void traceDumpCurrent(int n)
+{
+	for (FILE* f : {stderr, logFp})
+	{
+		if (!f) continue;
+		fprintf(f, "   writer ring (last %d, oldest first):", n);
+		uint32_t p = ra3_ring_pos;
+		for (int k = n; k > 0; k--)
+		{
+			uint32_t v = ra3_ring[(p - k) & 255], ra = ra3_ring_ra[(p - k) & 255];
+			imports::Entry* e = (v >> 28) == 0xb ? imports::lookup(v ^ 0xc0000000u) : nullptr;
+			if (e) fprintf(f, " %s!%s", e->dll.c_str(), e->name.c_str());
+			else if (ra) fprintf(f, " %08x<%08x", v, ra);
+			else fprintf(f, " %08x", v);
+		}
+		fprintf(f, "\n");
+		fflush(f);
+	}
+}
 std::atomic<uint32_t> gLowerCallers[64], gLowerKeys[64];
 void callStats()
 {
@@ -126,6 +145,7 @@ void traceProfile(int ms)
 #else
 void traceRegister(uint32_t) {}
 void traceDump() {}
+void traceDumpCurrent(int) {}
 void traceProfile(int) {}
 void callStats() {}
 #endif
