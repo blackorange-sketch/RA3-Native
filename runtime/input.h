@@ -18,6 +18,8 @@ void onKey(bool down, int androidKey, int metaState);
 // Screen size, and the on-screen keyboard button rectangle (screen pixels, top-left origin).
 void setScreen(int sw, int sh);
 void kbButtonRect(int& x, int& y, int& w, int& h);
+void modButtonRect(int idx, int& x, int& y, int& w, int& h);   // 0 = Ctrl (force attack), 1 = Alt (waypoint)
+bool modActive(int idx);
 // True when the keyboard button was tapped (consumed by the call).
 bool takeKeyboardToggle();
 }

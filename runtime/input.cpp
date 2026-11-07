@@ -56,9 +56,27 @@ void mapTo(float sx, float sy)
 int prevCount = 0;
 int64_t downAt = 0, twoAt = 0, threeAt = 0;
 float startX = 0, startY = 0, twoStartY = 0, twoStartX = 0, wheelAcc = 0, lastTwoY = 0;
+bool twoPan = false;
+float lastDist = 0;
+bool ctrlSticky = false, altSticky = false;
 bool moved = false, twoMoved = false, threeSeen = false, pending = false;
 int dragMode = 0;   // 0 none, 1 left button (selection / UI drag), 2 right button (camera pan)
 int startCX = 0, startCY = 0;
+}
+
+
+namespace
+{
+void clickWithMods(bool right)
+{
+	bool c = ctrlSticky, a = altSticky;
+	if (c) { keys[0x11] = true; push(WM_KEYDOWN, 0x11, 1, 0); }
+	if (a) { keys[0x12] = true; push(WM_KEYDOWN, 0x12, 1, 0); }
+	if (right) { rDown = true; push(WM_RBUTTONDOWN, mouseFlags(), xy(), 40); rDown = false; push(WM_RBUTTONUP, mouseFlags(), xy(), 40); }
+	else { lDown = true; push(WM_LBUTTONDOWN, mouseFlags(), xy(), 40); lDown = false; push(WM_LBUTTONUP, mouseFlags(), xy(), 40); }
+	if (c) { keys[0x11] = false; push(WM_KEYUP, 0x11, 1u | 0xc0000000u, 0); ctrlSticky = false; }
+	if (a) { keys[0x12] = false; push(WM_KEYUP, 0x12, 1u | 0xc0000000u, 0); altSticky = false; }
+}
 }
 
 namespace input
@@ -66,6 +84,8 @@ namespace input
 void setScreen(int sw, int sh) { scrW = sw; scrH = sh; }
 void kbButtonRect(int& x, int& y, int& w, int& h) { int u = std::max(48, scrH / 12); x = u / 3; y = u / 3; w = u * 3 / 2; h = u; }
 
+void modButtonRect(int idx, int& x, int& y, int& w, int& h) { int u = std::max(48, scrH / 12); w = u; h = u * 3 / 4; x = u / 3; y = u / 3 + u + u / 4 + idx * (h + u / 6); }
+bool modActive(int idx) { return idx == 0 ? ctrlSticky : altSticky; }
 void setBackSize(int w, int h) { bw = w; bh = h; }
 void backSize(int& w, int& h) { w = bw; h = bh; }
 void setView(int x, int y, int w, int h, int backW, int backH) { vx = x; vy = y; vw = w; vh = h; bw = backW; bh = backH; }
@@ -81,6 +101,11 @@ void onTouch(int action, int idx, int count, const float* xs, const float* ys)
 		int bx, by, bw2, bh2;
 		kbButtonRect(bx, by, bw2, bh2);
 		if (action == DOWN && xs[0] >= bx && xs[0] < bx + bw2 && ys[0] >= by && ys[0] < by + bh2) { kbToggle = true; swallow = true; return; }
+		for (int i = 0; i < 2; i++)
+		{
+			int mx, my, mw, mh; modButtonRect(i, mx, my, mw, mh);
+			if (action == DOWN && xs[0] >= mx && xs[0] < mx + mw && ys[0] >= my && ys[0] < my + mh) { if (i == 0) ctrlSticky = !ctrlSticky; else altSticky = !altSticky; swallow = true; return; }
+		}
 		if (swallow) { if (action == UP || action == CANCEL) swallow = false; return; }
 	}
 	if (action == DOWN)
@@ -96,11 +121,13 @@ void onTouch(int action, int idx, int count, const float* xs, const float* ys)
 	{
 		if (count == 2)
 		{
-			// a second finger: cancel the left drag, a tap of two fingers becomes a right click
+			// a second finger: abandon the one-finger gesture
 			if (lDown) { lDown = false; push(WM_LBUTTONUP, mouseFlags(), xy(), 30); }
 			if (rDown) { rDown = false; push(WM_RBUTTONUP, mouseFlags(), xy(), 30); }
 			pending = false; dragMode = 0;
-			twoAt = now; twoMoved = false; twoStartX = xs[1]; twoStartY = lastTwoY = (ys[0] + ys[1]) / 2; wheelAcc = 0;
+			twoAt = now; twoMoved = false; twoPan = false;
+			twoStartX = (xs[0] + xs[1]) / 2; twoStartY = (ys[0] + ys[1]) / 2;
+			lastDist = hypotf(xs[1] - xs[0], ys[1] - ys[0]); wheelAcc = 0;
 		}
 	}
 	else if (action == MOVE)
@@ -121,30 +148,36 @@ void onTouch(int action, int idx, int count, const float* xs, const float* ys)
 		}
 		else if (count == 2)
 		{
-			float my = (ys[0] + ys[1]) / 2;
-			if (fabsf(my - twoStartY) > 24 || fabsf(xs[1] - twoStartX) > 60) twoMoved = true;
-			wheelAcc += my - lastTwoY; lastTwoY = my;
-			while (wheelAcc > 40) { wheelAcc -= 40; push(WM_MOUSEWHEEL, (uint32_t)(-120 & 0xffff) << 16, xy(), 0); }
-			while (wheelAcc < -40) { wheelAcc += 40; push(WM_MOUSEWHEEL, (uint32_t)(120 & 0xffff) << 16, xy(), 0); }
+			float cx = (xs[0] + xs[1]) / 2, cy = (ys[0] + ys[1]) / 2, d = hypotf(xs[1] - xs[0], ys[1] - ys[0]);
+			if (fabsf(d - lastDist) > 6) twoMoved = true;
+			// pinch -> wheel
+			wheelAcc += d - lastDist; lastDist = d;
+			while (wheelAcc > 50) { wheelAcc -= 50; push(WM_MOUSEWHEEL, (uint32_t)(120 & 0xffff) << 16, xy(), 0); }
+			while (wheelAcc < -50) { wheelAcc += 50; push(WM_MOUSEWHEEL, (uint32_t)(-120 & 0xffff) << 16, xy(), 0); }
+			// centre drift -> camera pan (right-drag)
+			if (!twoPan && fabsf(cx - twoStartX) + fabsf(cy - twoStartY) > 30)
+			{
+				twoMoved = true; twoPan = true;
+				mapTo(twoStartX, twoStartY); push(WM_MOUSEMOVE, mouseFlags(), xy(), 0);
+				rDown = true; push(WM_RBUTTONDOWN, mouseFlags(), xy(), 0);
+			}
+			if (twoPan) { mapTo(cx, cy); push(WM_MOUSEMOVE, mouseFlags(), xy(), 0); }
 		}
 	}
 	else if (action == PUP)
 	{
-		if (count == 2 && !twoMoved && now - twoAt < 350)
+		if (count == 2 && twoPan) { twoPan = false; if (rDown) { rDown = false; push(WM_RBUTTONUP, mouseFlags(), xy(), 30); } }
+		else if (count == 2 && !twoMoved && now - twoAt < 350)
 		{
-			mapTo(xs[idx == 0 ? 1 : 0], ys[idx == 0 ? 1 : 0]);
+			// a tap of two fingers = cancel / command (right click)
+			mapTo(twoStartX, twoStartY);
 			push(WM_MOUSEMOVE, mouseFlags(), xy(), 0);
-			rDown = true; push(WM_RBUTTONDOWN, mouseFlags(), xy(), 40);
-			rDown = false; push(WM_RBUTTONUP, mouseFlags(), xy(), 40);
+			clickWithMods(true);
 		}
 	}
 	else if (action == UP || action == CANCEL)
 	{
-		if (pending && dragMode == 0 && action == UP)
-		{
-			lDown = true; push(WM_LBUTTONDOWN, mouseFlags(), xy(), 40);
-			lDown = false; push(WM_LBUTTONUP, mouseFlags(), xy(), 40);
-		}
+		if (pending && dragMode == 0 && action == UP) clickWithMods(now - downAt >= 600);   // tap = left click, long press = right click
 		if (lDown) { lDown = false; push(WM_LBUTTONUP, mouseFlags(), xy(), 40); }
 		if (rDown && dragMode == 2) { rDown = false; push(WM_RBUTTONUP, mouseFlags(), xy(), 40); }
 		pending = false; dragMode = 0;

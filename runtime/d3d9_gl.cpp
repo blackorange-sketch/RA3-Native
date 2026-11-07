@@ -1101,6 +1101,15 @@ void present()
 		for (int r = 0; r < rows; r++)
 			for (int cc = 0; cc < cols; cc++)
 				if (!(r == 2 && cc > 0 && cc < cols - 1) || cc == 3) rect(kx + 3 + pad + cc * cw + 1, ky + 3 + pad + r * rh + 1, (r == 2 && cc == 3 ? cw * 3 : cw) - 2, rh - 2, 0.85f, 0.85f, 0.88f);
+		for (int i = 0; i < 2; i++)
+		{
+			int mx, my, mw, mh; input::modButtonRect(i, mx, my, mw, mh);
+			bool on = input::modActive(i);
+			float r = i == 0 ? 0.9f : 0.25f, gg = i == 0 ? 0.2f : 0.55f, b = i == 0 ? 0.2f : 0.95f;
+			rect(mx, my, mw, mh, r, gg, b);
+			if (on) rect(mx + 5, my + 5, mw - 10, mh - 10, r, gg, b); else rect(mx + 5, my + 5, mw - 10, mh - 10, 0.12f, 0.12f, 0.14f);
+			if (!on) rect(mx + mw / 2 - mh / 6, my + mh / 2 - mh / 6, mh / 3, mh / 3, r, gg, b);
+		}
 		glDisable(GL_SCISSOR_TEST);
 	}
 	gfx::swap();
