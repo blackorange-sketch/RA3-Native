@@ -3,6 +3,7 @@
 #include <unistd.h>
 
 #include "rt.h"
+#include "input.h"
 
 using namespace rt;
 
@@ -80,7 +81,7 @@ IMP_ID(U, "RegisterWindowMessageA", RegisterWindowMessageA, 4) { SET(0xc100); }
 IMP_ID(U, "CreateWindowExW", CreateWindowExW, 48) { SET(0x30001); }
 IMP_ID(U, "ShowWindow", ShowWindow, 8) { SET(1); }
 IMP_ID(U, "UpdateWindow", UpdateWindow, 4) { SET(1); }
-IMP_ID(U, "SetWindowPos", SetWindowPos, 28) { SET(1); }
+IMP_ID(U, "SetWindowPos", SetWindowPos, 28) { log("SetWindowPos(hwnd %x, x %d y %d cx %d cy %d flags %x)", ARG(0), (int)ARG(2), (int)ARG(3), (int)ARG(4), (int)ARG(5), ARG(6)); SET(1); }
 IMP_ID(U, "SetWindowTextW", SetWindowTextW, 8) { SET(1); }
 IMP_ID(U, "SetForegroundWindow", SetForegroundWindow, 4) { SET(1); }
 IMP_ID(U, "SetFocus", SetFocus, 4) { SET(0); }
@@ -116,7 +117,7 @@ IMP_ID("NETAPI32.dll", "Netbios", Netbios, 4) { SET(0x0b); }
 // ---- window messages: the message queue is empty for now (input is delivered later by the Android layer)
 IMP_ID(U, "TranslateMessage", TranslateMessage, 4) { SET(0); }
 IMP_ID(U, "PostQuitMessage", PostQuitMessage, 4) { log("PostQuitMessage(%d)", (int)ARG(0)); SET(0); }
-IMP_ID(U, "GetWindowRect", GetWindowRect, 8) { uint32_t r = ARG(1); guest::store<uint32_t>(r, 0); guest::store<uint32_t>(r + 4, 0); guest::store<uint32_t>(r + 8, 800); guest::store<uint32_t>(r + 12, 600); SET(1); }
+IMP_ID(U, "GetWindowRect", GetWindowRect, 8) { uint32_t r = ARG(1); int w, h; input::backSize(w, h); guest::store<uint32_t>(r, 0); guest::store<uint32_t>(r + 4, 0); guest::store<uint32_t>(r + 8, w); guest::store<uint32_t>(r + 12, h); SET(1); }
 IMP_ID(U, "ScreenToClient", ScreenToClient, 8) { SET(1); }
 IMP_ID(U, "SetWindowTextA", SetWindowTextA, 8) { SET(1); }
 IMP_ID(U, "FindWindowA", FindWindowA, 8) { SET(0); }

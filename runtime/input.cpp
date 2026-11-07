@@ -64,6 +64,8 @@ namespace input
 void setScreen(int sw, int sh) { scrW = sw; scrH = sh; }
 void kbButtonRect(int& x, int& y, int& w, int& h) { int u = std::max(48, scrH / 12); x = u / 3; y = u / 3; w = u * 3 / 2; h = u; }
 
+void setBackSize(int w, int h) { bw = w; bh = h; }
+void backSize(int& w, int& h) { w = bw; h = bh; }
 void setView(int x, int y, int w, int h, int backW, int backH) { vx = x; vy = y; vw = w; vh = h; bw = backW; bh = backH; }
 
 bool takeKeyboardToggle() { std::lock_guard<std::mutex> g(mu); bool r = kbToggle; kbToggle = false; return r; }

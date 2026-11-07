@@ -5,6 +5,8 @@
 namespace input
 {
 // Where the (letterboxed) back buffer sits on the screen; set on every present.
+void setBackSize(int w, int h);   // the game's client area (D3D back buffer) changed
+void backSize(int& w, int& h);
 void setView(int vx, int vy, int vw, int vh, int backW, int backH);
 
 // Touch event from Android. action: AMOTION_EVENT_ACTION_* (masked), idx = index of the pointer that changed.
