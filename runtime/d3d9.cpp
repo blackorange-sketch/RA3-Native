@@ -337,7 +337,7 @@ H("IDirect3DDevice9::GetCreationParameters") { uint32_t p = ARG(1); guest::store
 H("IDirect3DDevice9::ShowCursor") { SET(0); } END;
 H("IDirect3DDevice9::GetNumberOfSwapChains") { SET(1); } END;
 H("IDirect3DDevice9::GetSwapChain") { Obj* s = newObj(ISwap); writeOut(ARG(2), s); SET(0); } END;
-H("IDirect3DDevice9::Reset") { uint32_t pp = ARG(1); if (guest::load<uint32_t>(pp) && guest::load<uint32_t>(pp + 4)) { backW = guest::load<uint32_t>(pp); backH = guest::load<uint32_t>(pp + 4); input::setBackSize((int)backW, (int)backH); log("d3d9: Reset to %ux%u", backW, backH); glr::resizeBackBuffer(); } SET(0); } END;
+H("IDirect3DDevice9::Reset") { uint32_t pp = ARG(1); if (guest::load<uint32_t>(pp) && guest::load<uint32_t>(pp + 4)) { backW = guest::load<uint32_t>(pp); backH = guest::load<uint32_t>(pp + 4); input::setBackSize((int)backW, (int)backH); log("d3d9: Reset to %ux%u", backW, backH); if (gBackBuffer) { gBackBuffer->w = backW; gBackBuffer->h = backH; } if (gDefaultDs) { gDefaultDs->w = backW; gDefaultDs->h = backH; } for (int i = 0; i < 4; i++) dev.vp[i] = 0; glr::resizeBackBuffer(); } SET(0); } END;
 H("IDirect3DDevice9::CreateTexture")
 {
 	Obj* t = newObj(ITexture);

@@ -12,6 +12,7 @@ namespace d3d
 {
 DevState dev;
 Obj* gBackBuffer = nullptr;
+Obj* gDefaultDs = nullptr;
 
 DevState::DevState()
 {
@@ -146,9 +147,8 @@ H("IDirect3DDevice9::GetRenderTarget")
 H("IDirect3DDevice9::SetDepthStencilSurface") { dev.ds = ARG(1) ? objectAt(ARG(1)) : nullptr; SET(0); } END;
 H("IDirect3DDevice9::GetDepthStencilSurface")
 {
-	static Obj* defaultDs = nullptr;
 	Obj* s = dev.ds;
-	if (!s) { if (!defaultDs) defaultDs = makeSurface(backW, backH, 75, 2, 0); s = defaultDs; }
+	if (!s) { if (!gDefaultDs) gDefaultDs = makeSurface(backW, backH, 75, 2, 0); s = gDefaultDs; }
 	s->ref++;
 	writeOut(ARG(1), s);
 	SET(0);

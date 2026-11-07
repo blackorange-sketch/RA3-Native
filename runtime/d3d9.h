@@ -86,6 +86,7 @@ struct DevState
 };
 extern DevState dev;
 extern Obj* gBackBuffer;
+extern Obj* gDefaultDs;
 extern uint32_t backW, backH;
 
 // ---- effect application (d3d9_fx.cpp)
