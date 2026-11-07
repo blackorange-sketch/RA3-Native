@@ -81,7 +81,7 @@ void clickWithMods(bool right)
 
 namespace
 {
-constexpr float kPanGain = 1.5f;
+constexpr float kPanGain = 0.35f;
 float panPX = 0, panPY = 0;
 int panVX = 0, panVY = 0;
 void panBegin(float sx, float sy) { panPX = sx; panPY = sy; panVX = curX; panVY = curY; }

@@ -30,7 +30,11 @@ template <class Ch, class Str>
 Str run(const Str& fmt, ArgReader& ap, bool wideStrDefault)
 {
 	Str out;
-	auto put = [&](const std::string& s) { for (unsigned char ch : s) out += (Ch)ch; };
+	auto put = [&](const std::string& s)
+	{
+		if constexpr (sizeof(Ch) == 2) { for (char16_t w : utf8to16(s)) out += (Ch)w; }   // the pieces are built as UTF-8: decode them, do not widen byte by byte
+		else for (unsigned char ch : s) out += (Ch)ch;
+	};
 	for (size_t i = 0; i < fmt.size(); i++)
 	{
 		if (fmt[i] != '%') { out += fmt[i]; continue; }

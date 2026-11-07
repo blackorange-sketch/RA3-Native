@@ -1022,6 +1022,7 @@ void draw(const DrawCall& dc)
 	if (p->bgra >= 0) glUniform1i(p->bgra, (GLint)bgra);
 	uint64_t t5 = nowUs();
 	GLenum mode = primMode(dc.prim);
+	{ static uint64_t cnt[8]; static uint32_t shown; if (dc.prim < 8) cnt[dc.prim]++; if ((dc.prim == 1 || dc.prim == 2 || dc.prim == 3) && shown < 20) { shown++; log("draw: prim %u count %u indexed %d stride? rt %p", dc.prim, dc.primCount, (int)dc.indexed, (void*)dev.rt0); } if (gDrawsThisFrame == 0 && gFrameNo % 300 == 0) log("draw: prim totals pt %llu line %llu strip %llu tri %llu tstrip %llu tfan %llu", (unsigned long long)cnt[1], (unsigned long long)cnt[2], (unsigned long long)cnt[3], (unsigned long long)cnt[4], (unsigned long long)cnt[5], (unsigned long long)cnt[6]); }
 	uint32_t nv = (uint32_t)primVertices(dc.prim, dc.primCount);
 	if (!dc.indexed)
 	{
@@ -1132,6 +1133,7 @@ void present()
 	{
 		uint32_t gm = guest::load<uint32_t>(0xce2f98);
 		log("LOD: manager %08x; hw: cpu %u/%u/%u mem %08x%08x vid %u %u", gm, guest::load<uint32_t>(0xcf00b8), guest::load<uint32_t>(0xcf046c), guest::load<uint32_t>(0xcefa60), guest::load<uint32_t>(0xcee5d4), guest::load<uint32_t>(0xcee5d0), guest::load<uint32_t>(0xcf0414), guest::load<uint32_t>(0xce2fa8));
+		log("LOD: cpulib flag %02x tscfreq %08x%08x cf009c %x cee3a8 %x cee3ac %x", guest::load<uint8_t>(0xcf0423), guest::load<uint32_t>(0xcf0094), guest::load<uint32_t>(0xcf0090), guest::load<uint32_t>(0xcf009c), guest::load<uint32_t>(0xcee3a8), guest::load<uint32_t>(0xcee3ac));
 		if (gm) { std::string line; char b[16]; for (uint32_t o = 0x2d8; o < 0x364; o += 4) { snprintf(b, sizeof b, "%x:%x ", o, guest::load<uint32_t>(gm + o)); line += b; } log("LOD: %s", line.c_str()); }
 	}
 	if (gFrameNo == 1800 || gFrameNo == 3600) { log("DIAG: call rings of all threads at frame %u", gFrameNo); rt::traceDump(); }
