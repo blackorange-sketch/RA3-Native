@@ -183,7 +183,9 @@ int main(int argc, char** argv)
 						{
 							uint32_t v = (uint32_t)x.operands[i].imm;
 							uint8_t prev = 0;
-							if (v >= imageBase && isCode(v) && readVA(v - 1, &prev, 1) && (prev == 0xcc || prev == 0xc3 || prev == 0x90 || prev == 0xc2) && !funcs.count(v))
+							auto sc = v >= imageBase ? secOfRva(v - imageBase) : nullptr;
+							bool sectionStart = sc && (sc->flags & 0x20000000) && v - imageBase == sc->va;
+							if (v >= imageBase && isCode(v) && (sectionStart || (readVA(v - 1, &prev, 1) && (prev == 0xcc || prev == 0xc3 || prev == 0x90 || prev == 0xc2))) && !funcs.count(v))
 							{ addFunc(v); st["imm_code_seed"]++; }
 							else if (v >= imageBase && isCode(v)) immCand.insert(v);
 						}
