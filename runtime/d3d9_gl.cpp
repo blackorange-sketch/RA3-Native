@@ -279,6 +279,26 @@ void targetSize(Obj* rt, uint32_t& w, uint32_t& h)
 	w = std::max(1u, t->w >> l); h = std::max(1u, t->h >> l);
 }
 
+// Device Reset to another size: the back buffer texture and its depth/stencil buffer are re-allocated
+void resizeBackBufferImpl()
+{
+	if (!gInit || !gBackTex) return;
+	GLint prev = 0;
+	glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev);
+	glBindTexture(GL_TEXTURE_2D, gBackTex);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, backW, backH, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+	glBindTexture(GL_TEXTURE_2D, (GLuint)prev);
+	glBindRenderbuffer(GL_RENDERBUFFER, gBackDepth);
+	glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, backW, backH);
+	glBindFramebuffer(GL_FRAMEBUFFER, gBackFbo);
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gBackTex, 0);
+	glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, gBackDepth);
+	glClearColor(0.f, 0.f, 0.f, 1.f);
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+	if (gBackBuffer) { gBackBuffer->w = backW; gBackBuffer->h = backH; }
+	log("GL: back buffer resized to %ux%u (status 0x%x)", backW, backH, glCheckFramebufferStatus(GL_FRAMEBUFFER));
+}
+
 void bindTargets()
 {
 	Obj* rt = dev.rt0;
@@ -553,6 +573,7 @@ GLenum primMode(uint32_t prim)
 const char* kBlitVs = "#version 300 es\nout vec2 uv;\nvoid main(){ vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)); uv = vec2(p.x, 1.0 - p.y); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }\n";
 const char* kBlitFs = "#version 300 es\nprecision mediump float;\nin vec2 uv;\nuniform sampler2D t;\nout vec4 o;\nvoid main(){ o = vec4(texture(t, uv).rgb, 1.0); }\n";
 }   // namespace
+void resizeBackBuffer() { resizeBackBufferImpl(); }
 
 bool init()
 {

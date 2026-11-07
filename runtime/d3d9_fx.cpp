@@ -165,6 +165,11 @@ static void flushShared()
 			int i = fxrt::findParam(*fx2, d.second->name);
 			if (i < 0) continue;
 			FxParam& q = fx2->params[i];
+			if (d.second->name == "ViewProjection")
+			{
+				static int fl = 0;
+				if (fl++ < 12) log("fx: flush ViewProjection %p -> %p sizes %zu/%zu v0 %g", (void*)d.first, (void*)fx2.get(), d.second->val.size(), q.val.size(), d.second->val.empty() ? 0.0 : (double)*(const float*)&d.second->val[0]);
+			}
 			if (q.val.size() == d.second->val.size()) q.val = d.second->val;
 			q.texObj = d.second->texObj;
 		}
@@ -469,6 +474,11 @@ static void setMatrices(CPU* c, Obj* o, bool transpose, bool array, bool pointer
 			e.off += i * stride;
 			const float* m = pointers ? (const float*)guest::host(guest::load<uint32_t>(ARG(2) + 4 * i)) : (const float*)guest::host(ARG(2) + 64 * i);
 			putMatrix(e, m, transpose);
+			if (r.p->name == "ViewProjection")
+			{
+				static int vn = 0;
+				if (vn++ < 12) log("fx: ViewProjection set on fx %p (transpose %d) [%g %g %g %g] [%g %g %g %g] [%g %g %g %g] [%g %g %g %g]", (void*)F(o), (int)transpose, m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15]);
+			}
 		}
 	}
 	SET(0);

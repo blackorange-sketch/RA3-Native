@@ -110,6 +110,7 @@ bool ready();
 void clear(uint32_t count, uint32_t rects, uint32_t flags, uint32_t color, float z, uint32_t stencil);
 void draw(const DrawCall& dc);
 void present();
+void resizeBackBuffer();   // the device was reset to another back buffer size
 void stretchRect(Obj* src, const int32_t* srcRect, Obj* dst, const int32_t* dstRect, uint32_t filter);
 void destroy(Obj* o);
 }
