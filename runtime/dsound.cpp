@@ -24,7 +24,7 @@ const std::vector<Method> kUnk = {{"QueryInterface", 2}, {"AddRef", 0}, {"Releas
 std::vector<Method> cat(std::vector<Method> a, const std::vector<Method>& b) { a.insert(a.end(), b.begin(), b.end()); return a; }
 const std::vector<Method> kDS = cat(kUnk, {{"CreateSoundBuffer", 3}, {"GetCaps", 1}, {"DuplicateSoundBuffer", 2}, {"SetCooperativeLevel", 2}, {"Compact", 0}, {"GetSpeakerConfig", 1}, {"SetSpeakerConfig", 1}, {"Initialize", 1}});
 const std::vector<Method> kBuf = cat(kUnk, {{"GetCaps", 1}, {"GetCurrentPosition", 2}, {"GetFormat", 3}, {"GetVolume", 1}, {"GetPan", 1}, {"GetFrequency", 1}, {"GetStatus", 1}, {"Initialize", 2},
-	{"Lock", 6}, {"Play", 3}, {"SetCurrentPosition", 1}, {"SetFormat", 1}, {"SetVolume", 1}, {"SetPan", 1}, {"SetFrequency", 1}, {"Stop", 0}, {"Unlock", 4}, {"Restore", 0},
+	{"Lock", 7}, {"Play", 3}, {"SetCurrentPosition", 1}, {"SetFormat", 1}, {"SetVolume", 1}, {"SetPan", 1}, {"SetFrequency", 1}, {"Stop", 0}, {"Unlock", 4}, {"Restore", 0},
 	{"SetFX", 3}, {"AcquireResources", 3}, {"GetObjectInPath", 4}});
 
 struct Obj
