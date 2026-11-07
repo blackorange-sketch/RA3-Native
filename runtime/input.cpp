@@ -16,7 +16,7 @@ namespace
 {
 constexpr uint32_t kHwnd = 0x30001;
 enum { WM_ACTIVATE = 0x6, WM_SETFOCUS = 0x7, WM_KEYDOWN = 0x100, WM_KEYUP = 0x101, WM_CHAR = 0x102, WM_MOUSEMOVE = 0x200, WM_LBUTTONDOWN = 0x201, WM_LBUTTONUP = 0x202,
-       WM_RBUTTONDOWN = 0x204, WM_RBUTTONUP = 0x205, WM_MOUSEWHEEL = 0x20a, WM_ACTIVATEAPP = 0x1c };
+       WM_RBUTTONDOWN = 0x204, WM_RBUTTONUP = 0x205, WM_MBUTTONDOWN = 0x207, WM_MBUTTONUP = 0x208, WM_MOUSEWHEEL = 0x20a, WM_ACTIVATEAPP = 0x1c };
 
 struct Msg { uint32_t hwnd, msg, wp, lp; int64_t readyAt; int32_t x, y; };
 
@@ -25,7 +25,7 @@ std::deque<Msg> q;
 int64_t lastReady = 0;
 bool keys[256];
 int curX = 0, curY = 0;
-bool lDown = false, rDown = false;
+bool lDown = false, rDown = false, mDown = false;
 bool started = false;
 bool kbToggle = false;
 uint32_t wndProc = 0;
@@ -42,7 +42,7 @@ void push(uint32_t msg, uint32_t wp, uint32_t lp, int gapMs)
 	lastReady = t;
 	q.push_back({kHwnd, msg, wp, lp, t, curX, curY});
 }
-uint32_t mouseFlags() { return (lDown ? 1u : 0u) | (rDown ? 2u : 0u) | (keys[0x10] ? 4u : 0u) | (keys[0x11] ? 8u : 0u); }
+uint32_t mouseFlags() { return (lDown ? 1u : 0u) | (rDown ? 2u : 0u) | (mDown ? 0x10u : 0u) | (keys[0x10] ? 4u : 0u) | (keys[0x11] ? 8u : 0u); }
 uint32_t xy() { return (uint32_t)(curX & 0xffff) | ((uint32_t)(curY & 0xffff) << 16); }
 
 void mapTo(float sx, float sy)
@@ -81,13 +81,14 @@ void clickWithMods(bool right)
 
 namespace
 {
-constexpr float kPanGain = 2.5f;
+constexpr float kPanGain = 1.5f;
 float panPX = 0, panPY = 0;
 int panVX = 0, panVY = 0;
 void panBegin(float sx, float sy) { panPX = sx; panPY = sy; panVX = curX; panVY = curY; }
 // relative pan: the cursor moves kPanGain times faster than the finger; near an edge the right button is released and re-grabbed at the centre
-void panMove(float sx, float sy)
+void panMove(float sx, float sy, bool mid = false)
 {
+	uint32_t dn = mid ? WM_MBUTTONDOWN : WM_RBUTTONDOWN, up = mid ? WM_MBUTTONUP : WM_RBUTTONUP, bit = mid ? 0x10u : 2u;
 	panVX += (int)((sx - panPX) * bw / std::max(1, vw) * kPanGain); panVY += (int)((sy - panPY) * bh / std::max(1, vh) * kPanGain);
 	panPX = sx; panPY = sy;
 	int mx = bw / 8, my = bh / 8;
@@ -95,10 +96,10 @@ void panMove(float sx, float sy)
 	{
 		curX = std::max(0, std::min(bw - 1, panVX)); curY = std::max(0, std::min(bh - 1, panVY));
 		push(WM_MOUSEMOVE, mouseFlags(), xy(), 0);
-		push(WM_RBUTTONUP, mouseFlags() & ~2u, xy(), 0);
+		push(up, mouseFlags() & ~bit, xy(), 0);
 		panVX = bw / 2; panVY = bh / 2; curX = panVX; curY = panVY;
-		push(WM_MOUSEMOVE, mouseFlags() & ~2u, xy(), 0);
-		push(WM_RBUTTONDOWN, mouseFlags(), xy(), 0);
+		push(WM_MOUSEMOVE, mouseFlags() & ~bit, xy(), 0);
+		push(dn, mouseFlags(), xy(), 0);
 		return;
 	}
 	curX = panVX; curY = panVY;
@@ -151,6 +152,7 @@ void onTouch(int action, int idx, int count, const float* xs, const float* ys)
 			// a second finger: abandon the one-finger gesture
 			if (lDown) { lDown = false; push(WM_LBUTTONUP, mouseFlags(), xy(), 30); }
 			if (rDown) { rDown = false; push(WM_RBUTTONUP, mouseFlags(), xy(), 30); }
+			if (mDown) { mDown = false; push(WM_MBUTTONUP, mouseFlags(), xy(), 30); twoPan = false; }
 			pending = false; dragMode = 0;
 			twoAt = now; twoMoved = false; twoPan = false;
 			twoStartX = (xs[0] + xs[1]) / 2; twoStartY = (ys[0] + ys[1]) / 2;
@@ -187,14 +189,14 @@ void onTouch(int action, int idx, int count, const float* xs, const float* ys)
 			{
 				twoMoved = true; twoPan = true;
 				mapTo(twoStartX, twoStartY); push(WM_MOUSEMOVE, mouseFlags(), xy(), 0);
-				rDown = true; push(WM_RBUTTONDOWN, mouseFlags(), xy(), 0); panBegin(twoStartX, twoStartY);
+				mDown = true; push(WM_MBUTTONDOWN, mouseFlags(), xy(), 0); panBegin(twoStartX, twoStartY);
 			}
-			if (twoPan) panMove(cx, cy);
+			if (twoPan) panMove(cx, cy, true);
 		}
 	}
 	else if (action == PUP)
 	{
-		if (count == 2 && twoPan) { twoPan = false; if (rDown) { rDown = false; push(WM_RBUTTONUP, mouseFlags(), xy(), 30); } }
+		if (count == 2 && twoPan) { twoPan = false; if (mDown) { mDown = false; push(WM_MBUTTONUP, mouseFlags(), xy(), 30); } }
 		else if (count == 2 && !twoMoved && now - twoAt < 350)
 		{
 			// a tap of two fingers = cancel / command (right click)
@@ -208,6 +210,7 @@ void onTouch(int action, int idx, int count, const float* xs, const float* ys)
 		if (pending && dragMode == 0 && action == UP) clickWithMods(now - downAt >= 600);   // tap = left click, long press = right click
 		if (lDown) { lDown = false; push(WM_LBUTTONUP, mouseFlags(), xy(), 40); }
 		if (rDown && dragMode == 2) { rDown = false; push(WM_RBUTTONUP, mouseFlags(), xy(), 40); }
+		if (mDown) { mDown = false; twoPan = false; push(WM_MBUTTONUP, mouseFlags(), xy(), 40); }
 		pending = false; dragMode = 0;
 		threeSeen = false;
 	}
