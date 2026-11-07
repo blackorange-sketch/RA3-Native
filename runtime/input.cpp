@@ -84,6 +84,7 @@ void onTouch(int action, int idx, int count, const float* xs, const float* ys)
 	if (action == DOWN)
 	{
 		mapTo(xs[0], ys[0]);
+		log("input: DOWN screen %.0f,%.0f -> game %d,%d (back %dx%d view %d,%d %dx%d)", xs[0], ys[0], curX, curY, bw, bh, vx, vy, vw, vh);
 		startX = xs[0]; startY = ys[0]; moved = false; downAt = now; twoMoved = false; threeSeen = false;
 		push(WM_MOUSEMOVE, mouseFlags(), xy(), 0);
 		lDown = true;
@@ -259,6 +260,7 @@ IMP_ID("USER32.dll", "GetKeyState", GetKeyState, 4) { SET((uint32_t)(int32_t)key
 IMP_ID("USER32.dll", "GetAsyncKeyState", GetAsyncKeyState, 4) { SET((uint32_t)(int32_t)keyState(ARG(0))); }
 IMP_ID("USER32.dll", "GetClientRect", GetClientRect, 8)
 {
+	{ static int n = 0; if (n++ < 40) log("GetClientRect -> %dx%d", bw, bh); }
 	guest::store<int32_t>(ARG(1), 0); guest::store<int32_t>(ARG(1) + 4, 0); guest::store<int32_t>(ARG(1) + 8, bw); guest::store<int32_t>(ARG(1) + 12, bh);
 	SET(1);
 }
