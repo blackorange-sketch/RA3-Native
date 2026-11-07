@@ -280,8 +280,10 @@ void targetSize(Obj* rt, uint32_t& w, uint32_t& h)
 }
 
 // Device Reset to another size: the back buffer texture and its depth/stencil buffer are re-allocated
+std::atomic<bool> gResizePending{false};
 void resizeBackBufferImpl()
 {
+	if (!gResizePending.exchange(false)) return;
 	if (!gInit || !gBackTex) return;
 	GLint prev = 0;
 	glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev);
@@ -301,6 +303,7 @@ void resizeBackBufferImpl()
 
 void bindTargets()
 {
+	resizeBackBufferImpl();
 	Obj* rt = dev.rt0;
 	if (isBack(rt))
 	{
@@ -573,7 +576,7 @@ GLenum primMode(uint32_t prim)
 const char* kBlitVs = "#version 300 es\nout vec2 uv;\nvoid main(){ vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)); uv = vec2(p.x, 1.0 - p.y); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }\n";
 const char* kBlitFs = "#version 300 es\nprecision mediump float;\nin vec2 uv;\nuniform sampler2D t;\nout vec4 o;\nvoid main(){ o = vec4(texture(t, uv).rgb, 1.0); }\n";
 }   // namespace
-void resizeBackBuffer() { resizeBackBufferImpl(); }
+void resizeBackBuffer() { gResizePending = true; }   // may be called from a thread without the GL context: applied by the GL thread
 
 bool init()
 {
@@ -1061,6 +1064,7 @@ void present()
 	{ static int n = 0; if (n++ < 5) log("GL: present on tid %d ctx %p", (int)gettid(), (void*)eglGetCurrentContext()); }
 	if (!ensureGl()) { std::this_thread::sleep_for(std::chrono::milliseconds(16)); return; }
 	gfx::beginFrame();
+	resizeBackBufferImpl();
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 	int sw = gfx::width(), sh = gfx::height();
 	glDisable(GL_SCISSOR_TEST); glDisable(GL_DEPTH_TEST); glDisable(GL_BLEND); glDisable(GL_CULL_FACE); glDisable(GL_STENCIL_TEST);
@@ -1160,6 +1164,7 @@ bool ready() { return false; }
 void clear(uint32_t, uint32_t, uint32_t, uint32_t, float, uint32_t) {}
 void draw(const DrawCall&) {}
 void present() {}
+void resizeBackBuffer() {}
 void stretchRect(Obj*, const int32_t*, Obj*, const int32_t*, uint32_t) {}
 void destroy(Obj*) {}
 }
