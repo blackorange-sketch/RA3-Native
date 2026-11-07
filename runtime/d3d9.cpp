@@ -290,7 +290,7 @@ H("IDirect3D9::EnumAdapterModes") { if (ARG(3) >= 3) { SET(0x8876086c); return; 
 H("IDirect3D9::GetAdapterDisplayMode") { fillMode(ARG(2), 1); SET(0); } END;
 H("IDirect3D9::CheckDeviceType") { SET(0); } END;
 H("IDirect3D9::CheckDeviceFormat") { SET(0); } END;
-H("IDirect3D9::CheckDeviceMultiSampleType") { if (ARG(5) != 0 && ARG(5) != 1) { SET(0x8876086a); return; } if (ARG(7)) guest::store<uint32_t>(ARG(7), 1); SET(0); } END;
+H("IDirect3D9::CheckDeviceMultiSampleType") { if (ARG(5) != 0 && ARG(5) != 1) { SET(0x8876086a); return; } if (ARG(6)) guest::store<uint32_t>(ARG(6), 1); SET(0); } END;
 H("IDirect3D9::CheckDepthStencilMatch") { SET(0); } END;
 H("IDirect3D9::CheckDeviceFormatConversion") { SET(0); } END;
 static void fillCaps(uint32_t p)
