@@ -764,6 +764,17 @@ void draw(const DrawCall& dc)
 	if (!p) return;
 	if (gFrameNo == 700)
 	{
+		static bool srcDumped = false;
+		if (!srcDumped)
+		{
+			srcDumped = true;
+			std::string vsrc = shdr::compose(vs->info), psrc = shdr::compose(ps->info, &vs->info.outputs);
+			log("DD VS source:\n%s", vsrc.c_str());
+			log("DD PS source:\n%s", psrc.c_str());
+		}
+	}
+	if (gFrameNo == 700)
+	{
 		static int dn = 0;
 		std::string tx;
 		for (int i = 0; i < 4; i++)
