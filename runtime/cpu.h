@@ -54,3 +54,5 @@ static inline uint8_t par8(uint32_t v) { return (uint8_t)(!__builtin_parity(v & 
 
 #include <time.h>
 static inline uint64_t rdtsc_host() { timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000000ull + t.tv_nsec; }
+
+struct GuestLongjmp { uint32_t buf, esp, eip, val; };   // thrown by longjmp, caught in the function that called _setjmp3

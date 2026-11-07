@@ -311,6 +311,9 @@ struct Gen
 	uint32_t entry;
 	std::map<uint32_t, Ins>* code;
 	std::vector<std::string> unsup;
+	uint32_t setjmpSlot = 0;
+	const std::set<uint32_t>* setjmpThunks = nullptr;
+	std::vector<uint32_t> sj;   // return addresses of the _setjmp3 call sites
 
 	bool isLocal(uint32_t t) { return code->count(t) && !(t != entry && funcs && funcs->count(t)); }
 
@@ -1133,10 +1136,25 @@ struct Gen
 			{
 				uint32_t target = (uint32_t)t.imm;
 				if (target == in.next) { e.line(fmt("esp -= 4; S32(esp, %s);", hex(in.next).c_str())); break; }   // get-PC idiom
-				if (funcs && !funcs->count(target))
+				if (setjmpThunks && setjmpThunks->count(target))
+				{
+					size_t k = sj.size();
+					sj.push_back(in.next);
+					e.line(fmt("esp -= 4; S32(esp, %s); SAVE(); f_%08x(c); LOAD();", hex(in.next).c_str(), target));
+					e.line(fmt("SJ_%zu:; sj_esp[%zu] = esp;", k, k));
+				}
+				else if (funcs && !funcs->count(target))
 					e.line(fmt("esp -= 4; S32(esp, %s); SAVE(); call_target(c, 0x%08xu); LOAD();", hex(in.next).c_str(), target));
 				else
 					e.line(fmt("esp -= 4; S32(esp, %s); SAVE(); f_%08x(c); LOAD();", hex(in.next).c_str(), target));
+			}
+			else if (setjmpSlot && t.type == X86_OP_MEM && t.mem.base == X86_REG_INVALID && t.mem.index == X86_REG_INVALID && (uint32_t)t.mem.disp == setjmpSlot)
+			{
+				// setjmp: a later longjmp throws GuestLongjmp; the catch in this function resumes right after the call
+				size_t k = sj.size();
+				sj.push_back(in.next);
+				e.line("{ uint32_t t = " + e.rd(t, nullptr, 4) + "; esp -= 4; S32(esp, " + hex(in.next) + "); SAVE(); call_target(c, t); LOAD(); }");
+				e.line(fmt("SJ_%zu:; sj_esp[%zu] = esp;", k, k));
 			}
 			else
 			{
@@ -1276,6 +1294,8 @@ Result liftFunction(Reader& r, uint32_t entry, const Options& opt)
 
 	Result res;
 	Gen g{opt.funcEntries, entry, &code, {}};
+	g.setjmpSlot = opt.setjmpSlot;
+	g.setjmpThunks = &opt.setjmpThunks;
 	std::string body;
 	if (!code.empty() && code.begin()->first != entry)
 	{
@@ -1306,6 +1326,18 @@ Result liftFunction(Reader& r, uint32_t entry, const Options& opt)
 	head += fmt("\tTRACE_FN(0x%08xu);\n", entry);
 	head += "\t(void)cf; (void)pf; (void)af; (void)zf; (void)sf; (void)of; (void)df;\n";
 	if (entryFlagNeed(entry)) head += "\tLOADFL();\n";
+	if (!g.sj.empty())
+	{
+		// every setjmp site can be re-entered after a longjmp: run the body in a retry loop
+		std::string pre = fmt("\tuint32_t sj_esp[%zu] = {}; int sj_resume = 0;\n\tfor (;;) {\n\ttry {\n\tswitch (sj_resume) {\n", g.sj.size());
+		for (size_t k = 0; k < g.sj.size(); k++) pre += fmt("\tcase %zu: goto SJ_%zu;\n", k + 1, k);
+		pre += "\tdefault: break; }\n";
+		std::string post = "\treturn;\n\t} catch (GuestLongjmp& ex) {\n";
+		for (size_t k = 0; k < g.sj.size(); k++)
+			post += fmt("\tif (sj_esp[%zu] == ex.esp && ex.eip == 0x%08xu) { ebp = G32(ex.buf); ebx = G32(ex.buf + 4); edi = G32(ex.buf + 8); esi = G32(ex.buf + 12); esp = ex.esp; eax = ex.val; sj_resume = %zu; continue; }\n", k, g.sj[k], k + 1);
+		post += "\tthrow;\n\t}\n\t}\n";
+		body = pre + body + post;
+	}
 	res.code = head + body + "}\n";
 	if (hooked)
 		res.code += fmt("void f_%08x(CPU* c)\n{\n\tuint32_t a0 = G32(c->r[4] + 4), a1 = G32(c->r[4] + 8), a2 = G32(c->r[4] + 12), ecx0 = c->r[1];\n\tf_%08x_real(c);\n\tra3_hook_after(c, 0x%08xu, a0, a1, a2, ecx0);\n}\n", entry, entry, entry);

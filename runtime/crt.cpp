@@ -488,7 +488,18 @@ IMP_C(DLL, _CxxThrowException) { fatal("C++ exception thrown by the game (object
 IMP_C(DLL, __CxxFrameHandler3) { fatal("__CxxFrameHandler3 invoked - C++ exception unwinding is not supported yet"); }
 IMP_C(DLL, _except_handler3) { fatal("_except_handler3 invoked (SEH)"); }
 IMP_C(DLL, _except_handler4_common) { fatal("_except_handler4_common invoked (SEH)"); }
-IMP_C(DLL, longjmp) { fatal("longjmp is not supported yet"); }
-IMP_C(DLL, _setjmp3) { SET(0); }   // first return only; longjmp is fatal (used for error paths)
+IMP_C(DLL, longjmp)
+{
+	uint32_t buf = ARG(0), val = ARG(1);
+	throw GuestLongjmp{buf, guest::load<uint32_t>(buf + 16), guest::load<uint32_t>(buf + 20), val ? val : 1};
+}
+IMP_C(DLL, _setjmp3)   // MSVC jmp_buf: Ebp, Ebx, Edi, Esi, Esp, Eip
+{
+	uint32_t b = ARG(0);
+	guest::store<uint32_t>(b, c->r[EBP]); guest::store<uint32_t>(b + 4, c->r[EBX]);
+	guest::store<uint32_t>(b + 8, c->r[EDI]); guest::store<uint32_t>(b + 12, c->r[ESI]);
+	guest::store<uint32_t>(b + 16, c->r[ESP] + 4); guest::store<uint32_t>(b + 20, guest::load<uint32_t>(c->r[ESP]));
+	SET(0);
+}
 IMP_ID(DLL, "?terminate@@YAXXZ", terminate_fn, 0) { fatal("std::terminate called"); }
 IMP_ID(DLL, "?_type_info_dtor_internal_method@type_info@@QAEXXZ", type_info_dtor, 0) {}

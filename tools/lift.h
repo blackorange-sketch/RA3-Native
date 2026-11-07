@@ -24,6 +24,8 @@ struct Result
 
 struct Options
 {
+	std::set<uint32_t> setjmpThunks;                   // VAs of `jmp [setjmp slot]` stubs: direct calls to them are setjmp sites too
+	uint32_t setjmpSlot = 0;                           // VA of the IAT slot of _setjmp3 (0 = none): calls through it get a longjmp landing pad
 	const std::set<uint32_t>* funcEntries = nullptr;   // known function starts: jumps to them are tail calls
 };
 

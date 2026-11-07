@@ -47,6 +47,31 @@ struct PE : lift::Reader
 	}
 };
 
+// VA of the IAT slot for an import by name (any DLL), 0 when absent
+static uint32_t findImport(PE& pe, const char* name)
+{
+	uint32_t pehdr = pe.rd<uint32_t>(0x3c);
+	uint32_t impRva = pe.rd<uint32_t>(pehdr + 24 + 96 + 8);
+	if (!impRva) return 0;
+	auto rd32 = [&](uint32_t va) { uint32_t v = 0; pe.read(va, (uint8_t*)&v, 4); return v; };
+	for (uint32_t d = pe.base + impRva;; d += 20)
+	{
+		uint32_t oft = rd32(d), nameRva = rd32(d + 12), ft = rd32(d + 16);
+		if (!nameRva && !ft) break;
+		uint32_t t = oft ? oft : ft;
+		for (uint32_t k = 0;; k++)
+		{
+			uint32_t e = rd32(pe.base + t + 4 * k);
+			if (!e) break;
+			if (e & 0x80000000u) continue;
+			char nm[64] = {};
+			pe.read(pe.base + e + 2, (uint8_t*)nm, 63);
+			if (!strcmp(nm, name)) return pe.base + ft + 4 * k;
+		}
+	}
+	return 0;
+}
+
 int main(int argc, char** argv)
 {
 	if (argc < 3) { fprintf(stderr, "usage: lift_pe <pe> <functions.txt> [--emit out.inc]\n"); return 1; }
@@ -65,6 +90,14 @@ int main(int argc, char** argv)
 	lift::init();
 	lift::Options opt;
 	opt.funcEntries = &funcs;
+	opt.setjmpSlot = findImport(pe, "_setjmp3");
+	if (opt.setjmpSlot)
+		for (uint32_t e : funcs)
+		{
+			uint8_t b[6];
+			if (pe.read(e, b, 6) && b[0] == 0xff && b[1] == 0x25 && memcmp(b + 2, &opt.setjmpSlot, 4) == 0) opt.setjmpThunks.insert(e);
+		}
+	fprintf(stderr, "_setjmp3 IAT slot: %08x, thunks: %zu\n", opt.setjmpSlot, opt.setjmpThunks.size());
 	size_t full = 0, total = 0, ins = 0, bad = 0;
 	std::map<std::string, size_t> byMn, funcsByMn;
 	for (uint32_t e : funcs)
