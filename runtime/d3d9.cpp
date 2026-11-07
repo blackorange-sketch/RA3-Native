@@ -543,7 +543,7 @@ static uint32_t ddsFormat(uint32_t hdr)
 	return 21;
 }
 
-struct Image { uint32_t w = 0, h = 0, d = 1, levels = 1, fmt = 0, type = 3, fileFmt = 4, dataOff = 0; bool dds = false, cube = false, vol = false; };
+struct Image { uint32_t w = 0, h = 0, d = 1, levels = 1, fmt = 0, type = 3, fileFmt = 4, dataOff = 0; bool dds = false, cube = false, vol = false, tga = false; };
 static Image parseImage(uint32_t p, uint32_t n)
 {
 	Image im;
@@ -558,6 +558,15 @@ static Image parseImage(uint32_t p, uint32_t n)
 		if (im.cube) im.type = 5;
 		im.fmt = ddsFormat(p);
 		im.dataOff = 128;
+	}
+	else if (n >= 18 && [&] {
+		const uint8_t* h = (const uint8_t*)guest::host(p);
+		uint32_t w = h[12] | h[13] << 8, hh = h[14] | h[15] << 8;
+		return h[1] == 0 && (h[2] == 2 || h[2] == 3 || h[2] == 10 || h[2] == 11) && (h[16] == 8 || h[16] == 24 || h[16] == 32) && w && hh && w <= 8192 && hh <= 8192;
+	}())
+	{
+		const uint8_t* h = (const uint8_t*)guest::host(p);
+		im.tga = true; im.w = h[12] | h[13] << 8; im.h = h[14] | h[15] << 8; im.fmt = 21; im.fileFmt = 2; im.levels = 1;
 	}
 	else
 	{
@@ -575,6 +584,26 @@ static void fillInfo(uint32_t p, const Image& im)
 }
 static void loadPayload(d3d::Obj* t, uint32_t src, uint32_t n, const Image& im)
 {
+	if (im.tga)
+	{
+		const uint8_t* h = (const uint8_t*)guest::host(src);
+		uint32_t type = h[2], bpp = h[16] / 8, W = im.w, H = im.h, idLen = h[0];
+		bool topDown = (h[17] & 0x20) != 0, rle = type >= 9;
+		const uint8_t* sp = h + 18 + idLen; const uint8_t* end = h + n;
+		std::vector<uint8_t> px((size_t)W * H * 4, 255);
+		size_t i = 0, total = (size_t)W * H;
+		auto put = [&](const uint8_t* q) { if (i >= total) return; uint8_t* d = &px[i * 4]; if (bpp == 1) d[0] = d[1] = d[2] = q[0]; else { d[0] = q[0]; d[1] = q[1]; d[2] = q[2]; d[3] = bpp == 4 ? q[3] : 255; } i++; };
+		while (i < total && sp + bpp <= end)
+		{
+			if (!rle) { put(sp); sp += bpp; continue; }
+			uint8_t c = *sp++; uint32_t cnt = (c & 0x7f) + 1;
+			if (c & 0x80) { if (sp + bpp > end) break; for (uint32_t k = 0; k < cnt; k++) put(sp); sp += bpp; }
+			else for (uint32_t k = 0; k < cnt && sp + bpp <= end; k++) { put(sp); sp += bpp; }
+		}
+		uint8_t* dst = (uint8_t*)guest::host(t->data + t->levelOff[0]);
+		for (uint32_t y = 0; y < H; y++) memcpy(dst + (size_t)y * W * 4, &px[(size_t)(topDown ? y : H - 1 - y) * W * 4], (size_t)W * 4);
+		return;
+	}
 	if (!im.dds) { for (uint32_t i = 0; i < t->size / 4; i++) guest::store<uint32_t>(t->data + 4 * i, 0xffff00ffu); return; }   // magenta placeholder
 	uint32_t off = im.dataOff, avail = n - off;
 	for (uint32_t f = 0; f < t->faces; f++)

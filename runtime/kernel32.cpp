@@ -526,13 +526,26 @@ IMP_STD(K, CreateToolhelp32Snapshot, 2) { SET(0xffffffff); }
 IMP_STD(K, Thread32First, 2) { SET(0); }
 IMP_STD(K, Thread32Next, 2) { SET(0); }
 IMP_ID("USER32.dll", "EnumThreadWindows", EnumThreadWindows, 12) { SET(1); }
+static char16_t cp1251ToU(unsigned char ch)
+{
+	static const uint16_t hi[64] = {0x402,0x403,0x201A,0x453,0x201E,0x2026,0x2020,0x2021,0x20AC,0x2030,0x409,0x2039,0x40A,0x40C,0x40B,0x40F,
+		0x452,0x2018,0x2019,0x201C,0x201D,0x2022,0x2013,0x2014,0x98,0x2122,0x459,0x203A,0x45A,0x45C,0x45B,0x45F,
+		0xA0,0x40E,0x45E,0x408,0xA4,0x490,0xA6,0xA7,0x401,0xA9,0x404,0xAB,0xAC,0xAD,0xAE,0x407,
+		0xB0,0xB1,0x406,0x456,0x491,0xB5,0xB6,0xB7,0x451,0x2116,0x454,0xBB,0x458,0x405,0x455,0x457};
+	if (ch < 0x80) return ch;
+	if (ch < 0xc0) return hi[ch - 0x80];
+	return (char16_t)(0x410 + (ch - 0xc0));
+}
+static int mbLogCount = 0;
 IMP_STD(K, MultiByteToWideChar, 6)
 {
 	uint32_t srcLen = ARG(3);
 	std::string s = srcLen == 0xffffffffu ? gstr(ARG(2)) + std::string(1, '\0') : gstrn(ARG(2), srcLen);
 	std::u16string w;
 	if (ARG(0) == 65001) w = utf8to16(s);
-	else for (unsigned char ch : s) w += (char16_t)(ch >= 0xc0 && ARG(0) == 1251 ? 0x410 + (ch - 0xc0) : ch);
+	else if (ARG(0) == 0 || ARG(0) == 1251) for (unsigned char ch : s) w += cp1251ToU(ch);
+	else for (unsigned char ch : s) w += (char16_t)ch;
+	if (mbLogCount < 40) { bool hi = false; for (unsigned char ch : s) if (ch >= 0x80) hi = true; if (hi) { mbLogCount++; log("MultiByteToWideChar cp %u flags %x len %d: %.40s", ARG(0), ARG(1), (int)srcLen, s.c_str()); } }
 	if (srcLen == 0xffffffffu && w.empty()) w = u"\0";
 	if (ARG(5) == 0) { SET(w.size()); return; }
 	if (w.size() > ARG(5)) { setLastError(122); SET(0); return; }
