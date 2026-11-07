@@ -124,6 +124,52 @@ PRef refOf(Obj* o, uint32_t h)
 	}
 	return r;
 }
+
+// ---- shared parameters (D3DXEffectPool): a write to a shared parameter of one effect is copied to the same-named
+// parameter of every other effect before the next draw
+static std::mutex gShareMu;
+static std::vector<std::weak_ptr<FxInfo>> gAllFx;
+static std::vector<std::pair<FxInfo*, FxParam*>> gDirtyShared;
+}   // anonymous namespace (reopened below)
+void fxRegister(const std::shared_ptr<FxInfo>& fx)
+{
+	std::lock_guard<std::mutex> l(gShareMu);
+	gAllFx.push_back(fx);
+	std::string sh;
+	for (auto& p : fx->params) if (p.flags & 1) sh += (sh.empty() ? "" : ",") + p.name;
+	log("   shared params: %s", sh.c_str());
+}
+namespace
+{
+PRef refOfSet(Obj* o, uint32_t h)
+{
+	PRef r = refOf(o, h);
+	if (r.valid() && (r.p->flags & 1))
+	{
+		std::lock_guard<std::mutex> l(gShareMu);
+		FxInfo* fx = F(o);
+		for (auto& d : gDirtyShared) if (d.second == r.p) return r;
+		gDirtyShared.push_back({fx, r.p});
+	}
+	return r;
+}
+static void flushShared()
+{
+	std::lock_guard<std::mutex> l(gShareMu);
+	if (gDirtyShared.empty()) return;
+	for (auto& d : gDirtyShared)
+		for (auto& w : gAllFx)
+		{
+			auto fx2 = w.lock();
+			if (!fx2 || fx2.get() == d.first) continue;
+			int i = fxrt::findParam(*fx2, d.second->name);
+			if (i < 0) continue;
+			FxParam& q = fx2->params[i];
+			if (q.val.size() == d.second->val.size()) q.val = d.second->val;
+			q.texObj = d.second->texObj;
+		}
+	gDirtyShared.clear();
+}
 uint32_t handleOf(Obj* o, const PRef& r)
 {
 	FxInfo* fx = F(o);
@@ -348,7 +394,7 @@ H("ID3DXEffect::GetParameterDesc")
 // ---- setters
 H("ID3DXEffect::SetValue")
 {
-	PRef r = refOf(o, ARG(1));
+	PRef r = refOfSet(o, ARG(1));
 	if (r.valid() && ARG(2))
 	{
 		if (r.ty->cls == 4)
@@ -367,12 +413,12 @@ H("ID3DXEffect::SetValue")
 	}
 	SET(0);
 } END;
-H("ID3DXEffect::SetBool") { PRef r = refOf(o, ARG(1)); if (r.valid()) { uint32_t v = ARG(2) ? 1 : 0; writeVals(r, &v, 1, 1); } SET(0); } END;
-H("ID3DXEffect::SetInt") { PRef r = refOf(o, ARG(1)); if (r.valid()) { uint32_t v = ARG(2); writeVals(r, &v, 1, 2); } SET(0); } END;
-H("ID3DXEffect::SetFloat") { PRef r = refOf(o, ARG(1)); if (r.valid()) { uint32_t v = ARG(2); writeVals(r, &v, 1, 3); } SET(0); } END;
-H("ID3DXEffect::SetBoolArray") { PRef r = refOf(o, ARG(1)); if (r.valid() && ARG(2)) { std::vector<uint32_t> v(ARG(3)); for (uint32_t i = 0; i < ARG(3); i++) v[i] = guest::load<uint32_t>(ARG(2) + 4 * i) ? 1 : 0; writeVals(r, v.data(), ARG(3), 1); } SET(0); } END;
-H("ID3DXEffect::SetIntArray") { PRef r = refOf(o, ARG(1)); if (r.valid() && ARG(2)) writeVals(r, (const uint32_t*)guest::host(ARG(2)), ARG(3), 2); SET(0); } END;
-H("ID3DXEffect::SetFloatArray") { PRef r = refOf(o, ARG(1)); if (r.valid() && ARG(2)) writeVals(r, (const uint32_t*)guest::host(ARG(2)), ARG(3), 3); SET(0); } END;
+H("ID3DXEffect::SetBool") { PRef r = refOfSet(o, ARG(1)); if (r.valid()) { uint32_t v = ARG(2) ? 1 : 0; writeVals(r, &v, 1, 1); } SET(0); } END;
+H("ID3DXEffect::SetInt") { PRef r = refOfSet(o, ARG(1)); if (r.valid()) { uint32_t v = ARG(2); writeVals(r, &v, 1, 2); } SET(0); } END;
+H("ID3DXEffect::SetFloat") { PRef r = refOfSet(o, ARG(1)); if (r.valid()) { uint32_t v = ARG(2); writeVals(r, &v, 1, 3); } SET(0); } END;
+H("ID3DXEffect::SetBoolArray") { PRef r = refOfSet(o, ARG(1)); if (r.valid() && ARG(2)) { std::vector<uint32_t> v(ARG(3)); for (uint32_t i = 0; i < ARG(3); i++) v[i] = guest::load<uint32_t>(ARG(2) + 4 * i) ? 1 : 0; writeVals(r, v.data(), ARG(3), 1); } SET(0); } END;
+H("ID3DXEffect::SetIntArray") { PRef r = refOfSet(o, ARG(1)); if (r.valid() && ARG(2)) writeVals(r, (const uint32_t*)guest::host(ARG(2)), ARG(3), 2); SET(0); } END;
+H("ID3DXEffect::SetFloatArray") { PRef r = refOfSet(o, ARG(1)); if (r.valid() && ARG(2)) writeVals(r, (const uint32_t*)guest::host(ARG(2)), ARG(3), 3); SET(0); } END;
 static void noteBad(const char* m, uint32_t h, const PRef& r)
 {
 	static int n = 0;
@@ -389,14 +435,14 @@ static void noteBad(const char* m, uint32_t h, const PRef& r)
 }
 H("ID3DXEffect::SetVector")
 {
-	PRef r = refOf(o, ARG(1));
+	PRef r = refOfSet(o, ARG(1));
 	noteBad("SetVector", ARG(1), r);
 	if (r.valid() && ARG(2)) writeVals(r, (const uint32_t*)guest::host(ARG(2)), std::min(r.ty->scalars(), 4u), 3);
 	SET(0);
 } END;
 H("ID3DXEffect::SetVectorArray")
 {
-	PRef r = refOf(o, ARG(1));
+	PRef r = refOfSet(o, ARG(1));
 	noteBad("SetVectorArray", ARG(1), r);
 	if (r.valid() && ARG(2))
 	{
@@ -412,7 +458,7 @@ H("ID3DXEffect::SetVectorArray")
 } END;
 static void setMatrices(CPU* c, Obj* o, bool transpose, bool array, bool pointers)
 {
-	PRef r = refOf(o, ARG(1));
+	PRef r = refOfSet(o, ARG(1));
 	noteBad("SetMatrix*", ARG(1), r);
 	if (r.valid() && ARG(2))
 	{
@@ -435,7 +481,7 @@ H("ID3DXEffect::SetMatrixTransposeArray") { setMatrices(c, o, true, true, false)
 H("ID3DXEffect::SetMatrixTransposePointerArray") { setMatrices(c, o, true, true, true); } END;
 H("ID3DXEffect::SetTexture")
 {
-	PRef r = refOf(o, ARG(1));
+	PRef r = refOfSet(o, ARG(1));
 	if (r.valid()) r.p->texObj = ARG(2);
 	{
 		static int nl = 0;
@@ -583,6 +629,7 @@ static void applyShaderState(FxInfo& fx, const FxPass& ps, uint32_t tech, uint32
 
 void fxApplyPass(Obj* o)
 {
+	flushShared();
 	FxInfo* fx = F(o);
 	if (!fx || !gPass.active || gPass.fx != fx) return;
 	const FxPass& ps = fx->techs[gPass.tech].passes[gPass.pass];

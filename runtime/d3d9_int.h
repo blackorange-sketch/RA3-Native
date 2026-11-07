@@ -5,6 +5,8 @@
 namespace d3d
 {
 std::map<std::string, Handler>& handlers();
+struct FxInfo;
+void fxRegister(const std::shared_ptr<FxInfo>& fx);   // d3d9_fx.cpp: shared effect parameters
 }
 #define CAT2(a, b) a##b
 #define CAT(a, b) CAT2(a, b)
