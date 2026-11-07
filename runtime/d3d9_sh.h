@@ -49,8 +49,8 @@ inline int attrLocation(int usage, int index)
 	case 0: return index == 0 ? 0 : -1;
 	case 1: return index == 0 ? 1 : -1;
 	case 2: return index == 0 ? 2 : -1;
-	case 3: return index == 0 ? 3 : -1;
-	case 5: return index < 8 ? 4 + index : -1;
+	case 3: return index == 0 ? 3 : index == 1 ? 10 : -1;
+	case 5: return index < 6 ? 4 + index : index == 6 ? 11 : -1;
 	case 6: return index == 0 ? 12 : -1;
 	case 7: return index == 0 ? 13 : -1;
 	case 10: return index < 2 ? 14 + index : -1;
