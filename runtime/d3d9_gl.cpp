@@ -726,6 +726,28 @@ static int64_t ringPut(GLenum target, GLuint& buf, uint32_t& pos, uint32_t cap, 
 static inline uint64_t nowUs() { return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 static uint64_t tProg, tState, tUni, tSamp, tAttr, tDraw, nDraw;
 
+static void dumpBmp(const char* path, uint32_t w, uint32_t h)
+{
+	if (!w || !h || w > 4096 || h > 4096) return;
+	std::vector<uint8_t> px((size_t)w * h * 4);
+	glFinish();
+	glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+	// half size 24-bit BMP, bottom-up as read
+	uint32_t ow = w / 2, oh = h / 2, rowB = (ow * 3 + 3) & ~3u, imgB = rowB * oh;
+	std::vector<uint8_t> bmp(54 + imgB, 0);
+	auto w32 = [&](size_t o, uint32_t v) { memcpy(&bmp[o], &v, 4); };
+	bmp[0] = 'B'; bmp[1] = 'M'; w32(2, 54 + imgB); w32(10, 54); w32(14, 40); w32(18, ow); w32(22, oh); bmp[26] = 1; bmp[28] = 24; w32(34, imgB);
+	for (uint32_t y = 0; y < oh; y++)
+		for (uint32_t x = 0; x < ow; x++)
+		{
+			const uint8_t* q = &px[((size_t)(2 * y) * w + 2 * x) * 4];
+			uint8_t* o = &bmp[54 + (size_t)y * rowB + x * 3];
+			o[0] = q[2]; o[1] = q[1]; o[2] = q[0];
+		}
+	if (FILE* f = fopen(path, "wb")) { fwrite(bmp.data(), 1, bmp.size(), f); fclose(f); log("dumped %s (%ux%u)", path, ow, oh); }
+	else log("dump failed: %s", path);
+}
+
 void draw(const DrawCall& dc)
 {
 	{ static int n = 0; if (n++ < 5) log("GL: draw on tid %d ctx %p", (int)gettid(), (void*)eglGetCurrentContext()); }
@@ -959,6 +981,11 @@ void draw(const DrawCall& dc)
 	tProg += t1 - t0; tState += t2 - t1; tUni += t3 - t2; tSamp += t4 - t3; tAttr += t5 - t4; tDraw += t6 - t5; nDraw++;
 	gDrawsThisFrame++;
 	if (gDrawsThisFrame <= 3 && gFrameNo < 5) glErr("draw");
+	if (gFrameNo == 700 && !dev.rt0)
+	{
+		uint32_t dn = gDrawsThisFrame;
+		if (dn == 1 || dn == 10 || dn == 30 || dn == 60 || dn == 90 || dn == 120) dumpBmp(("/sdcard/ra3_f700_d" + std::to_string(dn) + ".bmp").c_str(), tw, th);
+	}
 }
 
 void present()
