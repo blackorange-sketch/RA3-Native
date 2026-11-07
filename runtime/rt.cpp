@@ -377,6 +377,8 @@ void unsupported(CPU* c, uint32_t va, const char* what)
 	rt::fatal("unsupported instruction at %08x: %s", va, what);
 }
 
+uint32_t g_eflags_hi = 0;
+
 void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t ecx)
 {
 	if (fn == 0x9c6870u)

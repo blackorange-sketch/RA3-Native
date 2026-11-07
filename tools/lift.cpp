@@ -776,10 +776,10 @@ struct Gen
 			e.flag(ZF, "(eax >> 14) & 1"); e.flag(SF, "(eax >> 15) & 1");
 			break;
 		case X86_INS_PUSHFD:
-			e.line("esp -= 4; S32(esp, (uint32_t)(cf | pf << 2 | af << 4 | zf << 6 | sf << 7 | df << 10 | of << 11) | 0x202u);");
+			e.line("esp -= 4; S32(esp, (uint32_t)(cf | pf << 2 | af << 4 | zf << 6 | sf << 7 | df << 10 | of << 11) | 0x202u | g_eflags_hi);");
 			break;
 		case X86_INS_POPFD:
-			e.line("{ uint32_t fl = G32(esp); esp += 4; df = (fl >> 10) & 1;");
+			e.line("{ uint32_t fl = G32(esp); esp += 4; df = (fl >> 10) & 1; g_eflags_hi = fl & 0x240000u;");
 			e.flag(CF, "fl & 1"); e.flag(PF, "(fl >> 2) & 1"); e.flag(AF, "(fl >> 4) & 1");
 			e.flag(ZF, "(fl >> 6) & 1"); e.flag(SF, "(fl >> 7) & 1"); e.flag(OF, "(fl >> 11) & 1");
 			e.line("}");

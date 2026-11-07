@@ -50,6 +50,7 @@ void call_target(CPU* c, uint32_t guestAddr);
 #define S16(a, v) (::guest::store<uint16_t>((a), (uint16_t)(v)))
 #define S32(a, v) (::guest::store<uint32_t>((a), (uint32_t)(v)))
 
+extern uint32_t g_eflags_hi;   // EFLAGS.ID / AC, which software toggles to probe for CPUID
 static inline uint8_t par8(uint32_t v) { return (uint8_t)(!__builtin_parity(v & 0xff)); }
 
 #include <time.h>
