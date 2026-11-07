@@ -288,7 +288,7 @@ static void fillMode(uint32_t p, uint32_t idx)
 	guest::store<uint32_t>(p + 12, 22);   // X8R8G8B8
 }
 H("IDirect3D9::EnumAdapterModes") { if (ARG(3) >= 3) { SET(0x8876086c); return; } fillMode(ARG(4), ARG(3)); SET(0); } END;
-H("IDirect3D9::GetAdapterDisplayMode") { fillMode(ARG(2), 1); SET(0); } END;
+H("IDirect3D9::GetAdapterDisplayMode") { guest::store<uint32_t>(ARG(2), backW); guest::store<uint32_t>(ARG(2) + 4, backH); guest::store<uint32_t>(ARG(2) + 8, 60); guest::store<uint32_t>(ARG(2) + 12, 22); SET(0); } END;
 H("IDirect3D9::CheckDeviceType") { SET(0); } END;
 H("IDirect3D9::CheckDeviceFormat") { SET(0); } END;
 H("IDirect3D9::CheckDeviceMultiSampleType") { if (ARG(5) != 0 && ARG(5) != 1) { SET(0x8876086a); return; } if (ARG(6)) guest::store<uint32_t>(ARG(6), 1); SET(0); } END;

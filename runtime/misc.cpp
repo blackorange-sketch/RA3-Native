@@ -96,7 +96,7 @@ IMP_ID(U, "DefWindowProcA", DefWindowProcA, 16) { SET(0); }
 IMP_ID(U, "DefWindowProcW", DefWindowProcW, 16) { SET(0); }
 IMP_ID(U, "ClientToScreen", ClientToScreen, 8) { SET(1); }
 IMP_ID(U, "AdjustWindowRect", AdjustWindowRect, 12) { SET(1); }
-IMP_ID(U, "GetSystemMetrics", GetSystemMetrics, 4) { uint32_t i = ARG(0); SET(i == 0 ? 1280 : i == 1 ? 720 : i == 80 ? 1 : 0); }
+IMP_ID(U, "GetSystemMetrics", GetSystemMetrics, 4) { uint32_t i = ARG(0); int w, h; input::backSize(w, h); SET(i == 0 ? w : i == 1 ? h : i == 80 ? 1 : 0); }   // the "desktop" is always as big as the game surface
 IMP_ID(U, "SetCursor", SetCursor, 4) { SET(0); }
 IMP_ID(U, "LoadIconA", LoadIconA, 8) { SET(0x40001); }
 IMP_ID(U, "LoadCursorFromFileA", LoadCursorFromFileA, 4) { SET(0x40002); }
