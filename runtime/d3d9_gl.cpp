@@ -1,3 +1,4 @@
+#include <set>
 #include "input.h"
 // OpenGL ES 3 back end of the Direct3D 9 layer: resource upload, programs built from translated D3D9 shaders,
 // render state mapping, draw calls, render targets and presentation. Android only; elsewhere everything is a no-op.
@@ -835,6 +836,39 @@ void draw(const DrawCall& dc)
 				o += b6;
 			}
 			log("DD   verts%s", o.c_str());
+		}
+		if (dev.rs[7] && dev.streams[0].vb && dev.streams[0].vb->data && dev.streams[0].stride)
+		{
+			static uint32_t zf = 0; static int zd = 0; static std::set<const void*> zseen;
+			if (zf != gFrameNo) { zf = gFrameNo; zd = 0; }
+			if (zd++ < 4)
+			{
+				if (zseen.insert(vs).second) log("DD3 VS source:\n%s", shdr::compose(vs->info).c_str());
+				for (auto& cc : vs->info.ctab)
+				{
+					if (cc.regSet != 2) continue;
+					std::string vv;
+					for (uint32_t r = 0; r < std::min<uint32_t>(cc.regCount, 4); r++)
+						{ char b5[96]; const float* f = dev.vsF + 4 * (cc.regIndex + r); snprintf(b5, sizeof b5, " [%g %g %g %g]", (double)f[0], (double)f[1], (double)f[2], (double)f[3]); vv += b5; }
+					log("DD3   c %s r%u x%u:%s", cc.name.c_str(), cc.regIndex, cc.regCount, vv.c_str());
+				}
+				Stream& s0 = dev.streams[0];
+				std::string o;
+				for (uint32_t k = 0; k < 3; k++)
+				{
+					int64_t vi = dc.baseVertex;
+					if (dc.indexed && dev.ib && dev.ib->data)
+					{
+						const uint8_t* ip = (const uint8_t*)guest::host(dev.ib->data);
+						vi += dev.ib->fmt == 102 ? ((const uint32_t*)ip)[dc.startIndex + k] : ((const uint16_t*)ip)[dc.startIndex + k];
+					}
+					else vi += k;
+					const float* f = (const float*)((const uint8_t*)guest::host(s0.vb->data) + s0.offset + (uint64_t)vi * s0.stride);
+					char b6[120]; snprintf(b6, sizeof b6, " v%lld(%g %g %g)", (long long)vi, (double)f[0], (double)f[1], (double)f[2]);
+					o += b6;
+				}
+				log("DD3   verts%s startIdx %u base %d vp %u,%u,%u,%u z %g..%g", o.c_str(), dc.startIndex, (int)dc.baseVertex, dev.vp[0], dev.vp[1], dev.vp[2], dev.vp[3], (double)dev.vpZ[0], (double)dev.vpZ[1]);
+			}
 		}
 		log("DD #%d prim %u cnt %u vs %p ps %p%s | z %u zw %u blend %u src %u dst %u cull %u at %u | rt %p", dn++, dc.prim, dc.primCount, (void*)vs, (void*)ps, tx.c_str(),
 			dev.rs[7], dev.rs[14], dev.rs[27], dev.rs[19], dev.rs[20], dev.rs[22], dev.rs[15], (void*)dev.rt0);
