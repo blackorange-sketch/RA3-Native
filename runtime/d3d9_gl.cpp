@@ -727,6 +727,7 @@ static int64_t ringPut(GLenum target, GLuint& buf, uint32_t& pos, uint32_t cap, 
 static inline uint64_t nowUs() { return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 static uint64_t tProg, tState, tUni, tSamp, tAttr, tDraw, nDraw;
 
+static bool isDiagFrame() { return gFrameNo == 700 || gFrameNo == 1800 || gFrameNo == 3600; }
 static void dumpBmp(const char* path, uint32_t w, uint32_t h)
 {
 	if (!w || !h || w > 4096 || h > 4096) return;
@@ -763,7 +764,7 @@ void draw(const DrawCall& dc)
 	uint64_t t0 = nowUs();
 	Prog* p = getProgram(vs, ps);
 	if (!p) return;
-	if (gFrameNo == 700)
+	if (isDiagFrame())
 	{
 		static bool srcDumped = false;
 		if (!srcDumped)
@@ -774,7 +775,7 @@ void draw(const DrawCall& dc)
 			log("DD PS source:\n%s", psrc.c_str());
 		}
 	}
-	if (gFrameNo == 700)
+	if (isDiagFrame())
 	{
 		static int dn = 0;
 		std::string tx;
@@ -993,10 +994,10 @@ void draw(const DrawCall& dc)
 	tProg += t1 - t0; tState += t2 - t1; tUni += t3 - t2; tSamp += t4 - t3; tAttr += t5 - t4; tDraw += t6 - t5; nDraw++;
 	gDrawsThisFrame++;
 	if (gDrawsThisFrame <= 3 && gFrameNo < 5) glErr("draw");
-	if (gFrameNo == 700 && !dev.rt0)
+	if (isDiagFrame() && !dev.rt0)
 	{
 		uint32_t dn = gDrawsThisFrame;
-		if (dn == 1 || dn == 10 || dn == 30 || dn == 60 || dn == 90 || dn == 120) dumpBmp(("/sdcard/ra3_f700_d" + std::to_string(dn) + ".bmp").c_str(), tw, th);
+		if (dn == 1 || dn == 10 || dn == 30 || dn == 60 || dn == 90 || dn == 120) dumpBmp(("/sdcard/ra3_f" + std::to_string(gFrameNo) + "_d" + std::to_string(dn) + ".bmp").c_str(), tw, th);
 	}
 }
 
