@@ -16,5 +16,5 @@ add_library(ra3native SHARED
 target_include_directories(ra3native PRIVATE ${GLUE} ${RT} ${LIFTED_DIR})
 target_compile_definitions(ra3native PRIVATE RA3_TRACE)
 target_compile_options(ra3native PRIVATE -O1 -fno-strict-aliasing -w)
-target_link_libraries(ra3native android log EGL GLESv3)
+target_link_libraries(ra3native android log EGL GLESv3 aaudio)
 set_target_properties(ra3native PROPERTIES LINK_FLAGS "-Wl,-u,ANativeActivity_onCreate")
