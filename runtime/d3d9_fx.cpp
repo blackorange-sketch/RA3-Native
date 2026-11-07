@@ -230,7 +230,7 @@ static void putMatrix(const PRef& r, const float* m, bool transpose)
 			float v = transpose ? m[col * 4 + row] : m[row * 4 + col];
 			uint32_t bits;
 			memcpy(&bits, &v, 4);
-			uint32_t idx = r.off + (t->cls == 2 ? row * C + col : col * R + row);
+			uint32_t idx = r.off + (t->cls == 3 ? row * C + col : col * R + row);
 			if (idx < r.p->val.size()) r.p->val[idx] = toLeaf(leaf, 3, bits);
 		}
 }
@@ -243,7 +243,7 @@ static void getMatrix(const PRef& r, float* m, bool transpose)
 	for (uint32_t row = 0; row < R; row++)
 		for (uint32_t col = 0; col < C; col++)
 		{
-			uint32_t idx = r.off + (t->cls == 2 ? row * C + col : col * R + row);
+			uint32_t idx = r.off + (t->cls == 3 ? row * C + col : col * R + row);
 			uint32_t v = idx < r.p->val.size() ? r.p->val[idx] : 0;
 			v = toLeaf(3, leaf, v);
 			float f;

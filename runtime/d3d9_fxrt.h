@@ -88,7 +88,7 @@ struct Packer
 			break;
 		case 2: case 3:
 		{
-			uint32_t nreg = t.cls == 2 ? t.rows : t.cols, inner = t.cls == 2 ? t.cols : t.rows;
+			uint32_t nreg = t.cls == 3 ? t.rows : t.cols, inner = t.cls == 3 ? t.cols : t.rows;   // the binary's class 2 is the default column-major layout: registers hold columns
 			if (set != 0) alignReg();
 			for (uint32_t r = 0; r < nreg; r++)
 			{
