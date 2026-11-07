@@ -442,7 +442,15 @@ H("ID3DXEffect::SetVector")
 {
 	PRef r = refOfSet(o, ARG(1));
 	noteBad("SetVector", ARG(1), r);
-	if (r.valid() && ARG(2)) writeVals(r, (const uint32_t*)guest::host(ARG(2)), std::min(r.ty->scalars(), 4u), 3);
+	if (r.valid() && ARG(2))
+	{
+		writeVals(r, (const uint32_t*)guest::host(ARG(2)), std::min(r.ty->scalars(), 4u), 3);
+		if (r.p->name == "EyePosition")
+		{
+			static int n = 0; const float* v = (const float*)guest::host(ARG(2));
+			if ((v[0] != 0.f || v[1] != 0.f || v[2] != 0.f) && n++ < 6) log("fx: EyePosition %g %g %g", v[0], v[1], v[2]);
+		}
+	}
 	SET(0);
 } END;
 H("ID3DXEffect::SetVectorArray")
@@ -476,8 +484,13 @@ static void setMatrices(CPU* c, Obj* o, bool transpose, bool array, bool pointer
 			putMatrix(e, m, transpose);
 			if (r.p->name == "ViewProjection")
 			{
-				static int vn = 0;
-				if (vn++ < 12) log("fx: ViewProjection set on fx %p (transpose %d) [%g %g %g %g] [%g %g %g %g] [%g %g %g %g] [%g %g %g %g]", (void*)F(o), (int)transpose, m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15]);
+				static int total = 0, nonzero = 0, shown = 0;
+				bool nz = false;
+				for (int k = 0; k < 16; k++) if (m[k] != 0.f) nz = true;
+				total++;
+				if (nz) nonzero++;
+				if ((nz && shown++ < 8) || total % 2000 == 0)
+					log("fx: ViewProjection set #%d (nonzero %d) on fx %p transpose %d [%g %g %g %g] [%g %g %g %g] [%g %g %g %g] [%g %g %g %g]", total, nonzero, (void*)F(o), (int)transpose, m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15]);
 			}
 		}
 	}
