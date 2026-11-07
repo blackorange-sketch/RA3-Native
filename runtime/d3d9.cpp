@@ -278,16 +278,36 @@ H("IDirect3D9::GetAdapterIdentifier")
 	guest::store<uint32_t>(p + 1096, 1);
 	SET(0);
 } END;
-H("IDirect3D9::GetAdapterModeCount") { SET(3); } END;
+static const std::vector<std::pair<uint32_t, uint32_t>>& modeList()
+{
+	static std::vector<std::pair<uint32_t, uint32_t>> list;
+	static int sw = 0, sh = 0;
+	int w = gfx::width(), h = gfx::height();
+	if (!list.empty() && w == sw && h == sh) return list;
+	sw = w; sh = h;
+	list = {{1024, 768}, {1280, 720}, {1600, 900}, {1920, 1080}, {2560, 1080}};
+	if (w >= 640 && h >= 480)
+	{
+		// modes with the phone screen's own aspect ratio (wide displays), at 720p / 1080p height and native
+		uint32_t nw = (uint32_t)w, nh = (uint32_t)h;
+		list.push_back({nw & ~1u, nh & ~1u});
+		for (uint32_t th : {720u, 900u, 1080u}) if (th < nh) list.push_back({((uint32_t)((uint64_t)nw * th / nh)) & ~1u, th});
+	}
+	std::sort(list.begin(), list.end(), [](auto& a, auto& b) { return a.second != b.second ? a.second < b.second : a.first < b.first; });
+	list.erase(std::unique(list.begin(), list.end()), list.end());
+	return list;
+}
+H("IDirect3D9::GetAdapterModeCount") { SET((uint32_t)modeList().size()); } END;
 static void fillMode(uint32_t p, uint32_t idx)
 {
-	static const uint32_t res[3][2] = {{1024, 768}, {1280, 720}, {1920, 1080}};
-	guest::store<uint32_t>(p, res[idx % 3][0]);
-	guest::store<uint32_t>(p + 4, res[idx % 3][1]);
+	auto& l = modeList();
+	auto m = l[std::min<size_t>(idx, l.size() - 1)];
+	guest::store<uint32_t>(p, m.first);
+	guest::store<uint32_t>(p + 4, m.second);
 	guest::store<uint32_t>(p + 8, 60);
 	guest::store<uint32_t>(p + 12, 22);   // X8R8G8B8
 }
-H("IDirect3D9::EnumAdapterModes") { if (ARG(3) >= 3) { SET(0x8876086c); return; } fillMode(ARG(4), ARG(3)); SET(0); } END;
+H("IDirect3D9::EnumAdapterModes") { if (ARG(3) >= modeList().size()) { SET(0x8876086c); return; } fillMode(ARG(4), ARG(3)); SET(0); } END;
 H("IDirect3D9::GetAdapterDisplayMode") { guest::store<uint32_t>(ARG(2), backW); guest::store<uint32_t>(ARG(2) + 4, backH); guest::store<uint32_t>(ARG(2) + 8, 60); guest::store<uint32_t>(ARG(2) + 12, 22); SET(0); } END;
 H("IDirect3D9::CheckDeviceType") { SET(0); } END;
 H("IDirect3D9::CheckDeviceFormat") { SET(0); } END;
@@ -332,7 +352,7 @@ H("IDirect3DDevice9::TestCooperativeLevel") { SET(0); } END;
 H("IDirect3DDevice9::GetAvailableTextureMem") { SET(0x20000000); } END;
 H("IDirect3DDevice9::GetDirect3D") { if (theD3D) { guest::store<uint32_t>(ARG(1), theD3D->addr); theD3D->ref++; } SET(0); } END;
 H("IDirect3DDevice9::GetDeviceCaps") { fillCaps(ARG(1)); SET(0); } END;
-H("IDirect3DDevice9::GetDisplayMode") { fillMode(ARG(2), 1); SET(0); } END;
+H("IDirect3DDevice9::GetDisplayMode") { guest::store<uint32_t>(ARG(2), backW); guest::store<uint32_t>(ARG(2) + 4, backH); guest::store<uint32_t>(ARG(2) + 8, 60); guest::store<uint32_t>(ARG(2) + 12, 22); SET(0); } END;
 H("IDirect3DDevice9::GetCreationParameters") { uint32_t p = ARG(1); guest::store<uint32_t>(p, 0); guest::store<uint32_t>(p + 4, 1); guest::store<uint32_t>(p + 8, 0x30001); guest::store<uint32_t>(p + 12, 0x40); SET(0); } END;
 H("IDirect3DDevice9::ShowCursor") { SET(0); } END;
 H("IDirect3DDevice9::GetNumberOfSwapChains") { SET(1); } END;

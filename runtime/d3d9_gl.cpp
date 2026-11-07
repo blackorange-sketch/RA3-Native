@@ -1,4 +1,6 @@
 #include <set>
+#include <string>
+#include <cstdio>
 #include "input.h"
 // OpenGL ES 3 back end of the Direct3D 9 layer: resource upload, programs built from translated D3D9 shaders,
 // render state mapping, draw calls, render targets and presentation. Android only; elsewhere everything is a no-op.
@@ -1125,6 +1127,12 @@ void present()
 		gUpBytes = gUpFull = gUpSub = 0;
 		log("perf: 300 frames in %llu ms; per draw us: prog %llu state %llu uni %llu samp %llu attr %llu draw %llu (n %llu)", (unsigned long long)((n - last) / 1000), (unsigned long long)(tProg / std::max<uint64_t>(1, nDraw)), (unsigned long long)(tState / std::max<uint64_t>(1, nDraw)), (unsigned long long)(tUni / std::max<uint64_t>(1, nDraw)), (unsigned long long)(tSamp / std::max<uint64_t>(1, nDraw)), (unsigned long long)(tAttr / std::max<uint64_t>(1, nDraw)), (unsigned long long)(tDraw / std::max<uint64_t>(1, nDraw)), (unsigned long long)nDraw);
 		last = n; tProg = tState = tUni = tSamp = tAttr = tDraw = nDraw = 0;
+	}
+	if (gFrameNo == 900 || gFrameNo == 1800 || gFrameNo == 3600 || gFrameNo == 5400)
+	{
+		uint32_t gm = guest::load<uint32_t>(0xce2f98);
+		log("LOD: manager %08x; hw: cpu %u/%u/%u mem %08x%08x vid %u %u", gm, guest::load<uint32_t>(0xcf00b8), guest::load<uint32_t>(0xcf046c), guest::load<uint32_t>(0xcefa60), guest::load<uint32_t>(0xcee5d4), guest::load<uint32_t>(0xcee5d0), guest::load<uint32_t>(0xcf0414), guest::load<uint32_t>(0xce2fa8));
+		if (gm) { std::string line; char b[16]; for (uint32_t o = 0x2d8; o < 0x364; o += 4) { snprintf(b, sizeof b, "%x:%x ", o, guest::load<uint32_t>(gm + o)); line += b; } log("LOD: %s", line.c_str()); }
 	}
 	if (gFrameNo == 1800 || gFrameNo == 3600) { log("DIAG: call rings of all threads at frame %u", gFrameNo); rt::traceDump(); }
 	if (gFrameNo == 1 || gFrameNo % 300 == 0) log("d3d9: frame %u presented, %u draws in the last frame, screen %dx%d", gFrameNo, gDrawsThisFrame.load(), sw, sh);
