@@ -1,4 +1,5 @@
 // Android shell: NativeActivity glue, storage permission, game discovery, on-screen log console.
+#include "input.h"
 #include <android/log.h>
 #include <android/native_activity.h>
 #include <android/native_window.h>
@@ -225,11 +226,40 @@ void startGame(const std::string& game)
 	}, 256u << 20);
 }
 
+android_app* gApp = nullptr;
 float downY = 0, lastY = 0;
 bool dragged = false;
 
 int32_t onInput(android_app*, AInputEvent* ev)
 {
+	if (started && !picking)
+	{
+		// the game is running: touches and keys become Win32 mouse / keyboard messages
+		if (AInputEvent_getType(ev) == AINPUT_EVENT_TYPE_KEY)
+		{
+			int k = AKeyEvent_getKeyCode(ev), a = AKeyEvent_getAction(ev);
+			if (a == AKEY_EVENT_ACTION_DOWN || a == AKEY_EVENT_ACTION_UP) input::onKey(a == AKEY_EVENT_ACTION_DOWN, k, AKeyEvent_getMetaState(ev));
+			return 1;
+		}
+		if (AInputEvent_getType(ev) == AINPUT_EVENT_TYPE_MOTION)
+		{
+			int32_t raw = AMotionEvent_getAction(ev);
+			int act = raw & AMOTION_EVENT_ACTION_MASK, idx = (raw & AMOTION_EVENT_ACTION_POINTER_INDEX_MASK) >> AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT;
+			int n = (int)std::min<size_t>(AMotionEvent_getPointerCount(ev), 5);
+			float xs[5], ys[5];
+			for (int i = 0; i < n; i++) { xs[i] = AMotionEvent_getX(ev, i); ys[i] = AMotionEvent_getY(ev, i); }
+			input::onTouch(act, idx, n, xs, ys);
+			if (input::takeKeyboardToggle())
+			{
+				static bool kb = false;
+				kb = !kb;
+				if (kb) ANativeActivity_showSoftInput(gApp->activity, ANATIVEACTIVITY_SHOW_SOFT_INPUT_FORCED);
+				else ANativeActivity_hideSoftInput(gApp->activity, 0);
+			}
+			return 1;
+		}
+		return 0;
+	}
 	if (AInputEvent_getType(ev) != AINPUT_EVENT_TYPE_MOTION) return 0;
 	int act = AMotionEvent_getAction(ev) & AMOTION_EVENT_ACTION_MASK;
 	float y = AMotionEvent_getY(ev, 0);
@@ -284,6 +314,7 @@ void onCmd(android_app* app, int32_t cmd)
 
 void android_main(android_app* app)
 {
+	gApp = app;
 	app->onAppCmd = onCmd;
 	app->onInputEvent = onInput;
 	savedFile = std::string(app->activity->internalDataPath ? app->activity->internalDataPath : "/data/local/tmp") + "/gamepath.txt";

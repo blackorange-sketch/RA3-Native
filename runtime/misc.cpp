@@ -76,7 +76,6 @@ IMP_ID(IMM, "ImmSetOpenStatus", ImmSetOpenStatus, 8) { SET(0); }
 
 // ---- user32 / gdi32 (placeholders)
 IMP_ID(U, "wsprintfA", wsprintfA, 0) { ArgReader ap{c->r[ESP] + 12}; SET(putStr(ARG(0), formatA(gstr(ARG(1)), ap))); }
-IMP_ID(U, "RegisterClassW", RegisterClassW, 4) { SET(0xc001); }
 IMP_ID(U, "RegisterWindowMessageA", RegisterWindowMessageA, 4) { SET(0xc100); }
 IMP_ID(U, "CreateWindowExW", CreateWindowExW, 48) { SET(0x30001); }
 IMP_ID(U, "ShowWindow", ShowWindow, 8) { SET(1); }
@@ -94,7 +93,6 @@ IMP_ID(U, "IsWindowUnicode", IsWindowUnicode, 4) { SET(1); }
 IMP_ID(U, "GetWindowLongA", GetWindowLongA, 8) { SET(0); }
 IMP_ID(U, "DefWindowProcA", DefWindowProcA, 16) { SET(0); }
 IMP_ID(U, "DefWindowProcW", DefWindowProcW, 16) { SET(0); }
-IMP_ID(U, "GetClientRect", GetClientRect, 8) { guest::store<int32_t>(ARG(1), 0); guest::store<int32_t>(ARG(1) + 4, 0); guest::store<int32_t>(ARG(1) + 8, 1280); guest::store<int32_t>(ARG(1) + 12, 720); SET(1); }
 IMP_ID(U, "ClientToScreen", ClientToScreen, 8) { SET(1); }
 IMP_ID(U, "AdjustWindowRect", AdjustWindowRect, 12) { SET(1); }
 IMP_ID(U, "GetSystemMetrics", GetSystemMetrics, 4) { uint32_t i = ARG(0); SET(i == 0 ? 1280 : i == 1 ? 720 : i == 80 ? 1 : 0); }
@@ -104,8 +102,6 @@ IMP_ID(U, "LoadCursorFromFileA", LoadCursorFromFileA, 4) { SET(0x40002); }
 IMP_ID(U, "ClipCursor", ClipCursor, 4) { SET(1); }
 IMP_ID(U, "SetTimer", SetTimer, 16) { SET(1); }
 IMP_ID(U, "KillTimer", KillTimer, 8) { SET(1); }
-IMP_ID(U, "GetKeyState", GetKeyState, 4) { SET(0); }
-IMP_ID(U, "GetAsyncKeyState", GetAsyncKeyState, 4) { SET(0); }
 IMP_ID(U, "GetKeyboardLayout", GetKeyboardLayout, 4) { SET(0x04190419); }
 IMP_ID(U, "GetKeyNameTextW", GetKeyNameTextW, 12) { SET(0); }
 IMP_ID(U, "GetDoubleClickTime", GetDoubleClickTime, 0) { SET(500); }
@@ -118,15 +114,7 @@ IMP_ID("GDI32.dll", "GetStockObject", GetStockObject, 4) { SET(0x50001); }
 IMP_ID("NETAPI32.dll", "Netbios", Netbios, 4) { SET(0x0b); }
 
 // ---- window messages: the message queue is empty for now (input is delivered later by the Android layer)
-IMP_ID(U, "PeekMessageA", PeekMessageA, 20) { SET(0); }
-IMP_ID(U, "GetMessageA", GetMessageA, 16)
-{
-	usleep(10000);
-	if (ARG(0)) memset(guest::host(ARG(0)), 0, 28);   // WM_NULL
-	SET(1);
-}
 IMP_ID(U, "TranslateMessage", TranslateMessage, 4) { SET(0); }
-IMP_ID(U, "DispatchMessageA", DispatchMessageA, 4) { SET(0); }
 IMP_ID(U, "PostQuitMessage", PostQuitMessage, 4) { log("PostQuitMessage(%d)", (int)ARG(0)); SET(0); }
 IMP_ID(U, "GetWindowRect", GetWindowRect, 8) { uint32_t r = ARG(1); guest::store<uint32_t>(r, 0); guest::store<uint32_t>(r + 4, 0); guest::store<uint32_t>(r + 8, 800); guest::store<uint32_t>(r + 12, 600); SET(1); }
 IMP_ID(U, "ScreenToClient", ScreenToClient, 8) { SET(1); }

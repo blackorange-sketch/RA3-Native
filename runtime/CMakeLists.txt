@@ -5,7 +5,7 @@ add_compile_definitions(RA3_TRACE)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Generated code (from tools/lift_pe --emit-dir) lives outside the repo.
 set(LIFTED_DIR "" CACHE PATH "directory with lifted_*.cpp, lifted_table.cpp, lifted_decl.h")
-set(RT_SRC guest.cpp imports.cpp pe_loader.cpp heap.cpp rt.cpp fmt.cpp crt.cpp kernel32.cpp misc.cpp ws2.cpp dsound.cpp d3d9.cpp d3d9_dev.cpp d3d9_fx.cpp d3d9_gl.cpp launch.cpp)
+set(RT_SRC guest.cpp imports.cpp pe_loader.cpp heap.cpp rt.cpp fmt.cpp crt.cpp kernel32.cpp misc.cpp input.cpp ws2.cpp dsound.cpp d3d9.cpp d3d9_dev.cpp d3d9_fx.cpp d3d9_gl.cpp launch.cpp)
 add_library(ra3rt STATIC ${RT_SRC})
 target_link_libraries(ra3rt pthread)
 add_executable(loadtest loadtest.cpp)

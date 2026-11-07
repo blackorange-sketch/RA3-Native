@@ -1,3 +1,4 @@
+#include "input.h"
 // OpenGL ES 3 back end of the Direct3D 9 layer: resource upload, programs built from translated D3D9 shaders,
 // render state mapping, draw calls, render targets and presentation. Android only; elsewhere everything is a no-op.
 #include "d3d9.h"
@@ -1015,6 +1016,7 @@ void present()
 	double sa = (double)sw / sh, ba = (double)backW / backH;
 	int vw = sw, vh = sh, vx = 0, vy = 0;
 	if (sa > ba) { vw = (int)(sh * ba); vx = (sw - vw) / 2; } else { vh = (int)(sw / ba); vy = (sh - vh) / 2; }
+	input::setView(vx, vy, vw, vh, (int)backW, (int)backH);
 	glViewport(vx, vy, vw, vh);
 	glUseProgram(gBlitProg);
 	glBindVertexArray(gVao);
