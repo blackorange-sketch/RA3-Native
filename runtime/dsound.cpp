@@ -7,12 +7,18 @@ using namespace rt;
 
 static const uint32_t DSERR_NODRIVER = 0x88780078;
 
-IMP_ID(D, "#1", DirectSoundCreate, 12) { if (ARG(1)) guest::store<uint32_t>(ARG(1), 0); SET(DSERR_NODRIVER); }
-IMP_ID(D, "#3", DirectSoundEnumerateW, 8) { SET(0); }
+static void dsLog(CPU* c, const char* what)
+{
+	static int n = 0;
+	if (n++ < 60) log("dsound: %s from %x args %x %x %x", what, guest::load<uint32_t>(c->r[ESP]), ARG(0), ARG(1), ARG(2));
+}
+IMP_ID(D, "#1", DirectSoundCreate, 12) { dsLog(c, "DirectSoundCreate"); if (ARG(1)) guest::store<uint32_t>(ARG(1), 0); SET(DSERR_NODRIVER); }
+IMP_ID(D, "#3", DirectSoundEnumerateW, 8) { dsLog(c, "DirectSoundEnumerateW"); SET(0); }
 IMP_ID(D, "#6", DirectSoundCaptureCreate, 12) { if (ARG(1)) guest::store<uint32_t>(ARG(1), 0); SET(DSERR_NODRIVER); }
 IMP_ID(D, "#8", DirectSoundCaptureEnumerateW, 8) { SET(0); }
 IMP_ID(D, "#9", GetDeviceID, 8)
 {
+	{ static int k = 0; if (k++ < 3) { uint8_t g[16]; if (ARG(0)) memcpy(g, guest::host(ARG(0)), 16); else memset(g, 0, 16); char b[48]; for (int i = 0; i < 16; i++) snprintf(b + 2 * i, 3, "%02x", g[i]); dsLog(c, "GetDeviceID"); log("dsound: GetDeviceID src guid %s dst %x", b, ARG(1)); } }
 	if (ARG(0) && ARG(1)) memcpy(guest::host(ARG(1)), guest::host(ARG(0)), 16);
 	SET(0);
 }
