@@ -9,6 +9,8 @@ void setView(int vx, int vy, int vw, int vh, int backW, int backH);
 
 // Touch event from Android. action: AMOTION_EVENT_ACTION_* (masked), idx = index of the pointer that changed.
 void onTouch(int action, int idx, int count, const float* xs, const float* ys);
+// A typed UTF-16 code unit from the soft keyboard.
+void onChar(unsigned codeUnit);
 // Android key event (AKEYCODE_*), down/up; unicode may be 0.
 void onKey(bool down, int androidKey, int metaState);
 // Screen size, and the on-screen keyboard button rectangle (screen pixels, top-left origin).

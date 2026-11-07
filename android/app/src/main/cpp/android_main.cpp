@@ -125,35 +125,28 @@ void startPicking()
 }
 
 
-// Shows / hides the soft keyboard through InputMethodManager (ANativeActivity_showSoftInput is unreliable on recent Android).
+// Soft keyboard: MainActivity (Java) owns an invisible EditText and forwards typed characters through these natives.
+void jniChar(JNIEnv*, jclass, jint cu) { input::onChar((unsigned)cu); }
+void jniKey(JNIEnv*, jclass, jint k, jboolean down) { input::onKey(down, k, 0); }
+
+void registerNatives(android_app* app)
+{
+	JNIEnv* env = nullptr;
+	app->activity->vm->AttachCurrentThread(&env, nullptr);
+	jclass cls = env->GetObjectClass(app->activity->clazz);
+	static const JNINativeMethod m[] = {{"nativeChar", "(I)V", (void*)jniChar}, {"nativeKey", "(IZ)V", (void*)jniKey}};
+	if (env->RegisterNatives(cls, m, 2) != 0) { env->ExceptionClear(); rt::log("keyboard: RegisterNatives failed"); }
+	app->activity->vm->DetachCurrentThread();
+}
+
 void toggleKeyboard(android_app* app)
 {
 	JNIEnv* env = nullptr;
 	app->activity->vm->AttachCurrentThread(&env, nullptr);
-	auto check = [&](const char* what) {
-		if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); rt::log("keyboard: exception in %s", what); return true; }
-		return false;
-	};
-	jobject act = app->activity->clazz;
-	jclass actCls = env->GetObjectClass(act);
-	jmethodID getSvc = env->GetMethodID(actCls, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;");
-	jstring name = env->NewStringUTF("input_method");
-	jobject imm = env->CallObjectMethod(act, getSvc, name);
-	if (!check("getSystemService") && imm)
-	{
-		jmethodID getWin = env->GetMethodID(actCls, "getWindow", "()Landroid/view/Window;");
-		jobject win = env->CallObjectMethod(act, getWin);
-		jclass winCls = env->GetObjectClass(win);
-		jobject decor = env->CallObjectMethod(win, env->GetMethodID(winCls, "getDecorView", "()Landroid/view/View;"));
-		jclass viewCls = env->GetObjectClass(decor);
-		env->CallVoidMethod(decor, env->GetMethodID(viewCls, "setFocusableInTouchMode", "(Z)V"), JNI_TRUE);
-		env->CallBooleanMethod(decor, env->GetMethodID(viewCls, "requestFocus", "()Z"));
-		jclass immCls = env->GetObjectClass(imm);
-		jmethodID toggle = env->GetMethodID(immCls, "toggleSoftInput", "(II)V");
-		env->CallVoidMethod(imm, toggle, 2 /*SHOW_FORCED*/, 0);
-		if (!check("toggleSoftInput")) rt::log("keyboard: toggled");
-	}
-	else rt::log("keyboard: no InputMethodManager");
+	jclass cls = env->GetObjectClass(app->activity->clazz);
+	jmethodID mid = env->GetMethodID(cls, "toggleKeyboard", "()V");
+	if (mid) env->CallVoidMethod(app->activity->clazz, mid);
+	if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); rt::log("keyboard: toggle failed"); }
 	app->activity->vm->DetachCurrentThread();
 }
 
@@ -342,6 +335,7 @@ void onCmd(android_app* app, int32_t cmd)
 void android_main(android_app* app)
 {
 	gApp = app;
+	registerNatives(app);
 	app->onAppCmd = onCmd;
 	app->onInputEvent = onInput;
 	savedFile = std::string(app->activity->internalDataPath ? app->activity->internalDataPath : "/data/local/tmp") + "/gamepath.txt";

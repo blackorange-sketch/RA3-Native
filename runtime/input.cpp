@@ -157,6 +157,17 @@ int vkOf(int a, int& chr, bool shift)
 }
 }
 
+void onChar(unsigned cu)
+{
+	std::lock_guard<std::mutex> g(mu);
+	if (cu == '\n' || cu == '\r') return;   // Enter comes through onKey
+	int vk = 0;
+	if (cu >= 'a' && cu <= 'z') vk = 'A' + (cu - 'a'); else if (cu >= 'A' && cu <= 'Z') vk = cu; else if (cu >= '0' && cu <= '9') vk = cu; else if (cu == ' ') vk = 0x20;
+	if (vk) push(WM_KEYDOWN, vk, 1, 0);
+	push(WM_CHAR, cu, 1, 0);
+	if (vk) push(WM_KEYUP, vk, 1u | 0xc0000000u, 0);
+}
+
 void onKey(bool down, int a, int meta)
 {
 	std::lock_guard<std::mutex> g(mu);
