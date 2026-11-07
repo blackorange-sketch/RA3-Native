@@ -11,6 +11,9 @@ void setView(int vx, int vy, int vw, int vh, int backW, int backH);
 void onTouch(int action, int idx, int count, const float* xs, const float* ys);
 // Android key event (AKEYCODE_*), down/up; unicode may be 0.
 void onKey(bool down, int androidKey, int metaState);
-// True when the 3-finger gesture asked to toggle the soft keyboard (consumed by the call).
+// Screen size, and the on-screen keyboard button rectangle (screen pixels, top-left origin).
+void setScreen(int sw, int sh);
+void kbButtonRect(int& x, int& y, int& w, int& h);
+// True when the keyboard button was tapped (consumed by the call).
 bool takeKeyboardToggle();
 }

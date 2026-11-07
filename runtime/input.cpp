@@ -30,6 +30,8 @@ bool started = false;
 bool kbToggle = false;
 uint32_t wndProc = 0;
 
+int scrW = 1280, scrH = 720;
+bool swallow = false;
 int vx = 0, vy = 0, vw = 1, vh = 1, bw = 1280, bh = 720;
 
 int64_t nowMs() { return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
@@ -59,6 +61,9 @@ bool moved = false, twoMoved = false, threeSeen = false;
 
 namespace input
 {
+void setScreen(int sw, int sh) { scrW = sw; scrH = sh; }
+void kbButtonRect(int& x, int& y, int& w, int& h) { int u = std::max(48, scrH / 12); x = u / 3; y = u / 3; w = u * 3 / 2; h = u; }
+
 void setView(int x, int y, int w, int h, int backW, int backH) { vx = x; vy = y; vw = w; vh = h; bw = backW; bh = backH; }
 
 bool takeKeyboardToggle() { std::lock_guard<std::mutex> g(mu); bool r = kbToggle; kbToggle = false; return r; }
@@ -68,6 +73,12 @@ void onTouch(int action, int idx, int count, const float* xs, const float* ys)
 	std::lock_guard<std::mutex> g(mu);
 	enum { DOWN = 0, UP = 1, MOVE = 2, CANCEL = 3, PDOWN = 5, PUP = 6 };
 	int64_t now = nowMs();
+	{
+		int bx, by, bw2, bh2;
+		kbButtonRect(bx, by, bw2, bh2);
+		if (action == DOWN && xs[0] >= bx && xs[0] < bx + bw2 && ys[0] >= by && ys[0] < by + bh2) { kbToggle = true; swallow = true; return; }
+		if (swallow) { if (action == UP || action == CANCEL) swallow = false; return; }
+	}
 	if (action == DOWN)
 	{
 		mapTo(xs[0], ys[0]);
@@ -84,7 +95,6 @@ void onTouch(int action, int idx, int count, const float* xs, const float* ys)
 			if (lDown) { lDown = false; push(WM_LBUTTONUP, mouseFlags(), xy(), 30); }
 			twoAt = now; twoMoved = false; twoStartX = xs[1]; twoStartY = lastTwoY = (ys[0] + ys[1]) / 2; wheelAcc = 0;
 		}
-		else if (count >= 3) { threeAt = now; threeSeen = true; }
 	}
 	else if (action == MOVE)
 	{
@@ -105,8 +115,7 @@ void onTouch(int action, int idx, int count, const float* xs, const float* ys)
 	}
 	else if (action == PUP)
 	{
-		if (count == 3 && threeSeen && now - threeAt < 400) kbToggle = true;
-		else if (count == 2 && !twoMoved && now - twoAt < 350)
+		if (count == 2 && !twoMoved && now - twoAt < 350)
 		{
 			mapTo(xs[idx == 0 ? 1 : 0], ys[idx == 0 ? 1 : 0]);
 			push(WM_MOUSEMOVE, mouseFlags(), xy(), 0);

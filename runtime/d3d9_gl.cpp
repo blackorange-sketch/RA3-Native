@@ -1027,6 +1027,22 @@ void present()
 	glUniform1i(glGetUniformLocation(gBlitProg, "t"), 0);
 	glDrawArrays(GL_TRIANGLES, 0, 3);
 	if (gDrawsThisFrame == 0) { glViewport(0, 0, sw, sh); gfx::drawOverlay(); }
+	{
+		// on-screen keyboard button: drawn with scissored clears (no shader needed)
+		input::setScreen(sw, sh);
+		int kx, ky, kw, kh;
+		input::kbButtonRect(kx, ky, kw, kh);
+		glViewport(0, 0, sw, sh);
+		glEnable(GL_SCISSOR_TEST);
+		auto rect = [&](int x, int y, int w, int h, float r, float g, float b) { glScissor(x, sh - y - h, w, h); glClearColor(r, g, b, 1.f); glClear(GL_COLOR_BUFFER_BIT); };
+		rect(kx, ky, kw, kh, 0.75f, 0.75f, 0.78f);
+		rect(kx + 3, ky + 3, kw - 6, kh - 6, 0.12f, 0.12f, 0.14f);
+		int pad = kh / 8, rows = 3, cols = 7, cw = (kw - 6 - pad * 2) / cols, rh = (kh - 6 - pad * 2) / rows;
+		for (int r = 0; r < rows; r++)
+			for (int cc = 0; cc < cols; cc++)
+				if (!(r == 2 && cc > 0 && cc < cols - 1) || cc == 3) rect(kx + 3 + pad + cc * cw + 1, ky + 3 + pad + r * rh + 1, (r == 2 && cc == 3 ? cw * 3 : cw) - 2, rh - 2, 0.85f, 0.85f, 0.88f);
+		glDisable(GL_SCISSOR_TEST);
+	}
 	gfx::swap();
 	glErr("present");
 	gFrameNo++;
