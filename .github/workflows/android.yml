@@ -57,6 +57,8 @@ jobs:
           key: ccache-${{ github.sha }}
           restore-keys: ccache-
 
+      - name: Stamp build id
+        run: echo '#define RA3_BUILD_ID "${{ github.sha }}"' > runtime/build_id.h
       - name: Build APK
         working-directory: android
         env:

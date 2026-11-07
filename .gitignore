@@ -3,3 +3,4 @@
 *.big
 build/
 out*
+runtime/build_id.h
