@@ -632,6 +632,19 @@ IMP_ID(DX, "D3DXCreateEffectEx", D3DXCreateEffectEx, 40)
 			for (auto& t : info->techs) tl += (tl.empty() ? "" : ",") + t.name + "/" + std::to_string(t.passes.size());
 			log("   effect parsed: %zu params, %zu techniques [%s], hdr %u", info->params.size(), info->techs.size(), tl.c_str(), info->base);
 			d3d::fxrt::initParams(*info);
+			if (ARG(5))
+			{
+				std::string skip = rt::gstr(ARG(5)), names;
+				for (size_t b = 0; b < skip.size();)
+				{
+					size_t e = skip.find(';', b);
+					if (e == std::string::npos) e = skip.size();
+					std::string nm = skip.substr(b, e - b);
+					for (auto& pr : info->params) if (pr.name == nm) { pr.skipConst = true; names += nm + ","; }
+					b = e + 1;
+				}
+				log("   skipConstants: %s", names.c_str());
+			}
 			d3d::fxRegister(info);
 			fx->fx = info;
 		}

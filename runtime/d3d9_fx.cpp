@@ -603,7 +603,7 @@ static void packConst(const FxInfo& fx, const CtabConst& c, ShaderObj* sh, bool 
 	int k = fxrt::findParam(fx, c.name);
 	if (k < 0) return;
 	const FxParam& p = fx.params[k];
-	if (p.ty.cls == 4 || p.val.empty()) return;
+	if (p.ty.cls == 4 || p.val.empty() || p.skipConst) return;
 	float* fregs = isVs ? dev.vsF : dev.psF;
 	int32_t* iregs = isVs ? dev.vsI : dev.psI;
 	int32_t* bregs = isVs ? dev.vsB : dev.psB;
