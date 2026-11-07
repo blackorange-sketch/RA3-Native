@@ -56,7 +56,9 @@ void mapTo(float sx, float sy)
 int prevCount = 0;
 int64_t downAt = 0, twoAt = 0, threeAt = 0;
 float startX = 0, startY = 0, twoStartY = 0, twoStartX = 0, wheelAcc = 0, lastTwoY = 0;
-bool moved = false, twoMoved = false, threeSeen = false;
+bool moved = false, twoMoved = false, threeSeen = false, pending = false;
+int dragMode = 0;   // 0 none, 1 left button (selection / UI drag), 2 right button (camera pan)
+int startCX = 0, startCY = 0;
 }
 
 namespace input
@@ -87,8 +89,8 @@ void onTouch(int action, int idx, int count, const float* xs, const float* ys)
 		log("input: DOWN screen %.0f,%.0f -> game %d,%d (back %dx%d view %d,%d %dx%d)", xs[0], ys[0], curX, curY, bw, bh, vx, vy, vw, vh);
 		startX = xs[0]; startY = ys[0]; moved = false; downAt = now; twoMoved = false; threeSeen = false;
 		push(WM_MOUSEMOVE, mouseFlags(), xy(), 0);
-		lDown = true;
-		push(WM_LBUTTONDOWN, mouseFlags(), xy(), 40);   // let the UI see the hover first
+		// the button press is deferred: a tap clicks, a quick swipe pans the camera, hold-then-drag selects
+		pending = true; dragMode = 0; startCX = curX; startCY = curY;
 	}
 	else if (action == PDOWN)
 	{
@@ -96,6 +98,8 @@ void onTouch(int action, int idx, int count, const float* xs, const float* ys)
 		{
 			// a second finger: cancel the left drag, a tap of two fingers becomes a right click
 			if (lDown) { lDown = false; push(WM_LBUTTONUP, mouseFlags(), xy(), 30); }
+			if (rDown) { rDown = false; push(WM_RBUTTONUP, mouseFlags(), xy(), 30); }
+			pending = false; dragMode = 0;
 			twoAt = now; twoMoved = false; twoStartX = xs[1]; twoStartY = lastTwoY = (ys[0] + ys[1]) / 2; wheelAcc = 0;
 		}
 	}
@@ -104,8 +108,16 @@ void onTouch(int action, int idx, int count, const float* xs, const float* ys)
 		if (count == 1 && !threeSeen)
 		{
 			mapTo(xs[0], ys[0]);
-			if (fabsf(xs[0] - startX) + fabsf(ys[0] - startY) > 12) moved = true;
-			push(WM_MOUSEMOVE, mouseFlags(), xy(), 0);
+			if (pending && !moved && fabsf(xs[0] - startX) + fabsf(ys[0] - startY) > 12)
+			{
+				moved = true;
+				int cx = curX, cy = curY;
+				curX = startCX; curY = startCY;
+				if (now - downAt >= 250) { dragMode = 1; lDown = true; push(WM_LBUTTONDOWN, mouseFlags(), xy(), 0); }
+				else { dragMode = 2; rDown = true; push(WM_RBUTTONDOWN, mouseFlags(), xy(), 0); }
+				curX = cx; curY = cy;
+			}
+			if (pending || dragMode) push(WM_MOUSEMOVE, mouseFlags(), xy(), 0);
 		}
 		else if (count == 2)
 		{
@@ -128,7 +140,14 @@ void onTouch(int action, int idx, int count, const float* xs, const float* ys)
 	}
 	else if (action == UP || action == CANCEL)
 	{
+		if (pending && dragMode == 0 && action == UP)
+		{
+			lDown = true; push(WM_LBUTTONDOWN, mouseFlags(), xy(), 40);
+			lDown = false; push(WM_LBUTTONUP, mouseFlags(), xy(), 40);
+		}
 		if (lDown) { lDown = false; push(WM_LBUTTONUP, mouseFlags(), xy(), 40); }
+		if (rDown && dragMode == 2) { rDown = false; push(WM_RBUTTONUP, mouseFlags(), xy(), 40); }
+		pending = false; dragMode = 0;
 		threeSeen = false;
 	}
 	prevCount = count;
