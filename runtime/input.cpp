@@ -79,6 +79,33 @@ void clickWithMods(bool right)
 }
 }
 
+namespace
+{
+constexpr float kPanGain = 2.5f;
+float panPX = 0, panPY = 0;
+int panVX = 0, panVY = 0;
+void panBegin(float sx, float sy) { panPX = sx; panPY = sy; panVX = curX; panVY = curY; }
+// relative pan: the cursor moves kPanGain times faster than the finger; near an edge the right button is released and re-grabbed at the centre
+void panMove(float sx, float sy)
+{
+	panVX += (int)((sx - panPX) * bw / std::max(1, vw) * kPanGain); panVY += (int)((sy - panPY) * bh / std::max(1, vh) * kPanGain);
+	panPX = sx; panPY = sy;
+	int mx = bw / 8, my = bh / 8;
+	if (panVX < mx || panVX > bw - mx || panVY < my || panVY > bh - my)
+	{
+		curX = std::max(0, std::min(bw - 1, panVX)); curY = std::max(0, std::min(bh - 1, panVY));
+		push(WM_MOUSEMOVE, mouseFlags(), xy(), 0);
+		push(WM_RBUTTONUP, mouseFlags() & ~2u, xy(), 0);
+		panVX = bw / 2; panVY = bh / 2; curX = panVX; curY = panVY;
+		push(WM_MOUSEMOVE, mouseFlags() & ~2u, xy(), 0);
+		push(WM_RBUTTONDOWN, mouseFlags(), xy(), 0);
+		return;
+	}
+	curX = panVX; curY = panVY;
+	push(WM_MOUSEMOVE, mouseFlags(), xy(), 0);
+}
+}
+
 namespace input
 {
 void setScreen(int sw, int sh) { scrW = sw; scrH = sh; }
@@ -135,33 +162,34 @@ void onTouch(int action, int idx, int count, const float* xs, const float* ys)
 		if (count == 1 && !threeSeen)
 		{
 			mapTo(xs[0], ys[0]);
-			if (pending && !moved && fabsf(xs[0] - startX) + fabsf(ys[0] - startY) > 12)
+			if (pending && !moved && fabsf(xs[0] - startX) + fabsf(ys[0] - startY) > std::max(24, scrH / 50))
 			{
 				moved = true;
 				int cx = curX, cy = curY;
 				curX = startCX; curY = startCY;
 				if (now - downAt >= 250) { dragMode = 1; lDown = true; push(WM_LBUTTONDOWN, mouseFlags(), xy(), 0); }
-				else { dragMode = 2; rDown = true; push(WM_RBUTTONDOWN, mouseFlags(), xy(), 0); }
+				else { dragMode = 2; rDown = true; push(WM_RBUTTONDOWN, mouseFlags(), xy(), 0); panBegin(startX, startY); }
 				curX = cx; curY = cy;
 			}
-			if (pending || dragMode) push(WM_MOUSEMOVE, mouseFlags(), xy(), 0);
+			if (dragMode == 2) panMove(xs[0], ys[0]);
+			else if (pending || dragMode) push(WM_MOUSEMOVE, mouseFlags(), xy(), 0);
 		}
 		else if (count == 2)
 		{
 			float cx = (xs[0] + xs[1]) / 2, cy = (ys[0] + ys[1]) / 2, d = hypotf(xs[1] - xs[0], ys[1] - ys[0]);
-			if (fabsf(d - lastDist) > 6) twoMoved = true;
+			if (fabsf(d - lastDist) > std::max(20, scrH / 40)) twoMoved = true;
 			// pinch -> wheel
 			wheelAcc += d - lastDist; lastDist = d;
 			while (wheelAcc > 50) { wheelAcc -= 50; push(WM_MOUSEWHEEL, (uint32_t)(120 & 0xffff) << 16, xy(), 0); }
 			while (wheelAcc < -50) { wheelAcc += 50; push(WM_MOUSEWHEEL, (uint32_t)(-120 & 0xffff) << 16, xy(), 0); }
 			// centre drift -> camera pan (right-drag)
-			if (!twoPan && fabsf(cx - twoStartX) + fabsf(cy - twoStartY) > 30)
+			if (!twoPan && fabsf(cx - twoStartX) + fabsf(cy - twoStartY) > std::max(60, scrH / 20))
 			{
 				twoMoved = true; twoPan = true;
 				mapTo(twoStartX, twoStartY); push(WM_MOUSEMOVE, mouseFlags(), xy(), 0);
-				rDown = true; push(WM_RBUTTONDOWN, mouseFlags(), xy(), 0);
+				rDown = true; push(WM_RBUTTONDOWN, mouseFlags(), xy(), 0); panBegin(twoStartX, twoStartY);
 			}
-			if (twoPan) { mapTo(cx, cy); push(WM_MOUSEMOVE, mouseFlags(), xy(), 0); }
+			if (twoPan) panMove(cx, cy);
 		}
 	}
 	else if (action == PUP)
