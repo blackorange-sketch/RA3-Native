@@ -251,6 +251,24 @@ int main(int argc, char** argv)
 			{ addFunc(v); st["imm_code_seed2"]++; again = true; }
 		if (again) drain();
 	}
+	// Gap fill: a 16-byte aligned address that no decoded instruction covers and that follows padding, a ret or an
+	// indirect `jmp reg` is the start of a function that is only reached through a pointer (e.g. a virtual method).
+	for (bool again = true; again;)
+	{
+		again = false;
+		for (auto& sc : secs)
+		{
+			if (!(sc.flags & 0x20000000)) continue;
+			for (uint32_t v = (imageBase + sc.va + 15) & ~15u; v < imageBase + sc.va + sc.rsize; v += 16)
+			{
+				uint8_t b1 = 0, b2 = 0;
+				if (funcs.count(v) || seenInsn.count(v) || !readVA(v - 1, &b1, 1) || !readVA(v - 2, &b2, 1)) continue;
+				bool afterPad = b1 == 0xcc || b1 == 0xc3 || b1 == 0x90 || (b2 == 0xff && (b1 & 0xf8) == 0xe0) || (b2 == 0xc2) ;
+				if (afterPad && (b1 == 0xc3 || !seenInsn.count(v - 1))) { addFunc(v); st["gap_seed"]++; again = true; }
+			}
+		}
+		if (again) drain();
+	}
 	printf("image base 0x%x entry 0x%x\n", imageBase, imageBase + entryRva);
 	printf("functions: %zu (seeds from data pointers: %zu)\n", funcs.size(), dataPtrs);
 	printf("distinct jump-table targets: %zu\n", tableTargets.size());
