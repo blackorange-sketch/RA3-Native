@@ -6,6 +6,9 @@ on:
     branches: [main]
     paths: ['runtime/**', 'tools/**', 'android/**', '.github/workflows/android.yml']
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -66,7 +69,18 @@ jobs:
           gradle assembleDebug -PliftedDir=${{ github.workspace }}/lifted -PuseCcache=1 --no-daemon
           ccache -s | head -8
 
+      # The APK is published as a release asset (does not count against the Actions artifact quota).
+      - name: Publish APK to the 'latest' release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp android/app/build/outputs/apk/debug/app-debug.apk ra3-native.apk
+          gh release view latest >/dev/null 2>&1 || gh release create latest --title "Latest build" --notes "Automatic debug build of main" --prerelease
+          gh release upload latest ra3-native.apk --clobber
+          gh release edit latest --notes "Build of ${GITHUB_SHA::7} ($(date -u +%F\ %H:%M) UTC)"
+
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: ra3-native-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
