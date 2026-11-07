@@ -124,6 +124,39 @@ void startPicking()
 	rebuildPick();
 }
 
+
+// Shows / hides the soft keyboard through InputMethodManager (ANativeActivity_showSoftInput is unreliable on recent Android).
+void toggleKeyboard(android_app* app)
+{
+	JNIEnv* env = nullptr;
+	app->activity->vm->AttachCurrentThread(&env, nullptr);
+	auto check = [&](const char* what) {
+		if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); rt::log("keyboard: exception in %s", what); return true; }
+		return false;
+	};
+	jobject act = app->activity->clazz;
+	jclass actCls = env->GetObjectClass(act);
+	jmethodID getSvc = env->GetMethodID(actCls, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;");
+	jstring name = env->NewStringUTF("input_method");
+	jobject imm = env->CallObjectMethod(act, getSvc, name);
+	if (!check("getSystemService") && imm)
+	{
+		jmethodID getWin = env->GetMethodID(actCls, "getWindow", "()Landroid/view/Window;");
+		jobject win = env->CallObjectMethod(act, getWin);
+		jclass winCls = env->GetObjectClass(win);
+		jobject decor = env->CallObjectMethod(win, env->GetMethodID(winCls, "getDecorView", "()Landroid/view/View;"));
+		jclass viewCls = env->GetObjectClass(decor);
+		env->CallVoidMethod(decor, env->GetMethodID(viewCls, "setFocusableInTouchMode", "(Z)V"), JNI_TRUE);
+		env->CallBooleanMethod(decor, env->GetMethodID(viewCls, "requestFocus", "()Z"));
+		jclass immCls = env->GetObjectClass(imm);
+		jmethodID toggle = env->GetMethodID(immCls, "toggleSoftInput", "(II)V");
+		env->CallVoidMethod(imm, toggle, 2 /*SHOW_FORCED*/, 0);
+		if (!check("toggleSoftInput")) rt::log("keyboard: toggled");
+	}
+	else rt::log("keyboard: no InputMethodManager");
+	app->activity->vm->DetachCurrentThread();
+}
+
 bool hasAllFilesAccess(android_app* app)
 {
 	if (android_get_device_api_level() < 30) return true;
@@ -249,13 +282,7 @@ int32_t onInput(android_app*, AInputEvent* ev)
 			float xs[5], ys[5];
 			for (int i = 0; i < n; i++) { xs[i] = AMotionEvent_getX(ev, i); ys[i] = AMotionEvent_getY(ev, i); }
 			input::onTouch(act, idx, n, xs, ys);
-			if (input::takeKeyboardToggle())
-			{
-				static bool kb = false;
-				kb = !kb;
-				if (kb) ANativeActivity_showSoftInput(gApp->activity, ANATIVEACTIVITY_SHOW_SOFT_INPUT_FORCED);
-				else ANativeActivity_hideSoftInput(gApp->activity, 0);
-			}
+			if (input::takeKeyboardToggle()) { rt::log("keyboard: button tapped"); toggleKeyboard(gApp); }
 			return 1;
 		}
 		return 0;
