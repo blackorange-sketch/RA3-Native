@@ -961,6 +961,18 @@ void draw(const DrawCall& dc)
 		else for (uint32_t i = 0; i < nvAll; i++) { uint16_t v; memcpy(&v, ip + 2 * i, 2); lo = std::min<uint32_t>(lo, v); hi = std::max<uint32_t>(hi, v); }
 		useMin = lo; useCount = hi - lo + 1;
 	}
+	// hardware instancing (D3D9 SetStreamSourceFreq): stream with 0x40000000|n holds the geometry, streams with 0x80000000|1 hold per-instance data
+	uint32_t instCount = 1;
+	bool instanced = false;
+	if (!dc.upVerts)
+		for (int si = 0; si < 16; si++)
+		{
+			uint32_t fq = dev.streams[si].freq;
+			if (fq & 0x40000000u) { instCount = std::max<uint32_t>(1, fq & 0x3fffffffu); instanced = true; }
+			else if (fq & 0x80000000u) instanced = true;
+		}
+	static bool gInstUsed = false;
+	if (instanced) { static int n = 0; if (n++ < 10) log("draw: instanced x%u prim %u count %u", instCount, dc.prim, dc.primCount); }
 	int64_t ringBase[16];
 	for (int i = 0; i < 16; i++) ringBase[i] = -2; // -2: not tried yet, -1: not on the ring
 	for (auto& e : els)
@@ -984,6 +996,18 @@ void draw(const DrawCall& dc)
 			if (!st.vb) continue;
 			stride = st.stride;
 			int si = e.stream < 16 ? e.stream : 0;
+			if (instanced && (st.freq & 0x80000000u))
+			{
+				// per-instance stream: plain buffer, no base vertex, divisor 1
+				glBindBuffer(GL_ARRAY_BUFFER, ensureBuffer(st.vb, GL_ARRAY_BUFFER));
+				if (e.type == 4) bgra |= 1u << loc;
+				glEnableVertexAttribArray(loc);
+				glVertexAttribPointer(loc, size, gtype, norm, stride, (const void*)(uintptr_t)(st.offset + off));
+				glVertexAttribDivisor(loc, 1);
+				gInstUsed = true;
+				enabled |= 1u << loc;
+				continue;
+			}
 			if (ringBase[si] == -2)
 			{
 				ringBase[si] = -1;
@@ -1027,7 +1051,7 @@ void draw(const DrawCall& dc)
 	uint32_t nv = (uint32_t)primVertices(dc.prim, dc.primCount);
 	if (!dc.indexed)
 	{
-		glDrawArrays(mode, 0, nv);
+		if (instanced) glDrawArraysInstanced(mode, 0, nv, (GLsizei)instCount); else glDrawArrays(mode, 0, nv);
 	}
 	else if (dc.upIdx)
 	{
@@ -1045,13 +1069,18 @@ void draw(const DrawCall& dc)
 			iat = ringPut(GL_ELEMENT_ARRAY_BUFFER, gRingIbo, gRingIPos, kRingI, nullptr, 0,
 				(const uint8_t*)guest::host(dev.ib->data) + (uint64_t)dc.startIndex * isz, nv * isz);
 		if (iat >= 0)
-			glDrawElements(mode, nv, wide ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT, (const void*)(uintptr_t)iat);
+		{
+			if (instanced) glDrawElementsInstanced(mode, nv, wide ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT, (const void*)(uintptr_t)iat, (GLsizei)instCount);
+			else glDrawElements(mode, nv, wide ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT, (const void*)(uintptr_t)iat);
+		}
 		else
 		{
 			glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ensureBuffer(dev.ib, GL_ELEMENT_ARRAY_BUFFER));
-			glDrawElements(mode, nv, wide ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT, (const void*)(uintptr_t)(dc.startIndex * isz));
+			if (instanced) glDrawElementsInstanced(mode, nv, wide ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT, (const void*)(uintptr_t)(dc.startIndex * isz), (GLsizei)instCount);
+			else glDrawElements(mode, nv, wide ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT, (const void*)(uintptr_t)(dc.startIndex * isz));
 		}
 	}
+	if (gInstUsed) { for (int loc = 0; loc < 16; loc++) glVertexAttribDivisor(loc, 0); gInstUsed = false; }
 	uint64_t t6 = nowUs();
 	tProg += t1 - t0; tState += t2 - t1; tUni += t3 - t2; tSamp += t4 - t3; tAttr += t5 - t4; tDraw += t6 - t5; nDraw++;
 	gDrawsThisFrame++;
