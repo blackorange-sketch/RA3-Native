@@ -455,7 +455,7 @@ struct Gen
 		bool mmxHandled = false;
 		{
 			auto isM = [&](const cs_x86_op& o) { return o.type == X86_OP_REG && o.reg >= X86_REG_MM0 && o.reg <= X86_REG_MM7; };
-			bool anyM = x.op_count > 0 && (isM(op(0)) || (x.op_count > 1 && isM(op(1))));
+			bool anyM = id != X86_INS_CVTPI2PS && id != X86_INS_CVTPS2PI && id != X86_INS_CVTTPS2PI && x.op_count > 0 && (isM(op(0)) || (x.op_count > 1 && isM(op(1))));
 			// SSE2 integer forms (xmm operands): lane-wise ops run the MMX helper on each 64-bit half
 			bool xmmInt = x.op_count == 2 && isX(op(0)) && (isX(op(1)) || op(1).type == X86_OP_MEM || op(1).type == X86_OP_IMM);
 			if (xmmInt)
@@ -547,6 +547,28 @@ struct Gen
 					else if (isM(op(1))) { e.line(e.wr(op(0), "(uint32_t)" + M(op(1)))); mmxHandled = true; }
 				}
 				if (!mmxHandled) { ok = false; mmxHandled = true; }
+			}
+		}
+		if (!mmxHandled && (id == X86_INS_CVTPI2PS || id == X86_INS_CVTPS2PI || id == X86_INS_CVTTPS2PI) && x.op_count == 2)
+		{
+			auto isMr = [&](const cs_x86_op& o) { return o.type == X86_OP_REG && o.reg >= X86_REG_MM0 && o.reg <= X86_REG_MM7; };
+			auto Mr = [&](const cs_x86_op& o) { return fmt("c->mm[%d]", (int)(o.reg - X86_REG_MM0)); };
+			if (id == X86_INS_CVTPI2PS && isX(op(0)))
+			{
+				std::string src = isMr(op(1)) ? Mr(op(1)) : op(1).type == X86_OP_MEM ? "guest::load<uint64_t>(" + e.ea(op(1)) + ")" : "";
+				if (!src.empty()) { e.line("{ uint64_t v = " + src + "; " + X(op(0)) + ".f[0] = (float)(int32_t)(uint32_t)v; " + X(op(0)) + ".f[1] = (float)(int32_t)(uint32_t)(v >> 32); }"); mmxHandled = true; }
+			}
+			else if (id != X86_INS_CVTPI2PS && isMr(op(0)))
+			{
+				std::string a, b;
+				if (isX(op(1))) { a = X(op(1)) + ".f[0]"; b = X(op(1)) + ".f[1]"; }
+				else if (op(1).type == X86_OP_MEM) { a = "guest::load<float>(" + e.ea(op(1)) + ")"; b = "guest::load<float>(" + e.ea(op(1)) + " + 4)"; }
+				if (!a.empty())
+				{
+					std::string f = id == X86_INS_CVTTPS2PI ? "truncf" : "nearbyintf";
+					e.line("{ float a = " + a + ", b = " + b + "; " + Mr(op(0)) + " = (uint64_t)(uint32_t)(int32_t)" + f + "(a) | ((uint64_t)(uint32_t)(int32_t)" + f + "(b) << 32); }");
+					mmxHandled = true;
+				}
 			}
 		}
 		if (!mmxHandled) switch (id)
