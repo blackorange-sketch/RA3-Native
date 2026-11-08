@@ -585,6 +585,7 @@ static void scanBig(int fd, const std::string& name)
 		size_t len = strnlen(n, toc.size() - pos - 8);
 		pos += 8 + len + 1;
 		std::string ln = lowerStr(std::string(n, len));
+		if (ln.find("gpufx") != std::string::npos || ln.find("gpuparticle") != std::string::npos) log("big %s: FX [%s] off=%u size=%u", name.c_str(), std::string(n, len).c_str(), off, sz);
 		if ((ln.find("manifest") != std::string::npos || ln.find(".version") != std::string::npos) && shown++ < 12)
 			log("big %s: [%s] off=%u size=%u", name.c_str(), std::string(n, len).c_str(), off, sz);
 	}
