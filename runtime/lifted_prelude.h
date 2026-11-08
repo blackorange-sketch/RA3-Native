@@ -76,6 +76,86 @@ MMF(mm_pavgb, for (int i = 0; i < 8; i++) r.b[i] = (a.b[i] + b.b[i] + 1) >> 1;)
 MMF(mm_pavgw, for (int i = 0; i < 4; i++) r.w[i] = (a.w[i] + b.w[i] + 1) >> 1;)
 MMF(mm_psadbw, int s = 0; for (int i = 0; i < 8; i++) s += a.b[i] > b.b[i] ? a.b[i] - b.b[i] : b.b[i] - a.b[i]; r.q = (uint32_t)s;)
 
+// NEON versions of the hot MMX operations (video decoding, IDCT): same results as the scalar helpers above
+#if defined(__aarch64__)
+#include <arm_neon.h>
+#define N_U16(x) vreinterpret_u16_u64(vcreate_u64(x))
+#define N_S16(x) vreinterpret_s16_u64(vcreate_u64(x))
+#define N_U8(x) vreinterpret_u8_u64(vcreate_u64(x))
+#define N_S8(x) vreinterpret_s8_u64(vcreate_u64(x))
+#define N_S32(x) vreinterpret_s32_u64(vcreate_u64(x))
+#define R_U16(v) vget_lane_u64(vreinterpret_u64_u16(v), 0)
+#define R_S16(v) vget_lane_u64(vreinterpret_u64_s16(v), 0)
+#define R_U8(v) vget_lane_u64(vreinterpret_u64_u8(v), 0)
+#define R_S8(v) vget_lane_u64(vreinterpret_u64_s8(v), 0)
+#define R_S32(v) vget_lane_u64(vreinterpret_u64_s32(v), 0)
+#define NF(name, expr) static inline uint64_t name(uint64_t a_, uint64_t b_) { return expr; }
+NF(mmn_paddb, R_U8(vadd_u8(N_U8(a_), N_U8(b_))))
+NF(mmn_paddw, R_U16(vadd_u16(N_U16(a_), N_U16(b_))))
+NF(mmn_psubb, R_U8(vsub_u8(N_U8(a_), N_U8(b_))))
+NF(mmn_psubw, R_U16(vsub_u16(N_U16(a_), N_U16(b_))))
+NF(mmn_paddsb, R_S8(vqadd_s8(N_S8(a_), N_S8(b_))))
+NF(mmn_paddsw, R_S16(vqadd_s16(N_S16(a_), N_S16(b_))))
+NF(mmn_psubsb, R_S8(vqsub_s8(N_S8(a_), N_S8(b_))))
+NF(mmn_psubsw, R_S16(vqsub_s16(N_S16(a_), N_S16(b_))))
+NF(mmn_paddusb, R_U8(vqadd_u8(N_U8(a_), N_U8(b_))))
+NF(mmn_paddusw, R_U16(vqadd_u16(N_U16(a_), N_U16(b_))))
+NF(mmn_psubusb, R_U8(vqsub_u8(N_U8(a_), N_U8(b_))))
+NF(mmn_psubusw, R_U16(vqsub_u16(N_U16(a_), N_U16(b_))))
+NF(mmn_pmullw, R_S16(vmul_s16(N_S16(a_), N_S16(b_))))
+NF(mmn_pmulhw, R_S16(vshrn_n_s32(vmull_s16(N_S16(a_), N_S16(b_)), 16)))
+NF(mmn_pmulhuw, R_U16(vshrn_n_u32(vmull_u16(N_U16(a_), N_U16(b_)), 16)))
+static inline uint64_t mmn_pmaddwd(uint64_t a_, uint64_t b_) { int32x4_t p = vmull_s16(N_S16(a_), N_S16(b_)); return R_S32(vpadd_s32(vget_low_s32(p), vget_high_s32(p))); }
+NF(mmn_punpcklbw, R_U8(vzip1_u8(N_U8(a_), N_U8(b_))))
+NF(mmn_punpckhbw, R_U8(vzip2_u8(N_U8(a_), N_U8(b_))))
+NF(mmn_punpcklwd, R_U16(vzip1_u16(N_U16(a_), N_U16(b_))))
+NF(mmn_punpckhwd, R_U16(vzip2_u16(N_U16(a_), N_U16(b_))))
+NF(mmn_packuswb, R_U8(vqmovun_s16(vcombine_s16(N_S16(a_), N_S16(b_)))))
+NF(mmn_packsswb, R_S8(vqmovn_s16(vcombine_s16(N_S16(a_), N_S16(b_)))))
+NF(mmn_packssdw, R_S16(vqmovn_s32(vcombine_s32(N_S32(a_), N_S32(b_)))))
+static inline uint64_t mmn_psllw(uint64_t a_, uint64_t b_) { return b_ < 16 ? R_U16(vshl_u16(N_U16(a_), vdup_n_s16((int16_t)b_))) : 0; }
+static inline uint64_t mmn_psrlw(uint64_t a_, uint64_t b_) { return b_ < 16 ? R_U16(vshl_u16(N_U16(a_), vdup_n_s16((int16_t)-(int)b_))) : 0; }
+static inline uint64_t mmn_psraw(uint64_t a_, uint64_t b_) { int n = b_ > 15 ? 15 : (int)b_; return R_S16(vshl_s16(N_S16(a_), vdup_n_s16((int16_t)-n))); }
+NF(mmn_pmaxsw, R_S16(vmax_s16(N_S16(a_), N_S16(b_))))
+NF(mmn_pminsw, R_S16(vmin_s16(N_S16(a_), N_S16(b_))))
+NF(mmn_pmaxub, R_U8(vmax_u8(N_U8(a_), N_U8(b_))))
+NF(mmn_pminub, R_U8(vmin_u8(N_U8(a_), N_U8(b_))))
+NF(mmn_pavgb, R_U8(vrhadd_u8(N_U8(a_), N_U8(b_))))
+NF(mmn_pavgw, R_U16(vrhadd_u16(N_U16(a_), N_U16(b_))))
+#define mm_paddb mmn_paddb
+#define mm_paddw mmn_paddw
+#define mm_psubb mmn_psubb
+#define mm_psubw mmn_psubw
+#define mm_paddsb mmn_paddsb
+#define mm_paddsw mmn_paddsw
+#define mm_psubsb mmn_psubsb
+#define mm_psubsw mmn_psubsw
+#define mm_paddusb mmn_paddusb
+#define mm_paddusw mmn_paddusw
+#define mm_psubusb mmn_psubusb
+#define mm_psubusw mmn_psubusw
+#define mm_pmullw mmn_pmullw
+#define mm_pmulhw mmn_pmulhw
+#define mm_pmulhuw mmn_pmulhuw
+#define mm_pmaddwd mmn_pmaddwd
+#define mm_punpcklbw mmn_punpcklbw
+#define mm_punpckhbw mmn_punpckhbw
+#define mm_punpcklwd mmn_punpcklwd
+#define mm_punpckhwd mmn_punpckhwd
+#define mm_packuswb mmn_packuswb
+#define mm_packsswb mmn_packsswb
+#define mm_packssdw mmn_packssdw
+#define mm_psllw mmn_psllw
+#define mm_psrlw mmn_psrlw
+#define mm_psraw mmn_psraw
+#define mm_pmaxsw mmn_pmaxsw
+#define mm_pminsw mmn_pminsw
+#define mm_pmaxub mmn_pmaxub
+#define mm_pminub mmn_pminub
+#define mm_pavgb mmn_pavgb
+#define mm_pavgw mmn_pavgw
+#endif
+
 // ---- SSE2 integer helpers that cross the two 64-bit halves (the lane-wise ones reuse the MMX functions per half)
 #define XF(name, body) static inline X128 name(X128 a, X128 b) { X128 r; r.q[0] = r.q[1] = 0; body; return r; }
 XF(xmm_punpcklbw, for (int i = 0; i < 8; i++) { r.b[2 * i] = a.b[i]; r.b[2 * i + 1] = b.b[i]; })
