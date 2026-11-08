@@ -35,8 +35,11 @@ void log(const char* f, ...)
 	va_end(ap);
 	std::lock_guard<std::mutex> l(logMu);
 	if (!logFp && !config.logFile.empty()) logFp = fopen(config.logFile.c_str(), "a");
-	fprintf(stderr, "%s\n", buf);
-	if (logFp) { fprintf(logFp, "%s\n", buf); fflush(logFp); }
+	static const auto t0 = std::chrono::steady_clock::now();
+	char ts[24] = "";
+	if (strncmp(buf, "build ", 6) != 0) snprintf(ts, sizeof ts, "[%7.3f] ", std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+	fprintf(stderr, "%s%s\n", ts, buf);
+	if (logFp) { fprintf(logFp, "%s%s\n", ts, buf); fflush(logFp); }
 	if (logHook) logHook(buf);
 }
 
@@ -58,11 +61,13 @@ void traceRegister(uint32_t tid)
 // poor man's profiler: every 2 ms record the most recently entered function of each thread
 static std::mutex profMu;
 static std::map<std::pair<uint32_t, uint32_t>, uint32_t> profHist;
+void profDump();
 static void profLoop()
 {
-	for (;;)
+	for (int iter = 1;; iter++)
 	{
 		std::this_thread::sleep_for(std::chrono::milliseconds(2));
+		if (iter % 2500 == 0) profDump();   // every ~5 s, also while the game is still loading
 		std::lock_guard<std::mutex> l(profMu);
 		for (int i = 0; i < ringCount && i < 32; i++)
 		{
