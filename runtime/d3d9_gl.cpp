@@ -1,5 +1,7 @@
 #include <set>
 #include <string>
+#include <map>
+#include <tuple>
 #include <cstdio>
 #include "input.h"
 // OpenGL ES 3 back end of the Direct3D 9 layer: resource upload, programs built from translated D3D9 shaders,
@@ -791,7 +793,28 @@ void draw(const DrawCall& dc)
 	}
 	uint64_t t0 = nowUs();
 	Prog* p = getProgram(vs, ps);
-	if (!p) return;
+	if (!p) { static int nf = 0; if (nf++ < 10) log("d3d9: draw skipped: no program for vs %016llx ps %016llx", (unsigned long long)vs->hash, (unsigned long long)ps->hash); return; }
+	{
+		// diagnostics: which shader pairs / blend states are drawn (dumped as a histogram)
+		struct Key { uint64_t v, p; uint32_t st; bool operator<(const Key& o) const { return std::tie(v, p, st) < std::tie(o.v, o.p, o.st); } };
+		static std::map<Key, std::pair<uint32_t, uint64_t>> hist;
+		static uint32_t lastDump = 0;
+		uint32_t st = (dev.rs[27] ? 1u : 0u) | (dev.rs[7] ? 2u : 0u) | (dev.rs[14] ? 4u : 0u) | (dev.rs[19] & 15) << 4 | (dev.rs[20] & 15) << 8 | (dc.prim & 7) << 12 | (dev.rt0 ? 1u << 16 : 0u);
+		auto& h = hist[Key{vs->hash, ps->hash, st}];
+		h.first++; h.second += dc.primCount;
+		if (gFrameNo >= lastDump + 1800 && gFrameNo > 0)
+		{
+			lastDump = gFrameNo;
+			std::vector<std::pair<std::pair<uint32_t, uint64_t>, Key>> v;
+			for (auto& kv : hist) v.push_back({kv.second, kv.first});
+			std::sort(v.begin(), v.end(), [](auto& a, auto& b) { return a.first.second > b.first.second; });
+			log("DRAWHIST frame %u: %zu combos", gFrameNo, v.size());
+			for (size_t i = 0; i < v.size() && i < 40; i++)
+				log("DRAWHIST vs %016llx ps %016llx blend %u z %u zw %u src %u dst %u prim %u rt %u : draws %u prims %llu", (unsigned long long)v[i].second.v, (unsigned long long)v[i].second.p,
+					v[i].second.st & 1, v[i].second.st >> 1 & 1, v[i].second.st >> 2 & 1, v[i].second.st >> 4 & 15, v[i].second.st >> 8 & 15, v[i].second.st >> 12 & 7, v[i].second.st >> 16 & 1, v[i].first.first, (unsigned long long)v[i].first.second);
+			hist.clear();
+		}
+	}
 	if (isDiagFrame())
 	{
 		static bool srcDumped = false;
