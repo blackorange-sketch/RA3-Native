@@ -287,7 +287,7 @@ unsigned entryFlagNeed(uint32_t t)
 				need |= in.rd & ~written;
 				written |= in.wr;
 				if (in.id == X86_INS_CALL || in.id == X86_INS_RET || in.id == X86_INS_INT3 || in.id == X86_INS_UD2 || in.id == X86_INS_HLT) break;
-				bool jcc = isJcc(in.id) || in.id == X86_INS_LOOP || in.id == X86_INS_LOOPE || in.id == X86_INS_LOOPNE || in.id == X86_INS_JECXZ;
+				bool jcc = isJcc(in.id) || in.id == X86_INS_LOOP || in.id == X86_INS_LOOPE || in.id == X86_INS_LOOPNE || in.id == X86_INS_JECXZ || in.id == X86_INS_JCXZ;
 				if (jcc && in.x.op_count == 1 && in.x.operands[0].type == X86_OP_IMM) work.push_back({(uint32_t)in.x.operands[0].imm, written});
 				if (in.id == X86_INS_JMP)
 				{
@@ -921,6 +921,7 @@ struct Gen
 			break;
 		}
 		case X86_INS_JECXZ: e.line("if (ecx == 0) " + jumpTo((uint32_t)op(0).imm)); break;
+		case X86_INS_JCXZ: e.line("if ((ecx & 0xffffu) == 0) " + jumpTo((uint32_t)op(0).imm)); break;
 		case X86_INS_RDTSC: e.line("{ uint64_t t = rdtsc_host(); eax = (uint32_t)t; edx = (uint32_t)(t >> 32); }"); break;
 		case X86_INS_CPUID: e.line("cpuid_impl(eax, ebx, ecx, edx);"); break;
 		case X86_INS_WAIT: case X86_INS_FNCLEX: case X86_INS_FFREE: case X86_INS_PREFETCHT0: case X86_INS_PREFETCHT1: case X86_INS_PREFETCHT2:
@@ -1247,7 +1248,7 @@ Result liftFunction(Reader& r, uint32_t entry, const Options& opt)
 			}
 			in.id = insn->id; in.mn = insn->mnemonic; in.ops = insn->op_str; in.size = insn->size; in.next = pc + insn->size;
 			in.x = insn->detail->x86;
-			bool jcc = isJcc(in.id) || in.id == X86_INS_LOOP || in.id == X86_INS_LOOPE || in.id == X86_INS_LOOPNE || in.id == X86_INS_JECXZ;
+			bool jcc = isJcc(in.id) || in.id == X86_INS_LOOP || in.id == X86_INS_LOOPE || in.id == X86_INS_LOOPNE || in.id == X86_INS_JECXZ || in.id == X86_INS_JCXZ;
 			if (in.id == X86_INS_RET || in.id == X86_INS_INT3 || in.id == X86_INS_UD2 || in.id == X86_INS_HLT) in.terminal = true;
 			if (in.id == X86_INS_JMP)
 			{
