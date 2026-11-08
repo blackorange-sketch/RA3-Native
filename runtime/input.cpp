@@ -1,5 +1,6 @@
 // Android touch / keys -> Win32 window messages for the guest message pump (PeekMessageA / DispatchMessageA).
 #include "input.h"
+#include "hud.h"
 
 #include <algorithm>
 #include <cmath>
@@ -109,7 +110,7 @@ void panMove(float sx, float sy, bool mid = false)
 
 namespace input
 {
-void setScreen(int sw, int sh) { scrW = sw; scrH = sh; }
+void setScreen(int sw, int sh) { scrW = sw; scrH = sh; hud::setScreen(sw, sh); }
 void kbButtonRect(int& x, int& y, int& w, int& h) { int u = std::max(48, scrH / 12); x = u / 3; y = u / 3; w = u * 3 / 2; h = u; }
 
 void modButtonRect(int idx, int& x, int& y, int& w, int& h) { int u = std::max(48, scrH / 12); w = u; h = u * 3 / 4; x = u / 3; y = u / 3 + u + u / 4 + idx * (h + u / 6); }
@@ -125,6 +126,16 @@ void onTouch(int action, int idx, int count, const float* xs, const float* ys)
 	std::lock_guard<std::mutex> g(mu);
 	enum { DOWN = 0, UP = 1, MOVE = 2, CANCEL = 3, PDOWN = 5, PUP = 6 };
 	int64_t now = nowMs();
+	{
+		std::vector<hud::KeyEv> kev;
+		bool used = hud::onTouch(action, idx, count, xs, ys, kev);
+		for (auto& k : kev)
+		{
+			if (k.down) { if (k.ctrl) { keys[0x11] = true; push(WM_KEYDOWN, 0x11, 1, 0); } keys[k.vk] = true; push(WM_KEYDOWN, k.vk, 1, 0); }
+			else { keys[k.vk] = false; push(WM_KEYUP, k.vk, 1u | 0xc0000000u, 0); if (k.ctrl) { keys[0x11] = false; push(WM_KEYUP, 0x11, 1u | 0xc0000000u, 0); } }
+		}
+		if (used) { swallow = (action == 0 || action == 5) ? true : swallow; if (action == 1 || action == 3) swallow = false; return; }
+	}
 	{
 		int bx, by, bw2, bh2;
 		kbButtonRect(bx, by, bw2, bh2);

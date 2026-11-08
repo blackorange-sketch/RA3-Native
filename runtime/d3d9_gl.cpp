@@ -4,6 +4,7 @@
 #include <tuple>
 #include <cstdio>
 #include "input.h"
+#include "hud.h"
 // OpenGL ES 3 back end of the Direct3D 9 layer: resource upload, programs built from translated D3D9 shaders,
 // render state mapping, draw calls, render targets and presentation. Android only; elsewhere everything is a no-op.
 #include "d3d9.h"
@@ -1170,6 +1171,7 @@ void present()
 			if (on) rect(mx + 5, my + 5, mw - 10, mh - 10, r, gg, b); else rect(mx + 5, my + 5, mw - 10, mh - 10, 0.12f, 0.12f, 0.14f);
 			if (!on) rect(mx + mw / 2 - mh / 6, my + mh / 2 - mh / 6, mh / 3, mh / 3, r, gg, b);
 		}
+		hud::draw(rect);
 		glDisable(GL_SCISSOR_TEST);
 	}
 	gfx::swap();
