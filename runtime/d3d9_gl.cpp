@@ -628,6 +628,7 @@ bool ensureGl()
 		log("GL: first rendering call on tid %d (acquire %d)", (int)gettid(), (int)a);
 		init();
 	}
+	else if (gOk && !gfx::isOwner()) gfx::acquire();   // the game moved rendering to another thread (e.g. fullscreen video)
 	return gOk;
 }
 bool ready() { return gOk; }
@@ -1139,6 +1140,7 @@ void present()
 	if (gFrameNo == 1800 || gFrameNo == 3600) { log("DIAG: call rings of all threads at frame %u", gFrameNo); rt::traceDump(); }
 	if (gFrameNo == 1 || gFrameNo % 300 == 0) log("d3d9: frame %u presented, %u draws in the last frame, screen %dx%d", gFrameNo, gDrawsThisFrame.load(), sw, sh);
 	gDrawsThisFrame = 0;
+	gfx::release();   // hand the context over: a different game thread may render next
 }
 
 void stretchRect(Obj* src, const int32_t* sr, Obj* dst, const int32_t* dr, uint32_t filter)

@@ -16,6 +16,8 @@ void servicePlatform();                     // platform thread: call regularly; 
 void postOverlay(const uint32_t* rgba, int w, int h);   // console picture (shown while the game draws nothing)
 void drawOverlayAndPresent();               // platform thread, when it owns the context
 bool ownedByGame();
+bool isOwner();               // the calling thread currently has the context current
+void release();               // the owning game thread gives the context up (end of frame) so another game thread can take it
 // per-frame hooks for the D3D layer (game thread)
 void beginFrame();
 void swap();                  // present the window surface (game thread, after it drew the frame)
@@ -30,6 +32,8 @@ inline void servicePlatform() {}
 inline void postOverlay(const uint32_t*, int, int) {}
 inline void drawOverlayAndPresent() {}
 inline bool ownedByGame() { return false; }
+inline bool isOwner() { return false; }
+inline void release() {}
 inline void beginFrame() {}
 inline void swap() {}
 inline void drawOverlay() {}

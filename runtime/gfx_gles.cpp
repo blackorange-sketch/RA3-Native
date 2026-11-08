@@ -163,6 +163,18 @@ bool ready() { std::lock_guard<std::mutex> l(mu); return surf != EGL_NO_SURFACE;
 int width() { return surfW; }
 int height() { return surfH; }
 bool ownedByGame() { return ownerIsGame; }
+static std::atomic<int> ownerTid{0};
+bool isOwner() { static thread_local int t = (int)gettid(); return ownerIsGame && ownerTid.load() == t; }
+void release()
+{
+	std::unique_lock<std::mutex> l(mu);
+	if (!ownerIsGame || owner != std::this_thread::get_id()) return;
+	eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+	curValid = false;
+	owner = std::thread::id();
+	ownerTid = 0;
+	cv.notify_all();
+}
 
 bool acquire()
 {
@@ -176,9 +188,10 @@ bool acquire()
 	wantGame = false;
 	owner = std::this_thread::get_id();
 	ownerIsGame = true;
+	ownerTid = (int)gettid();
 	bool ok = makeCurrentHere();
 	curValid = ok;
-	rt::log("EGL: game thread owns the context (%s) tid %d", ok ? "ok" : "FAILED", (int)gettid());
+	{ static int n = 0; if (n++ < 6) rt::log("EGL: game thread owns the context (%s) tid %d", ok ? "ok" : "FAILED", (int)gettid()); }
 	return ok;
 }
 
