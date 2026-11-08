@@ -73,6 +73,7 @@ uint32_t makeTeb(uint32_t stackLow, uint32_t stackHigh, uint32_t tid);
 void setLastError(uint32_t e);
 void traceRegister(uint32_t tid);
 void traceDump();
+void profDump();
 void traceDumpCurrent(int n);   // ring of the calling thread only
 void watchArm(uint32_t guestAddr);   // write-protect the page; the next write is logged with the writer's call ring
 bool watchHit(uint32_t guestAddr);

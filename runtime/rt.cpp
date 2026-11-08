@@ -48,10 +48,44 @@ thread_local uint32_t ra3_ring_pos;
 namespace rt {
 static struct { uint32_t* ring; uint32_t* pos; uint32_t tid; uint32_t* ra; } rings[32];
 static std::atomic<int> ringCount{0};
+static void profLoop();
 void traceRegister(uint32_t tid)
 {
 	int i = ringCount++;
 	if (i < 32) rings[i] = {ra3_ring, &ra3_ring_pos, tid, ra3_ring_ra};
+	static std::once_flag once; std::call_once(once, [] { std::thread(profLoop).detach(); });
+}
+// poor man's profiler: every 2 ms record the most recently entered function of each thread
+static std::mutex profMu;
+static std::map<std::pair<uint32_t, uint32_t>, uint32_t> profHist;
+static void profLoop()
+{
+	for (;;)
+	{
+		std::this_thread::sleep_for(std::chrono::milliseconds(2));
+		std::lock_guard<std::mutex> l(profMu);
+		for (int i = 0; i < ringCount && i < 32; i++)
+		{
+			uint32_t v = rings[i].ring[(*rings[i].pos - 1) & 255];
+			if ((v >> 28) == 0xb) v = 0xb0000000u;   // imports lumped together
+			profHist[{rings[i].tid, v}]++;
+		}
+	}
+}
+void profDump()
+{
+	std::lock_guard<std::mutex> l(profMu);
+	std::map<uint32_t, std::vector<std::pair<uint32_t, uint32_t>>> byThread;
+	for (auto& kv : profHist) byThread[kv.first.first].push_back({kv.second, kv.first.second});
+	for (auto& t : byThread)
+	{
+		std::sort(t.second.rbegin(), t.second.rend());
+		uint32_t total = 0; for (auto& e : t.second) total += e.first;
+		std::string line;
+		for (size_t k = 0; k < t.second.size() && k < 8; k++) { char b[40]; snprintf(b, sizeof b, " %08x:%u", t.second[k].second, t.second[k].first); line += b; }
+		log("PROF thread %u samples %u top:%s", t.first, total, line.c_str());
+	}
+	profHist.clear();
 }
 void traceDump()
 {
@@ -145,6 +179,7 @@ void traceProfile(int ms)
 #else
 void traceRegister(uint32_t) {}
 void traceDump() {}
+void profDump() {}
 void traceDumpCurrent(int) {}
 void traceProfile(int) {}
 void callStats() {}

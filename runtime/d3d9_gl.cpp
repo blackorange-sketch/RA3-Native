@@ -1137,6 +1137,7 @@ void present()
 		log("LOD: cpulib flag %02x tscfreq %08x%08x cf009c %x cee3a8 %x cee3ac %x", guest::load<uint8_t>(0xcf0423), guest::load<uint32_t>(0xcf0094), guest::load<uint32_t>(0xcf0090), guest::load<uint32_t>(0xcf009c), guest::load<uint32_t>(0xcee3a8), guest::load<uint32_t>(0xcee3ac));
 		if (gm) { std::string line; char b[16]; for (uint32_t o = 0x2d8; o < 0x364; o += 4) { snprintf(b, sizeof b, "%x:%x ", o, guest::load<uint32_t>(gm + o)); line += b; } log("LOD: %s", line.c_str()); }
 	}
+	if (gFrameNo % 300 == 0) rt::profDump();
 	if (gFrameNo == 1800 || gFrameNo == 3600) { log("DIAG: call rings of all threads at frame %u", gFrameNo); rt::traceDump(); }
 	if (gFrameNo == 1 || gFrameNo % 300 == 0) log("d3d9: frame %u presented, %u draws in the last frame, screen %dx%d", gFrameNo, gDrawsThisFrame.load(), sw, sh);
 	gDrawsThisFrame = 0;
