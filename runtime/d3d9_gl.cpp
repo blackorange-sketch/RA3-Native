@@ -1090,7 +1090,11 @@ void present()
 	glBindTexture(GL_TEXTURE_2D, gBackTex);
 	glUniform1i(glGetUniformLocation(gBlitProg, "t"), 0);
 	glDrawArrays(GL_TRIANGLES, 0, 3);
-	if (gDrawsThisFrame == 0) { glViewport(0, 0, sw, sh); gfx::drawOverlay(); }
+	// the status/log overlay is only for the very start (nothing rendered yet); once the game has drawn anything, empty frames
+	// (loading screens) must not flash it
+	static bool everDrew = false;
+	if (gDrawsThisFrame > 0) everDrew = true;
+	if (gDrawsThisFrame == 0 && !everDrew) { glViewport(0, 0, sw, sh); gfx::drawOverlay(); }
 	{
 		// on-screen keyboard button: drawn with scissored clears (no shader needed)
 		input::setScreen(sw, sh);
