@@ -129,6 +129,13 @@ void flagRW(Ins& i)
 	i.rd = condMask(i.id);
 	i.wr = 0;
 	bool variableCount = i.x.op_count >= 2 && i.x.operands[i.x.op_count - 1].type == X86_OP_REG;
+	{
+		// SSE predicate compares (cmpleps, cmpltss, ...) can carry the id of the string compare CMPSB/CMPSW/CMPSD: they do not touch EFLAGS
+		const std::string& m = i.mn;
+		size_t n = m.size();
+		bool tail = n >= 2 && (m.compare(n - 2, 2, "ps") == 0 || m.compare(n - 2, 2, "ss") == 0 || m.compare(n - 2, 2, "pd") == 0 || m.compare(n - 2, 2, "sd") == 0);
+		if (m.compare(0, 3, "cmp") == 0 && tail && (n >= 7 || i.x.op_count == 3)) return;
+	}
 	switch (i.id)
 	{
 	case X86_INS_ADD: case X86_INS_SUB: case X86_INS_CMP: case X86_INS_NEG: case X86_INS_AND: case X86_INS_OR: case X86_INS_XOR:
