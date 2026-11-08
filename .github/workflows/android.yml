@@ -25,11 +25,11 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with: { gradle-version: '8.9' }
 
-      # The user's own ra3_1.12.game is attached to a draft/private release (tag "game-binary") of this private repo.
-      # It is only used to generate code inside this job; neither it nor the generated code is published.
+      # The user's own ra3_1.12.game lives in a separate PRIVATE repo (blackorange-sketch/ra3-private, release "game-binary"),
+      # read with the GAME_REPO_TOKEN secret. It is only used inside this job; neither it nor the generated code is published.
       - name: Fetch ra3_1.12.game
-        env: { GH_TOKEN: '${{ github.token }}' }
-        run: gh release download game-binary -p ra3_1.12.game -D game
+        env: { GH_TOKEN: '${{ secrets.GAME_REPO_TOKEN }}' }
+        run: gh release download game-binary -R blackorange-sketch/ra3-private -p ra3_1.12.game -D game
 
       - name: Build Capstone
         run: |
