@@ -1181,7 +1181,8 @@ struct Gen
 			}
 			else
 			{
-				e.line("{ uint32_t t = " + e.rd(t, nullptr, 4) + "; esp -= 4; S32(esp, " + hex(in.next) + "); SAVE(); call_target(c, t); LOAD(); }");
+				// fast path for tolower called through a pointer (the game's string hash calls it per character)
+				e.line("{ uint32_t t = " + e.rd(t, nullptr, 4) + "; if (t == ra3_stub_tolower) { uint32_t ch = G32(esp); eax = (ch - 65u < 26u) ? ch + 32u : ch; } else { esp -= 4; S32(esp, " + hex(in.next) + "); SAVE(); call_target(c, t); LOAD(); } }");
 			}
 			break;
 		}

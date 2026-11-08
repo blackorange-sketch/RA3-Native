@@ -90,7 +90,7 @@ void profDump()
 		for (size_t k = 0; k < t.second.size() && k < 6; k++)
 		{
 			uint32_t v = t.second[k].second; char b[96];
-			imports::Entry* e = (v >> 28) == 0xb ? imports::lookup(v) : nullptr;
+			imports::Entry* e = (v >> 28) == 0xb ? imports::lookup(v ^ 0xc0000000u) : nullptr;
 			if (e) snprintf(b, sizeof b, " %s:%u", e->name.c_str(), t.second[k].first); else snprintf(b, sizeof b, " %08x:%u", v, t.second[k].first);
 			line += b;
 		}
@@ -430,6 +430,7 @@ void unsupported(CPU* c, uint32_t va, const char* what)
 }
 
 uint32_t g_eflags_hi = 0;
+uint32_t ra3_stub_tolower = 0xffffffffu;
 
 void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t ecx)
 {

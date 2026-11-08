@@ -5,6 +5,7 @@
 
 #include "guest.h"
 #include "imports.h"
+#include "cpu.h"
 
 namespace pe
 {
@@ -81,7 +82,9 @@ bool load(const char* path, Image& img, std::string& err)
 			if (!t) break;
 			std::string name = (t & 0x80000000) ? "#" + std::to_string(t & 0xffff)
 				: std::string(reinterpret_cast<const char*>(guest::host(img.base + t + 2)));
-			guest::store<uint32_t>(img.base + first + i * 4, imports::bind(dll, name));
+			uint32_t stub = imports::bind(dll, name);
+			if (name == "tolower") ra3_stub_tolower = stub;
+			guest::store<uint32_t>(img.base + first + i * 4, stub);
 			img.importCount++;
 		}
 	}
