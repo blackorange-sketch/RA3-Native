@@ -822,7 +822,8 @@ void draw(const DrawCall& dc)
 		static int logged = 0;
 		uint32_t bl = (dev.rs[27] ? 1u : 0u) | (dev.rs[19] & 15) << 4 | (dev.rs[20] & 15) << 8;
 		gDiagPair = false;
-		if (gFrameNo >= 3000 && logged < 120)
+		static bool diagOn = access("/sdcard/ra3_diag", F_OK) == 0;
+		if (diagOn && gFrameNo >= 3000 && logged < 120)
 		{
 			int& n = seen[{vs->hash, ps->hash, bl}];
 			if (n < 2) { n++; logged++; gDiagPair = true; log("DIAGPAIR vs %016llx ps %016llx bl %x", (unsigned long long)vs->hash, (unsigned long long)ps->hash, bl); }
