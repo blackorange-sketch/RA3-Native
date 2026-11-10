@@ -758,7 +758,8 @@ static int64_t ringPut(GLenum target, GLuint& buf, uint32_t& pos, uint32_t cap, 
 static inline uint64_t nowUs() { return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 static uint64_t tProg, tState, tUni, tSamp, tAttr, tDraw, nDraw;
 
-static bool isDiagFrame() { return gFrameNo == 700 || gFrameNo == 1800 || gFrameNo == 3600; }
+static bool gDiagPair = false;   // set per draw: first draws of each new shader pair during gameplay
+static bool isDiagFrame() { return gFrameNo == 700 || gFrameNo == 1800 || gFrameNo == 3600 || gDiagPair; }
 static void dumpBmp(const char* path, uint32_t w, uint32_t h)
 {
 	if (!w || !h || w > 4096 || h > 4096) return;
@@ -816,6 +817,17 @@ void draw(const DrawCall& dc)
 			hist.clear();
 		}
 	}
+	{
+		static std::map<std::tuple<uint64_t, uint64_t, uint32_t>, int> seen;
+		static int logged = 0;
+		uint32_t bl = (dev.rs[27] ? 1u : 0u) | (dev.rs[19] & 15) << 4 | (dev.rs[20] & 15) << 8;
+		gDiagPair = false;
+		if (gFrameNo >= 3000 && logged < 120)
+		{
+			int& n = seen[{vs->hash, ps->hash, bl}];
+			if (n < 2) { n++; logged++; gDiagPair = true; log("DIAGPAIR vs %016llx ps %016llx bl %x", (unsigned long long)vs->hash, (unsigned long long)ps->hash, bl); }
+		}
+	}
 	if (isDiagFrame())
 	{
 		static bool srcDumped = false;
@@ -825,6 +837,15 @@ void draw(const DrawCall& dc)
 			std::string vsrc = shdr::compose(vs->info), psrc = shdr::compose(ps->info, &vs->info.outputs);
 			log("DD VS source:\n%s", vsrc.c_str());
 			log("DD PS source:\n%s", psrc.c_str());
+		}
+	}
+	if (gDiagPair && dc.primCount >= 500)
+	{
+		static int srcN = 0;
+		if (srcN++ < 8)
+		{
+			log("DIAGPAIR VS source:\n%s", shdr::compose(vs->info).c_str());
+			log("DIAGPAIR PS source:\n%s", shdr::compose(ps->info, &vs->info.outputs).c_str());
 		}
 	}
 	if (isDiagFrame())
@@ -1109,7 +1130,7 @@ void draw(const DrawCall& dc)
 	tProg += t1 - t0; tState += t2 - t1; tUni += t3 - t2; tSamp += t4 - t3; tAttr += t5 - t4; tDraw += t6 - t5; nDraw++;
 	gDrawsThisFrame++;
 	if (gDrawsThisFrame <= 3 && gFrameNo < 5) glErr("draw");
-	if (isDiagFrame() && !dev.rt0)
+	if ((gFrameNo == 700 || gFrameNo == 1800 || gFrameNo == 3600) && !dev.rt0)
 	{
 		uint32_t dn = gDrawsThisFrame;
 		if (dn == 1 || dn == 10 || dn == 30 || dn == 60 || dn == 90 || dn == 120) dumpBmp(("/sdcard/ra3_f" + std::to_string(gFrameNo) + "_d" + std::to_string(dn) + ".bmp").c_str(), tw, th);
