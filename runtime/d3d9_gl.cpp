@@ -1219,6 +1219,15 @@ void present()
 			if (gm && d >= 0 && d <= 5)
 			{
 				log("LOD: forcing static level %d (was %d, ideal %d)", d, (int)guest::load<uint32_t>(gm + 0x2dc), (int)guest::load<uint32_t>(gm + 0x340));
+				// apply the preset through the game's own function (0x61d660 = GameLODManager::applyStaticLOD(level)), preserving the guest registers
+				if (CPU* cc = rt::thisThread().cpu)
+				{
+					uint32_t sv[8]; memcpy(sv, cc->r, sizeof sv);
+					cc->r[ECX] = gm;
+					rt::callGuest(cc, 0x61d660, {(uint32_t)d});
+					memcpy(cc->r, sv, sizeof sv);
+					log("LOD: applied preset %d via 0x61d660", d);
+				}
 				guest::store<uint32_t>(gm + 0x2dc, (uint32_t)d);
 				guest::store<uint32_t>(gm + 0x340, (uint32_t)d);
 			}
