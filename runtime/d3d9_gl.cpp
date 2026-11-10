@@ -1209,6 +1209,21 @@ void present()
 		log("perf: 300 frames in %llu ms; per draw us: prog %llu state %llu uni %llu samp %llu attr %llu draw %llu (n %llu)", (unsigned long long)((n - last) / 1000), (unsigned long long)(tProg / std::max<uint64_t>(1, nDraw)), (unsigned long long)(tState / std::max<uint64_t>(1, nDraw)), (unsigned long long)(tUni / std::max<uint64_t>(1, nDraw)), (unsigned long long)(tSamp / std::max<uint64_t>(1, nDraw)), (unsigned long long)(tAttr / std::max<uint64_t>(1, nDraw)), (unsigned long long)(tDraw / std::max<uint64_t>(1, nDraw)), (unsigned long long)nDraw);
 		last = n; tProg = tState = tUni = tSamp = tAttr = tDraw = nDraw = 0;
 	}
+	if (gFrameNo == 200)
+	{
+		// experiment: /sdcard/ra3_lod containing a digit 0..3 forces the static LOD level (and the detected 'ideal' level)
+		if (FILE* f = fopen("/sdcard/ra3_lod", "r"))
+		{
+			int d = -1; if (fscanf(f, "%d", &d) != 1) d = -1; fclose(f);
+			uint32_t gm = guest::load<uint32_t>(0xce2f98);
+			if (gm && d >= 0 && d <= 5)
+			{
+				log("LOD: forcing static level %d (was %d, ideal %d)", d, (int)guest::load<uint32_t>(gm + 0x2dc), (int)guest::load<uint32_t>(gm + 0x340));
+				guest::store<uint32_t>(gm + 0x2dc, (uint32_t)d);
+				guest::store<uint32_t>(gm + 0x340, (uint32_t)d);
+			}
+		}
+	}
 	if (gFrameNo == 900 || gFrameNo == 1800 || gFrameNo == 3600 || gFrameNo == 5400)
 	{
 		uint32_t gm = guest::load<uint32_t>(0xce2f98);
