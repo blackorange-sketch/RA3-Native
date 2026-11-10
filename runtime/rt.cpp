@@ -477,7 +477,7 @@ void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, 
 	}
 	rt::log("hook %08x(ecx=%08x, %08x, %08x, %08x) -> eax=%08x", fn, ecx, a0, a1, a2, c->r[EAX]);
 	auto tryStr = [](uint32_t p) -> std::string {
-		if (p < 0x400000 || (p >= 0x60000000 && p < 0x71000000) || p >= 0x7f000000) return "";
+		if (p < 0x400000 || (p >= 0x30000000 && p < 0x71000000) || p >= 0x7f000000) return "";
 		const unsigned char* q = (const unsigned char*)guest::host(p);
 		std::string r;
 		for (int i = 0; i < 100; i++) { if (!q[i]) return r.size() >= 2 ? r : ""; if (q[i] < 32 || q[i] > 126) return ""; r += (char)q[i]; }
