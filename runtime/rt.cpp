@@ -55,8 +55,13 @@ static std::atomic<int> ringCount{0};
 static void profLoop();
 void traceRegister(uint32_t tid)
 {
-	int i = ringCount++;
-	if (i < 32) rings[i] = {ra3_ring, &ra3_ring_pos, tid, ra3_ring_ra, (int)syscall(SYS_gettid)};
+	// fill the slot first, publish the count afterwards (the profiler thread reads rings[] concurrently)
+	static std::mutex regMu;
+	{
+		std::lock_guard<std::mutex> l(regMu);
+		int i = ringCount.load();
+		if (i < 32) { rings[i] = {ra3_ring, &ra3_ring_pos, tid, ra3_ring_ra, (int)syscall(SYS_gettid)}; ringCount.store(i + 1); }
+	}
 	static std::once_flag once; std::call_once(once, [] { std::thread(profLoop).detach(); });
 }
 // poor man's profiler: every 2 ms record the most recently entered function of each thread

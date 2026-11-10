@@ -1216,12 +1216,12 @@ void present()
 		log("LOD: cpulib flag %02x tscfreq %08x%08x cf009c %x cee3a8 %x cee3ac %x", guest::load<uint8_t>(0xcf0423), guest::load<uint32_t>(0xcf0094), guest::load<uint32_t>(0xcf0090), guest::load<uint32_t>(0xcf009c), guest::load<uint32_t>(0xcee3a8), guest::load<uint32_t>(0xcee3ac));
 		if (gm && gFrameNo == 1800)
 		{
-			auto str = [](uint32_t a) -> std::string { if (a < 0x400000 || a >= 0x60000000) return ""; std::string r; for (int i = 0; i < 40; i++) { char ch = (char)guest::load<uint8_t>(a + i); if (!ch) break; if (ch < 32 || ch > 126) return ""; r += ch; } return r.size() >= 3 ? r : ""; };
+			auto str = [](uint32_t a) -> std::string { if (a < 0x400000 || a >= 0x30000000) return ""; std::string r; for (int i = 0; i < 40; i++) { char ch = (char)guest::load<uint8_t>(a + i); if (!ch) break; if (ch < 32 || ch > 126) return ""; r += ch; } return r.size() >= 3 ? r : ""; };
 			std::string raw; char b[16];
 			for (uint32_t o = 0; o < 0x2d8; o += 4) { snprintf(b, sizeof b, "%x:%x ", o, guest::load<uint32_t>(gm + o)); raw += b; }
 			log("LODRAW: %s", raw.c_str());
 			auto dumpObj = [&](const char* tag, uint32_t p) {
-				if (p < 0x400000 || p >= 0x60000000) return;
+				if (p < 0x1000000 || p >= 0x30000000) return;
 				std::string l; for (uint32_t o = 0; o < 0x40; o += 4) { uint32_t v = guest::load<uint32_t>(p + o); snprintf(b, sizeof b, "%x ", v); l += b; std::string t = str(v); if (!t.empty()) l += "'" + t + "' "; }
 				log("LODOBJ %s %08x: %s", tag, p, l.c_str());
 			};
