@@ -29,7 +29,7 @@ std::atomic<uint32_t> nextTid{0x1000};
 std::atomic<uint32_t> bumpThread{rt::ThreadBase};
 uint32_t pebAddr;
 std::map<uint32_t, std::pair<uint32_t, uint32_t>> gWaiting;
-std::map<uint32_t, uint32_t> gWaitEsp;   // tid -> (handle, timeout) of threads currently blocked in WaitForSingleObject
+std::map<uint32_t, uint32_t> gWaitEsp, gWaitTop;   // tid -> (handle, timeout) of threads currently blocked in WaitForSingleObject
 std::atomic<uint64_t> gReadCalls{0}, gReadBytes{0}, gWaitCalls{0};
 std::mutex waitMu;               // one lock + condvar for all waitable objects: simple and correct
 std::condition_variable waitCv;
@@ -306,6 +306,7 @@ IMP_STD(K, WaitForSingleObject, 2)
 	gWaitCalls++;
 	gWaiting[tid] = {ARG(0), ms};
 	gWaitEsp[tid] = c->r[ESP];
+	gWaitTop[tid] = thisThread().stackTop;
 	if (ms == 0xffffffff) { waitCv.wait(l, [&] { return waitReady(w, tid); }); gWaiting.erase(tid); SET(0); }
 	else { bool r = waitCv.wait_for(l, std::chrono::milliseconds(ms), [&] { return waitReady(w, tid); }); gWaiting.erase(tid); SET(r ? 0 : 0x102); }
 }
@@ -319,10 +320,10 @@ void dumpWaiters()
 		Waitable* w = asWaitable(kv.second.first);
 		snprintf(b, sizeof b, " [t%u h%x ms%u kind %d sig %d cnt %d sets %u by t%u]", kv.first, kv.second.first, kv.second.second, w ? (int)w->kind : -1, w ? (int)w->signaled : -1, w ? w->count : -1, w ? w->sets : 0, w ? w->createdBy : 0);
 		s += b;
-		uint32_t esp = gWaitEsp[kv.first];
+		uint32_t esp = gWaitEsp[kv.first], top = gWaitTop[kv.first];
 		std::string st;
 		int found = 0;
-		for (uint32_t k = 0; k < 400 && found < 14; k++)
+		for (uint32_t k = 0; k < 400 && found < 14 && top && esp + 4 * k + 4 <= top; k++)
 		{
 			uint32_t v = guest::load<uint32_t>(esp + 4 * k);
 			if (v >= 0x401000 && v < 0xbc0000) { char q[16]; snprintf(q, sizeof q, " %x", v); st += q; found++; }
