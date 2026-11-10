@@ -68,6 +68,8 @@ static void onFault(int sig, siginfo_t* si, void*)
 		snprintf(buf, sizeof buf, "FATAL: signal %d (code %d) at host address %p (stack overflow or runtime bug)", sig, si->si_code, si->si_addr);
 	emit(buf);
 	emit("\n");
+	{ char t[64]; snprintf(t, sizeof t, "FAULTING host tid %d\n", (int)gettid()); emit(t); }
+	traceDumpCurrent(64);
 	traceDump();
 	_exit(72);
 }
