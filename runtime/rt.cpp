@@ -458,6 +458,37 @@ void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, 
 		{
 			uint32_t first = guest::load<uint32_t>(a0 + 0x10), last = guest::load<uint32_t>(a0 + 0x14);
 			rt::log("hook gfx-list fn=%08x type=%u entries=%d", fn, a1, (int)(last - first) / 4);
+			static bool tested = false;
+			if (!tested && fn == 0xafa2a0u)
+			{
+				// experiment: ask the game's own string table for the option texts
+				tested = true;
+				CPU saved = *c;
+				uint32_t scratch = c->r[ESP] - 0x800;
+				c->r[ESP] -= 0x2000;
+				static const char* keys[] = {"APT:AdvancedOption_TerrainLOD_Low", "APT:ADVANCEDOPTION_TERRAINLOD_LOW", "APT:OFF", "APT:MouseSensitivity", "APT:AdvancedOption_EffectsLOD_UltraHigh", "GUI:Low"};
+				uint32_t mgr = guest::load<uint32_t>(0xcdb754);
+				for (const char* k : keys)
+				{
+					strcpy((char*)guest::host(scratch + 0x100), k);
+					guest::store<uint32_t>(scratch, 0);
+					c->r[ECX] = scratch;
+					rt::callGuest(c, 0x4cc910, {scratch + 0x100}, 4);
+					uint32_t vt = guest::load<uint32_t>(mgr);
+					c->r[ECX] = mgr;
+					uint32_t res = rt::callGuestRet(c, guest::load<uint32_t>(vt + 0x3c), {scratch, 0u}, 8);
+					uint32_t w = (res > 0x400000 && res < 0x7f000000) ? guest::load<uint32_t>(res) : 0;
+					std::string txt;
+					int len = 0;
+					if (w > 0x400000 && w < 0x7f000000)
+					{
+						len = guest::load<uint16_t>(w - 4);
+						for (int i = 0; i < len && i < 24; i++) { char b[8]; uint16_t ch = guest::load<uint16_t>(w + i * 2); if (ch >= 0x20 && ch < 0x7f) snprintf(b, sizeof b, "%c", ch); else snprintf(b, sizeof b, "\\u%04x", ch); txt += b; }
+					}
+					rt::log("   lookup '%s' -> res=%08x w=%08x len=%d '%s'", k, res, w, len, txt.c_str());
+				}
+				*c = saved;
+			}
 			if (fn == 0xafa2a0u && a2 > 0x400000 && a2 < 0x30000000)
 			{
 				// the label prefix (a2) and the string-table prefix live next to each other in the component data
