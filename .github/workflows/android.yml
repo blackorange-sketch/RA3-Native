@@ -50,7 +50,7 @@ jobs:
 
       # The generated code is identical between runs, so ccache makes rebuilds after runtime-only edits take minutes.
       - name: Set up ccache
-        run: for i in 1 2 3; do sudo apt-get install -y ccache >/dev/null && break; sleep 15; done; true
+        run: for i in 1 2 3; do sudo apt-get install -y ccache >/dev/null && break; sleep 20; sudo apt-get update >/dev/null || true; done; true
       - uses: actions/cache@v4
         with:
           path: ~/.ccache
@@ -68,8 +68,9 @@ jobs:
           CCACHE_MAXSIZE: 1G
         run: |
           export CCACHE_DIR=$HOME/.ccache
-          gradle assembleDebug -PliftedDir=${{ github.workspace }}/lifted -PuseCcache=1 --no-daemon
-          ccache -s | head -8
+          CC_OPT=""; command -v ccache >/dev/null && CC_OPT="-PuseCcache=1"
+          gradle assembleDebug -PliftedDir=${{ github.workspace }}/lifted $CC_OPT --no-daemon
+          command -v ccache >/dev/null && ccache -s | head -8 || echo "built without ccache"
 
       # The APK is published as a release asset (does not count against the Actions artifact quota).
       - name: Publish APK to the 'latest' release
