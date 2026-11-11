@@ -458,6 +458,13 @@ void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, 
 		{
 			uint32_t first = guest::load<uint32_t>(a0 + 0x10), last = guest::load<uint32_t>(a0 + 0x14);
 			rt::log("hook gfx-list fn=%08x type=%u entries=%d", fn, a1, (int)(last - first) / 4);
+			if (fn == 0xafa2a0u && a2 > 0x400000 && a2 < 0x30000000)
+			{
+				// the label prefix (a2) and the string-table prefix live next to each other in the component data
+				std::string near;
+				for (uint32_t k = 0; k < 0x70; k++) { uint8_t ch = guest::load<uint8_t>(a2 - 0x10 + k); near += (ch >= 0x20 && ch < 0x7f) ? (char)ch : '.'; }
+				rt::log("   near a2: %s", near.c_str());
+			}
 			for (uint32_t e = first; e < last && e < first + 64; e += 4)
 			{
 				uint32_t ent = guest::load<uint32_t>(e);

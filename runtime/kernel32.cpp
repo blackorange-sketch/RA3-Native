@@ -587,7 +587,8 @@ static void scanBig(int fd, const std::string& name)
 		pos += 8 + len + 1;
 		std::string ln = lowerStr(std::string(n, len));
 		if (ln.find("gpufx") != std::string::npos || ln.find("gpuparticle") != std::string::npos) log("big %s: FX [%s] off=%u size=%u", name.c_str(), std::string(n, len).c_str(), off, sz);
-		if (ln.find("gamestrings.csf") != std::string::npos && sz < (32u << 20))
+		static int csfSeen = 0;
+		if (ln.find("gamestrings.csf") != std::string::npos && sz < (32u << 20) && csfSeen++ == 0)
 		{
 			// debug aid: which option labels does the string table actually contain?
 			std::vector<uint8_t> buf(sz);
@@ -615,9 +616,9 @@ static void scanBig(int fd, const std::string& name)
 				}
 				int found = 0;
 				log("big %s: CSF %s size=%u unpacked=%zu head=%.4s", name.c_str(), ln.c_str(), sz, buf.size(), (const char*)buf.data());
-				for (size_t i = 0; i + 8 < buf.size() && found < 40; i++)
+				for (size_t i = 0; i + 8 < buf.size() && found < 80; i++)
 				{
-					if (strncasecmp((const char*)&buf[i], "APT:Gfx", 7) != 0 && strncasecmp((const char*)&buf[i], "Detail_", 7) != 0 && strncasecmp((const char*)&buf[i], "Quality_", 8) != 0) continue;
+					if (strncasecmp((const char*)&buf[i], "Gfx", 3) != 0 && strncasecmp((const char*)&buf[i], "TerrainDet", 10) != 0 && strncasecmp((const char*)&buf[i], "ShadowDet", 9) != 0 && strncasecmp((const char*)&buf[i], "UltraHigh", 9) != 0 && strncasecmp((const char*)&buf[i], "VeryLow", 7) != 0) continue;
 					while (i > 0 && buf[i - 1] >= 0x20 && buf[i - 1] < 0x7f) i--;
 					size_t e = i; while (e < buf.size() && e < i + 64 && buf[e] >= 0x20 && buf[e] < 0x7f) e++;
 					log("   csf label '%s'", std::string((const char*)&buf[i], e - i).c_str());
