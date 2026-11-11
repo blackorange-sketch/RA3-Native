@@ -489,6 +489,46 @@ void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, 
 				}
 				*c = saved;
 			}
+			static int probes = 0;
+			if (fn == 0xafa2a0u && probes++ < 2)
+			{
+				// experiment: is the per-item text registered in the UI variable map, and how does a "$label" resolve?
+				CPU saved = *c;
+				uint32_t scratch = c->r[ESP] - 0x800;
+				c->r[ESP] -= 0x2000;
+				auto wstr = [&](uint32_t u) {
+					std::string txt; if (u < 0x400000 || u >= 0x7f000000) return std::string("<null>");
+					int len = guest::load<uint16_t>(u - 4);
+					for (int i = 0; i < len && i < 28; i++) { char b[8]; uint16_t ch = guest::load<uint16_t>(u + i * 2); if (ch >= 0x20 && ch < 0x7f) snprintf(b, sizeof b, "%c", ch); else snprintf(b, sizeof b, "\\u%04x", ch); txt += b; }
+					return txt; };
+				uint32_t store = guest::load<uint32_t>(0xcebd54);
+				static const char* keys[] = {"APT:GfxTerrainDetail_0", "APT:GfxTerrainDetail_1", "APT:GfxVFXDetail_2", "$APT:GfxTerrainDetail_0", "APT:OFF"};
+				for (const char* k : keys)
+				{
+					uint32_t h = 0x811c9dc5u; for (const char* q = k; *q; q++) h = (h * 0x1000193u) ^ (uint8_t)*q;
+					guest::store<uint32_t>(scratch + 0x20, h); guest::store<uint32_t>(scratch + 0x24, 0);
+					c->r[ECX] = store + 0xa4;
+					rt::callGuest(c, 0x918340, {scratch + 0x30, scratch + 0x20}, 8);
+					uint32_t node = guest::load<uint32_t>(scratch + 0x30);
+					uint32_t nb = guest::load<uint32_t>(store + 0xa4 + 8), tab = guest::load<uint32_t>(store + 0xa4 + 4);
+					uint32_t endn = guest::load<uint32_t>(tab + nb * 4);
+					if (node == endn || node < 0x400000) { rt::log("   var '%s' hash=%08x: NOT in map (buckets=%u)", k, h, nb); continue; }
+					rt::log("   var '%s' hash=%08x: node=%08x subs=%d val10='%s' val14='%s' flag18=%u", k, h, node,
+						(int)(guest::load<uint32_t>(node + 8 + 4) - guest::load<uint32_t>(node + 8)) / 4,
+						wstr(guest::load<uint32_t>(node + 8 + 0x10)).c_str(), wstr(guest::load<uint32_t>(node + 8 + 0x14)).c_str(), guest::load<uint8_t>(node + 8 + 0x18));
+				}
+				static const char* labels[] = {"$APT:GfxTerrainDetail_0", "$APT:OFF", "$APT:AdvancedOption_TerrainLOD_Low"};
+				for (const char* k : labels)
+				{
+					strcpy((char*)guest::host(scratch + 0x100), k);
+					guest::store<uint32_t>(scratch, 0); guest::store<uint32_t>(scratch + 8, 0);
+					c->r[ECX] = scratch;
+					rt::callGuest(c, 0x4cbbc0, {scratch + 0x100}, 4);
+					uint32_t res = rt::callGuestRet(c, 0x917fd0, {scratch, scratch + 8, 0u});
+					rt::log("   resolve '%s' (in='%s') -> '%s'", k, wstr(guest::load<uint32_t>(scratch)).c_str(), (res > 0x400000 && res < 0x7f000000) ? wstr(guest::load<uint32_t>(res)).c_str() : "<bad>");
+				}
+				*c = saved;
+			}
 			if (fn == 0xafa2a0u && a2 > 0x400000 && a2 < 0x30000000)
 			{
 				// the label prefix (a2) and the string-table prefix live next to each other in the component data
