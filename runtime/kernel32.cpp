@@ -593,12 +593,33 @@ static void scanBig(int fd, const std::string& name)
 			std::vector<uint8_t> buf(sz);
 			if (pread(fd, buf.data(), sz, off) == (ssize_t)sz)
 			{
+				if (buf.size() > 5 && buf[1] == 0xfb)
+				{
+					// RefPack-compressed: inflate before searching
+					const uint8_t* d = buf.data(); size_t p = 2, n = (d[0] & 0x80) ? 4 : 3;
+					if (d[0] & 1) p += n;
+					size_t total = 0; for (size_t k = 0; k < n; k++) total = total << 8 | d[p++];
+					std::vector<uint8_t> o; o.reserve(total);
+					while (p < buf.size() && o.size() < total)
+					{
+						uint32_t b0 = d[p++], lit, cnt = 0, dist = 0;
+						if (b0 < 0x80) { uint32_t b1 = d[p++]; lit = b0 & 3; cnt = ((b0 & 0x1c) >> 2) + 3; dist = ((b0 & 0x60) << 3) + b1 + 1; }
+						else if (b0 < 0xc0) { uint32_t b1 = d[p], b2 = d[p + 1]; p += 2; lit = b1 >> 6; cnt = (b0 & 0x3f) + 4; dist = ((b1 & 0x3f) << 8) + b2 + 1; }
+						else if (b0 < 0xe0) { uint32_t b1 = d[p], b2 = d[p + 1], b3 = d[p + 2]; p += 3; lit = b0 & 3; cnt = ((b0 & 0x0c) << 6) + b3 + 5; dist = ((b0 & 0x10) << 12) + (b1 << 8) + b2 + 1; }
+						else if (b0 < 0xfc) { lit = ((b0 & 0x1f) << 2) + 4; }
+						else { lit = b0 & 3; cnt = 0; total = o.size() + lit; }
+						for (uint32_t k = 0; k < lit && p < buf.size(); k++) o.push_back(d[p++]);
+						if (cnt && dist <= o.size()) for (uint32_t k = 0; k < cnt; k++) o.push_back(o[o.size() - dist]);
+					}
+					buf.swap(o);
+				}
 				int found = 0;
-				log("big %s: CSF %s size=%u head=%02x%02x%02x%02x", name.c_str(), ln.c_str(), sz, buf[0], buf[1], buf[2], buf[3]);
+				log("big %s: CSF %s size=%u unpacked=%zu head=%.4s", name.c_str(), ln.c_str(), sz, buf.size(), (const char*)buf.data());
 				for (size_t i = 0; i + 8 < buf.size() && found < 40; i++)
 				{
-					if (strncasecmp((const char*)&buf[i], "APT:Gfx", 7) != 0) continue;
-					size_t e = i; while (e < buf.size() && e < i + 48 && buf[e] >= 0x20 && buf[e] < 0x7f) e++;
+					if (strncasecmp((const char*)&buf[i], "APT:Gfx", 7) != 0 && strncasecmp((const char*)&buf[i], "Detail_", 7) != 0 && strncasecmp((const char*)&buf[i], "Quality_", 8) != 0) continue;
+					while (i > 0 && buf[i - 1] >= 0x20 && buf[i - 1] < 0x7f) i--;
+					size_t e = i; while (e < buf.size() && e < i + 64 && buf[e] >= 0x20 && buf[e] < 0x7f) e++;
 					log("   csf label '%s'", std::string((const char*)&buf[i], e - i).c_str());
 					found++; i = e;
 				}
