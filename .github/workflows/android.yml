@@ -35,7 +35,7 @@ jobs:
         run: |
           git clone https://github.com/capstone-engine/capstone
           git -C capstone checkout 04fd70b5456c20fc27d1f2b62d6ed0820fc6b081
-          sudo apt-get install -y ninja-build >/dev/null
+          for i in 1 2 3 4 5; do sudo apt-get install -y ninja-build >/dev/null && break; sleep 15; sudo apt-get update >/dev/null || true; done; command -v ninja
           cmake -S capstone -B capstone/b -G Ninja -DCMAKE_BUILD_TYPE=Release -DCAPSTONE_ARCHITECTURE_DEFAULT=OFF -DCAPSTONE_X86_SUPPORT=ON -DCAPSTONE_BUILD_SHARED_LIBS=OFF -DCAPSTONE_BUILD_TESTS=OFF -DCAPSTONE_BUILD_CSTOOL=OFF -DCAPSTONE_BUILD_CSTEST=OFF -DCAPSTONE_BUILD_LEGACY_TESTS=OFF
           ninja -C capstone/b
 
@@ -50,7 +50,7 @@ jobs:
 
       # The generated code is identical between runs, so ccache makes rebuilds after runtime-only edits take minutes.
       - name: Set up ccache
-        run: sudo apt-get install -y ccache >/dev/null
+        run: for i in 1 2 3; do sudo apt-get install -y ccache >/dev/null && break; sleep 15; done; true
       - uses: actions/cache@v4
         with:
           path: ~/.ccache
