@@ -450,6 +450,32 @@ void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, 
 			rt::log("hook SetTextureWrapper this=%08x stage=%u wrapper=%08x d3dtex=%08x (calls %d nonnull %d)", ecx, a0, a1, tex, k, nz.load());
 		return;
 	}
+	if (fn == 0xafa2a0u || fn == 0xaf9790u)
+	{
+		// dump the LABELS / VALUES lists the graphics options handler built for the UI
+		static std::atomic<int> cnt{0};
+		if (cnt++ < 14)
+		{
+			uint32_t first = guest::load<uint32_t>(a0 + 0x10), last = guest::load<uint32_t>(a0 + 0x14);
+			rt::log("hook gfx-list fn=%08x type=%u entries=%d", fn, a1, (int)(last - first) / 4);
+			for (uint32_t e = first; e < last && e < first + 64; e += 4)
+			{
+				uint32_t ent = guest::load<uint32_t>(e);
+				if (ent < 0x400000) continue;
+				uint32_t vb = guest::load<uint32_t>(ent), ve = guest::load<uint32_t>(ent + 4);
+				std::string line;
+				for (uint32_t v = vb; v < ve && v < vb + 0x404 * 12; v += 0x404)
+				{
+					uint32_t t = guest::load<uint32_t>(v);
+					char b[96];
+					if (t == 3) snprintf(b, sizeof b, " '%.60s'", (const char*)guest::host(v + 4));
+					else snprintf(b, sizeof b, " %u:%d", t, (int)guest::load<uint32_t>(v + 4));
+					line += b;
+				}
+				rt::log("   entry '%.32s' sel=%d n=%d:%s", (const char*)guest::host(ent + 0x20), (int)guest::load<uint32_t>(ent + 0xa0), (int)(ve - vb) / 0x404, line.c_str());
+			}
+		}
+	}
 	if (fn == 0x9b85c0u)
 	{
 		static std::atomic<int> cnt{0};
