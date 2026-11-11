@@ -587,10 +587,27 @@ static void scanBig(int fd, const std::string& name)
 		pos += 8 + len + 1;
 		std::string ln = lowerStr(std::string(n, len));
 		if (ln.find("gpufx") != std::string::npos || ln.find("gpuparticle") != std::string::npos) log("big %s: FX [%s] off=%u size=%u", name.c_str(), std::string(n, len).c_str(), off, sz);
-		if (ln.find("optionssettings") != std::string::npos && sz < (8u << 20))
+		if (ln.find("gamestrings.csf") != std::string::npos && sz < (32u << 20))
+		{
+			// debug aid: which option labels does the string table actually contain?
+			std::vector<uint8_t> buf(sz);
+			if (pread(fd, buf.data(), sz, off) == (ssize_t)sz)
+			{
+				int found = 0;
+				log("big %s: CSF %s size=%u head=%02x%02x%02x%02x", name.c_str(), ln.c_str(), sz, buf[0], buf[1], buf[2], buf[3]);
+				for (size_t i = 0; i + 8 < buf.size() && found < 40; i++)
+				{
+					if (strncasecmp((const char*)&buf[i], "APT:Gfx", 7) != 0) continue;
+					size_t e = i; while (e < buf.size() && e < i + 48 && buf[e] >= 0x20 && buf[e] < 0x7f) e++;
+					log("   csf label '%s'", std::string((const char*)&buf[i], e - i).c_str());
+					found++; i = e;
+				}
+				log("   csf: %d APT:Gfx* labels", found);
+			}
+		}
+		if (ln.find("optionssettings") != std::string::npos && sz < (8u << 20) && access("/sdcard/ra3_dump", F_OK) == 0)
 		{
 			// debug aid: extract the options-screen UI files so they can be inspected offline
-			mkdir("/sdcard/ra3_dump", 0777);
 			std::string base = ln.substr(ln.find_last_of("\\/") + 1);
 			std::vector<uint8_t> buf(sz);
 			if (pread(fd, buf.data(), sz, off) == (ssize_t)sz)
