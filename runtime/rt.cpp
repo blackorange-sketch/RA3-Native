@@ -454,10 +454,10 @@ void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, 
 	{
 		// dump the LABELS / VALUES lists the graphics options handler built for the UI
 		static std::atomic<int> cnt{0};
-		if (cnt++ < 14)
+		if (cnt++ >= 0)
 		{
 			uint32_t first = guest::load<uint32_t>(a0 + 0x10), last = guest::load<uint32_t>(a0 + 0x14);
-			rt::log("hook gfx-list fn=%08x type=%u entries=%d", fn, a1, (int)(last - first) / 4);
+			if (false) rt::log("hook gfx-list fn=%08x type=%u entries=%d", fn, a1, (int)(last - first) / 4);
 			static bool tested = true;
 			if (!tested && fn == 0xafa2a0u)
 			{
@@ -517,7 +517,7 @@ void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, 
 					guest::store<uint32_t>(scratch + 0x20, h); guest::store<uint32_t>(scratch + 0x24, 0);
 					c->r[ECX] = store;
 					uint32_t ok = rt::callGuestRet(c, 0x91b040, {scratch + 0x20, ustr, 1u}, 12) & 0xff;
-					if (logged++ < 24) rt::log("   set var '%s' <- %s: %u", var.c_str(), what.c_str(), ok); };
+					if (logged++ < 4) rt::log("   set var '%s' <- %s: %u", var.c_str(), what.c_str(), ok); };
 				auto lodName = [&](uint32_t type, uint32_t i) {
 					guest::store<uint32_t>(scratch + 0x40, 0);
 					rt::callGuest(c, 0x61c040, {scratch + 0x40, type, i});
@@ -603,7 +603,7 @@ void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, 
 				// the label prefix (a2) and the string-table prefix live next to each other in the component data
 				std::string near;
 				for (uint32_t k = 0; k < 0x70; k++) { uint8_t ch = guest::load<uint8_t>(a2 - 0x10 + k); near += (ch >= 0x20 && ch < 0x7f) ? (char)ch : '.'; }
-				rt::log("   near a2: %s", near.c_str());
+				if (false) rt::log("   near a2: %s", near.c_str());
 			}
 			for (uint32_t e = first; e < last && e < first + 64; e += 4)
 			{
@@ -619,7 +619,7 @@ void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, 
 					else snprintf(b, sizeof b, " %u:%d", t, (int)guest::load<uint32_t>(v + 4));
 					line += b;
 				}
-				rt::log("   entry '%.32s' sel=%d n=%d:%s", (const char*)guest::host(ent + 0x20), (int)guest::load<uint32_t>(ent + 0xa0), (int)(ve - vb) / 0x404, line.c_str());
+				if (false) rt::log("   entry '%.32s' sel=%d n=%d:%s", (const char*)guest::host(ent + 0x20), (int)guest::load<uint32_t>(ent + 0xa0), (int)(ve - vb) / 0x404, line.c_str());
 			}
 		}
 	}
@@ -648,7 +648,10 @@ void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, 
 		}
 		return;
 	}
+	// the remaining hooks were temporary diagnostics; stay silent (their arguments are not always pointers)
+	if (fn != 0x61d660u) return;
 	rt::log("hook %08x(ecx=%08x, %08x, %08x, %08x) -> eax=%08x", fn, ecx, a0, a1, a2, c->r[EAX]);
+	return;
 	auto tryStr = [](uint32_t p) -> std::string {
 		if (p < 0x400000 || (p >= 0x30000000 && p < 0x71000000) || p >= 0x7f000000) return "";
 		const unsigned char* q = (const unsigned char*)guest::host(p);
