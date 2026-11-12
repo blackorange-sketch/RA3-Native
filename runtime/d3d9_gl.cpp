@@ -242,6 +242,25 @@ GLuint ensureTexture(Obj* o0)
 		glGenTextures(1, &o->glTex);
 		o->glVer = 0;
 		if (o->rtTex && (o->iface == ITexture || o->iface == ISurface)) { createRtStorage(o); o->glVer = o->ver; }
+		if (o->rtTex && o->iface == ICube)
+		{
+			// render-target cube map (environment reflections): allocate all six faces
+			TexFmt tf = texFmtOf(o->fmt);
+			bool plain = !(tf.convert || tf.compressed || tf.none || tf.depth);
+			glBindTexture(GL_TEXTURE_CUBE_MAP, o->glTex);
+			for (uint32_t l = 0; l < std::max(1u, o->levels); l++)
+				for (uint32_t f = 0; f < 6; f++)
+				{
+					uint32_t w = std::max(1u, o->w >> l);
+					if (plain) glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + f, l, tf.internal, w, w, 0, tf.format, tf.type, nullptr);
+					else glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + f, l, GL_RGBA8, w, w, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+				}
+			glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAX_LEVEL, o->levels > 1 ? o->levels - 1 : 0);
+			glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+			glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+			o->glVer = o->ver;
+			log("GL: cube render target %ux%u fmt %u levels %u", o->w, o->w, o->fmt, o->levels);
+		}
 	}
 	if (!o->rtTex && o->glVer != o->ver && o->data) uploadTexture(o);
 	return o->glTex;
@@ -318,7 +337,9 @@ void bindTargets()
 	glBindFramebuffer(GL_FRAMEBUFFER, gDrawFbo);
 	GLuint tex = ensureTexture(rt);
 	uint32_t lvl = rt->iface == ISurface ? rt->level : 0;
-	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, lvl);
+	Obj* owner = texOwner(rt);
+	GLenum faceTarget = owner->iface == ICube ? GL_TEXTURE_CUBE_MAP_POSITIVE_X + (rt->iface == ISurface ? rt->face : 0) : GL_TEXTURE_2D;
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, faceTarget, tex, lvl);
 	Obj* ds = dev.ds;
 	if (ds && ds->fmt != 0x4c4c554e)
 	{

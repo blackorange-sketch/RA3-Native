@@ -382,8 +382,10 @@ H("IDirect3DDevice9::CreateCubeTexture")
 	Obj* t = newObj(ICube);
 	t->w = t->h = ARG(1); t->levels = ARG(2); t->usage = ARG(3); t->fmt = ARG(4); t->pool = ARG(5);
 	if (t->levels == 0) { uint32_t m = t->w; t->levels = 1; while (m >>= 1) t->levels++; }
+	t->rtTex = (t->usage & 1) != 0;
 	allocLevels(t, 6);
 	writeOut(ARG(6), t);
+	log("d3d9: CreateCubeTexture %u levels %u usage %x fmt %u", t->w, t->levels, t->usage, t->fmt);
 	SET(0);
 } END;
 H("IDirect3DDevice9::CreateVertexBuffer")
