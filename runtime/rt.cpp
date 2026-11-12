@@ -458,7 +458,7 @@ void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, 
 		{
 			uint32_t first = guest::load<uint32_t>(a0 + 0x10), last = guest::load<uint32_t>(a0 + 0x14);
 			rt::log("hook gfx-list fn=%08x type=%u entries=%d", fn, a1, (int)(last - first) / 4);
-			static bool tested = false;
+			static bool tested = true;
 			if (!tested && fn == 0xafa2a0u)
 			{
 				// experiment: ask the game's own string table for the option texts
@@ -489,8 +489,47 @@ void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, 
 				}
 				*c = saved;
 			}
+			if (fn == 0xafa2a0u && a2 > 0x400000 && a2 < 0x30000000)
+			{
+				// The game registers the localized text of every list item as a UI variable named after the item
+				// label; that registration does not arrive here, so do it through the same game functions.
+				CPU saved = *c;
+				uint32_t scratch = c->r[ESP] - 0x800;
+				c->r[ESP] -= 0x2000;
+				std::string prefix1 = (const char*)guest::host(a2);
+				uint32_t p2 = (a2 + (uint32_t)prefix1.size() + 1 + 3) & ~3u;
+				std::string prefix2 = (const char*)guest::host(p2);
+				uint32_t store = guest::load<uint32_t>(0xcebd54), mgr = guest::load<uint32_t>(0xcdb754);
+				static int logged = 0;
+				if (store && mgr && prefix2.compare(0, 4, "APT:") == 0)
+				{
+					int count = (int)rt::callGuestRet(c, 0x61c0d0, {a1});
+					for (uint32_t i = 0; (int)i < count && i < 8; i++)
+					{
+						guest::store<uint32_t>(scratch + 0x40, 0);
+						rt::callGuest(c, 0x61c040, {scratch + 0x40, a1, i});
+						uint32_t np = guest::load<uint32_t>(scratch + 0x40);
+						if (np < 0x400000 || !guest::load<uint8_t>(np)) break;
+						std::string key2 = prefix2 + (const char*)guest::host(np);
+						strcpy((char*)guest::host(scratch + 0x100), key2.c_str());
+						guest::store<uint32_t>(scratch, 0);
+						c->r[ECX] = scratch;
+						rt::callGuest(c, 0x4cc910, {scratch + 0x100}, 4);
+						c->r[ECX] = mgr;
+						uint32_t res = rt::callGuestRet(c, guest::load<uint32_t>(guest::load<uint32_t>(mgr) + 0x3c), {scratch, 0u}, 8);
+						if (res < 0x400000) continue;
+						std::string var = prefix1 + std::to_string(i);
+						uint32_t h = 0x811c9dc5u; for (char ch : var) h = (h * 0x1000193u) ^ (uint8_t)ch;
+						guest::store<uint32_t>(scratch + 0x20, h); guest::store<uint32_t>(scratch + 0x24, 0);
+						c->r[ECX] = store;
+						uint32_t ok = rt::callGuestRet(c, 0x91b040, {scratch + 0x20, res, 1u}, 12) & 0xff;
+						if (logged++ < 12) rt::log("   set var '%s' <- text of '%s': %u", var.c_str(), key2.c_str(), ok);
+					}
+				}
+				*c = saved;
+			}
 			static int probes = 0;
-			if (fn == 0xafa2a0u && probes++ < 2)
+			if (false && fn == 0xafa2a0u && probes++ < 2)
 			{
 				// experiment: is the per-item text registered in the UI variable map, and how does a "$label" resolve?
 				CPU saved = *c;
