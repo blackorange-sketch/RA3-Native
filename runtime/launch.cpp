@@ -1,4 +1,6 @@
 // Shared start-up: maps the PE, creates the main guest thread and runs the entry point.
+#include <dlfcn.h>
+#include <ucontext.h>
 #include <chrono>
 #include <thread>
 #include "launch.h"
@@ -53,7 +55,7 @@ bool watchHit(uint32_t ga)
 	return true;
 }
 
-static void onFault(int sig, siginfo_t* si, void*)
+static void onFault(int sig, siginfo_t* si, void* uctx)
 {
 	{
 		uintptr_t a0 = (uintptr_t)si->si_addr, b0 = (uintptr_t)guest::base;
@@ -69,6 +71,38 @@ static void onFault(int sig, siginfo_t* si, void*)
 	emit(buf);
 	emit("\n");
 	{ char t[64]; snprintf(t, sizeof t, "FAULTING host tid %d\n", (int)gettid()); emit(t); }
+#if defined(__aarch64__)
+	if (uctx)
+	{
+		// where in host code: pc / lr and a short frame-pointer walk, as module+offset (and symbol when exported)
+		ucontext_t* uc = (ucontext_t*)uctx;
+		uintptr_t pcs[12]; int n = 0;
+		pcs[n++] = (uintptr_t)uc->uc_mcontext.pc;
+		pcs[n++] = (uintptr_t)uc->uc_mcontext.regs[30];
+		uintptr_t fp = (uintptr_t)uc->uc_mcontext.regs[29];
+		for (int i = 0; i < 10 && fp && !(fp & 7); i++)
+		{
+			uintptr_t next = ((uintptr_t*)fp)[0], ret = ((uintptr_t*)fp)[1];
+			if (!ret) break;
+			pcs[n++] = ret;
+			if (next <= fp || next - fp > (1u << 20)) break;
+			fp = next;
+		}
+		for (int i = 0; i < n; i++)
+		{
+			Dl_info di{};
+			char t[320];
+			if (pcs[i] && dladdr((void*)pcs[i], &di) && di.dli_fname)
+			{
+				const char* base = strrchr(di.dli_fname, '/');
+				snprintf(t, sizeof t, "   host #%d %s+0x%zx %s+0x%zx\n", i, base ? base + 1 : di.dli_fname, (size_t)(pcs[i] - (uintptr_t)di.dli_fbase),
+					di.dli_sname ? di.dli_sname : "?", di.dli_saddr ? (size_t)(pcs[i] - (uintptr_t)di.dli_saddr) : 0);
+			}
+			else snprintf(t, sizeof t, "   host #%d %p\n", i, (void*)pcs[i]);
+			emit(t);
+		}
+	}
+#endif
 	traceDumpCurrent(64);
 	traceDump();
 	_exit(72);
