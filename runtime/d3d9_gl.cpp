@@ -237,6 +237,14 @@ Obj* texOwner(Obj* o) { if (o->iface == ISurface && o->parent) if (Obj* p = obje
 GLuint ensureTexture(Obj* o0)
 {
 	Obj* o = texOwner(o0);
+	// A stand-alone surface (e.g. the implicit depth/stencil buffer) can only get here as a framebuffer
+	// attachment: it has no mip table to upload from, so give it render-target storage.
+	if (o->iface == ISurface && !o->rtTex && o->levelOff.empty())
+	{
+		static int n = 0;
+		if (n++ < 4) log("GL: stand-alone surface %ux%u fmt %u usage %x used as attachment", o->w, o->h, o->fmt, o->usage);
+		o->rtTex = true;
+	}
 	if (!o->glTex)
 	{
 		glGenTextures(1, &o->glTex);
