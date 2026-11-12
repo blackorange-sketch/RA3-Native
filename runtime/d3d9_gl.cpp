@@ -237,6 +237,7 @@ Obj* texOwner(Obj* o) { if (o->iface == ISurface && o->parent) if (Obj* p = obje
 GLuint ensureTexture(Obj* o0)
 {
 	Obj* o = texOwner(o0);
+	o->lastUse = o0->lastUse = gFrameNo;
 	// A stand-alone surface (e.g. the implicit depth/stencil buffer) can only get here as a framebuffer
 	// attachment: it has no mip table to upload from, so give it render-target storage.
 	if (o->iface == ISurface && !o->rtTex && o->levelOff.empty())
@@ -278,6 +279,8 @@ uint64_t gUpUs, gUpMaxSize, gUpDyn;
 uint64_t gUpBytes, gUpFull, gUpSub, gUpCnt;
 GLuint ensureBuffer(Obj* o, GLenum target)
 {
+	o->lastUse = gFrameNo;
+	if (!o->data) { if (!o->glBuf) glGenBuffers(1, &o->glBuf); return o->glBuf; }
 	if (!o->glBuf) { glGenBuffers(1, &o->glBuf); o->glVer = 0; }
 	if (o->glVer != o->ver)
 	{
@@ -825,6 +828,7 @@ void draw(const DrawCall& dc)
 	uint64_t t0 = nowUs();
 	Prog* p = getProgram(vs, ps);
 	if (!p) { static int nf = 0; if (nf++ < 10) log("d3d9: draw skipped: no program for vs %016llx ps %016llx", (unsigned long long)vs->hash, (unsigned long long)ps->hash); return; }
+	if (verbose())
 	{
 		// diagnostics: which shader pairs / blend states are drawn (dumped as a histogram)
 		struct Key { uint64_t v, p; uint32_t st; bool operator<(const Key& o) const { return std::tie(v, p, st) < std::tie(o.v, o.p, o.st); } };
@@ -1122,7 +1126,7 @@ void draw(const DrawCall& dc)
 	if (p->bgra >= 0) glUniform1i(p->bgra, (GLint)bgra);
 	uint64_t t5 = nowUs();
 	GLenum mode = primMode(dc.prim);
-	{ static uint64_t cnt[8]; static uint32_t shown; if (dc.prim < 8) cnt[dc.prim]++; if ((dc.prim == 1 || dc.prim == 2 || dc.prim == 3) && shown < 20) { shown++; log("draw: prim %u count %u indexed %d stride? rt %p", dc.prim, dc.primCount, (int)dc.indexed, (void*)dev.rt0); } if (gDrawsThisFrame == 0 && gFrameNo % 300 == 0) log("draw: prim totals pt %llu line %llu strip %llu tri %llu tstrip %llu tfan %llu", (unsigned long long)cnt[1], (unsigned long long)cnt[2], (unsigned long long)cnt[3], (unsigned long long)cnt[4], (unsigned long long)cnt[5], (unsigned long long)cnt[6]); }
+	if (verbose()) { static uint64_t cnt[8]; static uint32_t shown; if (dc.prim < 8) cnt[dc.prim]++; if ((dc.prim == 1 || dc.prim == 2 || dc.prim == 3) && shown < 20) { shown++; log("draw: prim %u count %u indexed %d stride? rt %p", dc.prim, dc.primCount, (int)dc.indexed, (void*)dev.rt0); } if (gDrawsThisFrame == 0 && gFrameNo % 300 == 0) log("draw: prim totals pt %llu line %llu strip %llu tri %llu tstrip %llu tfan %llu", (unsigned long long)cnt[1], (unsigned long long)cnt[2], (unsigned long long)cnt[3], (unsigned long long)cnt[4], (unsigned long long)cnt[5], (unsigned long long)cnt[6]); }
 	uint32_t nv = (uint32_t)primVertices(dc.prim, dc.primCount);
 	if (!dc.indexed)
 	{
@@ -1167,6 +1171,7 @@ void draw(const DrawCall& dc)
 	}
 }
 
+static void reapReleased(uint32_t frame);
 void present()
 {
 	{ static int n = 0; if (n++ < 5) log("GL: present on tid %d ctx %p", (int)gettid(), (void*)eglGetCurrentContext()); }
@@ -1228,7 +1233,8 @@ void present()
 	gfx::swap();
 	glErr("present");
 	gFrameNo++;
-	if (gFrameNo % 300 == 0)
+	if (gFrameNo % 600 == 0) reapReleased(gFrameNo);
+	if (gFrameNo % 300 == 0 && verbose())
 	{
 		static uint64_t last = 0; uint64_t n = nowUs();
 		log("perf: ring %llu calls %llu KB %llu us, %llu orphans, %llu too big", (unsigned long long)gRingCalls, (unsigned long long)(gRingBytes >> 10), (unsigned long long)gRingUs, (unsigned long long)gRingOrph, (unsigned long long)gRingNs);
@@ -1289,9 +1295,34 @@ void present()
 	}
 	if (gFrameNo % 300 == 0) rt::profDump();
 	if (gFrameNo == 1800 || gFrameNo == 3600) { log("DIAG: call rings of all threads at frame %u", gFrameNo); rt::traceDump(); }
-	if (gFrameNo == 1 || gFrameNo % 300 == 0) log("d3d9: frame %u presented, %u draws in the last frame, screen %dx%d", gFrameNo, gDrawsThisFrame.load(), sw, sh);
+	if (gFrameNo == 1 || gFrameNo % 3600 == 0) log("d3d9: frame %u presented, %u draws in the last frame, screen %dx%d", gFrameNo, gDrawsThisFrame.load(), sw, sh);
 	gDrawsThisFrame = 0;
 	gfx::release();   // hand the context over: a different game thread may render next
+}
+
+// Reclaim objects the game released: GL names and the guest-side copy of the data.
+static void reapReleased(uint32_t frame)
+{
+	static uint64_t freedBytes = 0, freedObjs = 0;
+	static uint32_t lastLog = 0;
+	for (Obj* o : takeReleased())
+	{
+		if (o->ref > 0) { o->released = false; continue; }                       // referenced again
+		bool bound = o == dev.ib || o == dev.rt0 || o == dev.ds || o == gBackBuffer;
+		for (int i = 0; i < 16 && !bound; i++) bound = dev.tex[i] == o || dev.streams[i].vb == o;
+		if (bound || frame - o->lastUse < 1800 || o->lastUse > frame) { requeueReleased(o); continue; }
+		if (o->glTex) { glDeleteTextures(1, &o->glTex); o->glTex = 0; }
+		if (o->glBuf) { glDeleteBuffers(1, &o->glBuf); o->glBuf = 0; }
+		o->glVer = 0; o->glSize = 0;
+		if (o->ownsData && o->data) { freedBytes += o->size; rt::gfree(o->data); o->data = 0; }
+		freedObjs++;
+		o->released = false;   // a later AddRef/Release cycle queues it again
+	}
+	if (frame - lastLog >= 3600)
+	{
+		lastLog = frame;
+		log("mem: guest heap %llu MiB live; reclaimed %llu d3d objects, %llu MiB so far", (unsigned long long)(rt::heapLiveBytes() >> 20), (unsigned long long)freedObjs, (unsigned long long)(freedBytes >> 20));
+	}
 }
 
 void stretchRect(Obj* src, const int32_t* sr, Obj* dst, const int32_t* dr, uint32_t filter)

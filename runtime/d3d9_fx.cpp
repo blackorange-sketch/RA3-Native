@@ -500,7 +500,7 @@ static void setMatrices(CPU* c, Obj* o, bool transpose, bool array, bool pointer
 					for (int k = 0; k < 24; k++) { char b[16]; snprintf(b, sizeof b, " %08x", guest::load<uint32_t>(c->r[ESP] + 4 * k)); st += b; }
 					log("fx: ViewProjection #%d caller ret=%08x mptr=%08x stack:%s", total, guest::load<uint32_t>(c->r[ESP]), ARG(2), st.c_str());
 				}
-				if ((nz && shown++ < 8) || total % 2000 == 0)
+				if (verbose() && ((nz && shown++ < 8) || total % 2000 == 0))
 					log("fx: ViewProjection set #%d (nonzero %d) on fx %p transpose %d [%g %g %g %g] [%g %g %g %g] [%g %g %g %g] [%g %g %g %g]", total, nonzero, (void*)F(o), (int)transpose, m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15]);
 			}
 		}

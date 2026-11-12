@@ -44,6 +44,7 @@ void commitTo(uint32_t end)
 }
 
 void heapInit() {}
+uint64_t heapLiveBytes() { std::lock_guard<std::mutex> l(mu); return liveBytes; }
 
 uint32_t gmalloc(uint32_t size, uint32_t align)
 {

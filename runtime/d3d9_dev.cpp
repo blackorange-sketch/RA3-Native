@@ -174,7 +174,7 @@ H("IDirect3DDevice9::Present")
 {
 	static std::atomic<uint32_t> frames{0};
 	uint32_t n = ++frames;
-	if (n == 1 || n % 300 == 0) log("d3d9: Present #%u", n);
+	if (n == 1) log("d3d9: Present #%u", n);
 	glr::present();
 	SET(0);
 } END;

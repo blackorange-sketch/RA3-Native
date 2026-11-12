@@ -164,7 +164,7 @@ int launch(const std::string& gameFile)
 	}
 	installAltStack();
 	// Progress watchdog: every 20 s dump what every thread has been doing (hang vs. busy diagnosis).
-	std::thread([] {
+	if (verbose()) std::thread([] {
 		for (int i = 1; i <= 15; i++)
 		{
 			std::this_thread::sleep_for(std::chrono::seconds(20));

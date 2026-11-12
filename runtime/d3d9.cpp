@@ -158,6 +158,20 @@ Obj* objectAt(uint32_t addr)
 	return it == objs.end() ? nullptr : it->second;
 }
 
+// Objects whose refcount reached zero. Their storage is reclaimed by the renderer a while later, and only
+// if they were not drawn with in the meantime (the game sometimes relies on references held elsewhere).
+static std::vector<Obj*> releasedQ;
+void noteReleased(Obj* o)
+{
+	if (o->released) return;
+	if (o->iface != ITexture && o->iface != ICube && o->iface != IVolume && o->iface != IVB && o->iface != IIB && o->iface != ISurface) return;
+	o->released = true;
+	std::lock_guard<std::mutex> l(objMu);
+	releasedQ.push_back(o);
+}
+std::vector<Obj*> takeReleased() { std::lock_guard<std::mutex> l(objMu); std::vector<Obj*> v; v.swap(releasedQ); return v; }
+void requeueReleased(Obj* o) { std::lock_guard<std::mutex> l(objMu); releasedQ.push_back(o); }
+
 Obj* newObj(Iface i)
 {
 	initDefs();
@@ -249,13 +263,22 @@ static void fillDesc(uint32_t pDesc, Obj* s)   // D3DSURFACE_DESC
 	guest::store<uint32_t>(pDesc + 28, s->h);
 }
 
+// Storage of a released object may have been reclaimed; bring it back if the game uses the object again.
+static void reviveStorage(Obj* o)
+{
+	if (o->data || !o->size || !o->ownsData) return;
+	o->data = gmalloc(o->size);
+	memset(guest::host(o->data), 0, o->size);
+	o->ver++;
+}
+
 // ---- IUnknown-ish
 H("Common::AddRef") { o->ref++; SET(o->ref); } END;
 H("Common::Release")
 {
 	if (!o) { SET(0); return; }
 	int r = --o->ref;
-	if (r <= 0 && o->ownsData && o->data && o->iface != IDevice) { /* storage kept: the game may still hold pointers from Lock() */ }
+	if (r <= 0) noteReleased(o);
 	SET(r < 0 ? 0 : r);
 } END;
 H("Common::QueryInterface") { if (ARG(2)) guest::store<uint32_t>(ARG(2), 0); SET(0x80004002); } END;
@@ -457,7 +480,7 @@ static void markLocked(Obj* o, uint32_t off, uint32_t size)
 }
 
 H("IDirect3DTexture9::LockRect")
-{
+{ reviveStorage(o);
 	uint32_t lvl = ARG(1), pLocked = ARG(2), pRect = ARG(3);
 	uint32_t w = std::max(1u, o->w >> lvl);
 	uint32_t pitch = levelPitch(o->fmt, w), base = o->data + o->levelOff[lvl];
@@ -479,7 +502,7 @@ H("IDirect3DCubeTexture9::GetLevelCount") { SET(o->levels); } END;
 H("IDirect3DCubeTexture9::GetLevelDesc") { Obj tmp = *o; tmp.w = tmp.h = std::max(1u, o->w >> ARG(1)); fillDesc(ARG(2), &tmp); SET(0); } END;
 H("IDirect3DCubeTexture9::GetCubeMapSurface") { writeOut(ARG(3), surfaceOfLevel(o, ARG(2), ARG(1))); SET(0); } END;
 H("IDirect3DCubeTexture9::LockRect")
-{
+{ reviveStorage(o);
 	uint32_t face = ARG(1), lvl = ARG(2), pLocked = ARG(3);
 	guest::store<uint32_t>(pLocked, levelPitch(o->fmt, std::max(1u, o->w >> lvl)));
 	guest::store<uint32_t>(pLocked + 4, o->data + o->levelOff[face * o->levels + lvl]);
@@ -494,7 +517,7 @@ H("IDirect3DVolumeTexture9::GetLevelDesc")
 } END;
 H("IDirect3DVolumeTexture9::GetLevelCount") { SET(o->levels); } END;
 H("IDirect3DVolumeTexture9::LockBox")
-{
+{ reviveStorage(o);
 	uint32_t lvl = ARG(1), pLocked = ARG(2);
 	uint32_t w = std::max(1u, o->w >> lvl), h = std::max(1u, o->h >> lvl);
 	guest::store<uint32_t>(pLocked, levelPitch(o->fmt, w));
@@ -506,7 +529,7 @@ H("IDirect3DVolumeTexture9::LockBox")
 // ---- resources: surfaces and buffers
 H("IDirect3DSurface9::GetDesc") { fillDesc(ARG(1), o); SET(0); } END;
 H("IDirect3DSurface9::LockRect")
-{
+{ reviveStorage(o);
 	uint32_t base = o->data;
 	if (ARG(2))
 	{
@@ -519,9 +542,9 @@ H("IDirect3DSurface9::LockRect")
 } END;
 H("IDirect3DSurface9::UnlockRect") { o->ver++; if (o->parent) if (Obj* t = objectAt(o->parent)) t->ver++; SET(0); } END;
 H("IDirect3DSurface9::GetContainer") { if (o->parent) { guest::store<uint32_t>(ARG(2), o->parent); if (Obj* p = objectAt(o->parent)) p->ref++; SET(0); } else SET(0x80004002); } END;
-H("IDirect3DVertexBuffer9::Lock") { guest::store<uint32_t>(ARG(3), o->data + ARG(1)); markLocked(o, ARG(1), ARG(2)); SET(0); } END;
+H("IDirect3DVertexBuffer9::Lock") { reviveStorage(o); guest::store<uint32_t>(ARG(3), o->data + ARG(1)); markLocked(o, ARG(1), ARG(2)); SET(0); } END;
 H("IDirect3DVertexBuffer9::GetDesc") { uint32_t p = ARG(1); guest::store<uint32_t>(p, 0); guest::store<uint32_t>(p + 4, 3); guest::store<uint32_t>(p + 8, o->usage); guest::store<uint32_t>(p + 12, o->pool); guest::store<uint32_t>(p + 16, o->size); guest::store<uint32_t>(p + 20, o->fvf); SET(0); } END;
-H("IDirect3DIndexBuffer9::Lock") { guest::store<uint32_t>(ARG(3), o->data + ARG(1)); markLocked(o, ARG(1), ARG(2)); SET(0); } END;
+H("IDirect3DIndexBuffer9::Lock") { reviveStorage(o); guest::store<uint32_t>(ARG(3), o->data + ARG(1)); markLocked(o, ARG(1), ARG(2)); SET(0); } END;
 H("IDirect3DIndexBuffer9::GetDesc") { uint32_t p = ARG(1); guest::store<uint32_t>(p, o->fmt); guest::store<uint32_t>(p + 4, 4); guest::store<uint32_t>(p + 8, o->usage); guest::store<uint32_t>(p + 12, o->pool); guest::store<uint32_t>(p + 16, o->size); SET(0); } END;
 H("IDirect3DVertexDeclaration9::GetDeclaration")
 {

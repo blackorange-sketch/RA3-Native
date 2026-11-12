@@ -44,11 +44,16 @@ struct Obj
 	uint32_t ver = 1, glVer = 0;
 	uint32_t dirtyLo = 0xffffffffu, dirtyHi = 0, glSize = 0; // buffer: locked range since the last upload      // content version / uploaded version
 	bool rtTex = false;               // contents live on the GPU (render target)
+	uint32_t lastUse = 0;             // frame of the last draw / attachment use
+	bool released = false;            // refcount reached zero: queued for reclamation
 };
 
 using Handler = void (*)(CPU*, Obj*);
 struct Reg { Reg(const char* name, Handler h); };
 Obj* objectAt(uint32_t addr);
+void noteReleased(Obj* o);                 // refcount hit zero
+std::vector<Obj*> takeReleased();          // hand the queue to the renderer (which frees GL names and storage)
+void requeueReleased(Obj* o);
 Obj* newObj(Iface i);
 void allocLevels(Obj* o, uint32_t faces);
 

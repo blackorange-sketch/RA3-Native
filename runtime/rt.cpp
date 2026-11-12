@@ -62,7 +62,7 @@ void traceRegister(uint32_t tid)
 		int i = ringCount.load();
 		if (i < 32) { rings[i] = {ra3_ring, &ra3_ring_pos, tid, ra3_ring_ra, (int)syscall(SYS_gettid)}; ringCount.store(i + 1); }
 	}
-	static std::once_flag once; std::call_once(once, [] { std::thread(profLoop).detach(); });
+	static std::once_flag once; std::call_once(once, [] { if (verbose()) std::thread(profLoop).detach(); });
 }
 // poor man's profiler: every 2 ms record the most recently entered function of each thread
 static std::mutex profMu;
@@ -437,6 +437,7 @@ void unsupported(CPU* c, uint32_t va, const char* what)
 uint32_t g_eflags_hi = 0;
 uint32_t ra3_stub_tolower = 0xffffffffu;
 
+namespace rt { bool verbose() { static bool v = access("/sdcard/ra3_verbose", F_OK) == 0; return v; } }
 void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t ecx)
 {
 	if (fn == 0x9c6870u)
