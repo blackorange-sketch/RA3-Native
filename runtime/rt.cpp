@@ -501,29 +501,59 @@ void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, 
 				std::string prefix2 = (const char*)guest::host(p2);
 				uint32_t store = guest::load<uint32_t>(0xcebd54), mgr = guest::load<uint32_t>(0xcdb754);
 				static int logged = 0;
+				auto cstr = [&](uint32_t p) { return (p > 0x400000 && p < 0x30000000) ? std::string((const char*)guest::host(p)) : std::string(); };
+				// text of a string-table label -> guest UnicodeString*
+				auto lookup = [&](const std::string& key) -> uint32_t {
+					strcpy((char*)guest::host(scratch + 0x100), key.c_str());
+					guest::store<uint32_t>(scratch, 0);
+					c->r[ECX] = scratch;
+					rt::callGuest(c, 0x4cc910, {scratch + 0x100}, 4);
+					c->r[ECX] = mgr;
+					uint32_t res = rt::callGuestRet(c, guest::load<uint32_t>(guest::load<uint32_t>(mgr) + 0x3c), {scratch, 0u}, 8);
+					return res < 0x400000 ? 0 : res; };
+				auto setVar = [&](const std::string& var, uint32_t ustr, const std::string& what) {
+					if (!ustr) return;
+					uint32_t h = 0x811c9dc5u; for (char ch : var) h = (h * 0x1000193u) ^ (uint8_t)ch;
+					guest::store<uint32_t>(scratch + 0x20, h); guest::store<uint32_t>(scratch + 0x24, 0);
+					c->r[ECX] = store;
+					uint32_t ok = rt::callGuestRet(c, 0x91b040, {scratch + 0x20, ustr, 1u}, 12) & 0xff;
+					if (logged++ < 24) rt::log("   set var '%s' <- %s: %u", var.c_str(), what.c_str(), ok); };
+				auto lodName = [&](uint32_t type, uint32_t i) {
+					guest::store<uint32_t>(scratch + 0x40, 0);
+					rt::callGuest(c, 0x61c040, {scratch + 0x40, type, i});
+					return cstr(guest::load<uint32_t>(scratch + 0x40)); };
 				if (store && mgr && prefix2.compare(0, 4, "APT:") == 0)
 				{
 					int count = (int)rt::callGuestRet(c, 0x61c0d0, {a1});
 					for (uint32_t i = 0; (int)i < count && i < 8; i++)
 					{
-						guest::store<uint32_t>(scratch + 0x40, 0);
-						rt::callGuest(c, 0x61c040, {scratch + 0x40, a1, i});
-						uint32_t np = guest::load<uint32_t>(scratch + 0x40);
-						if (np < 0x400000 || !guest::load<uint8_t>(np)) break;
-						std::string key2 = prefix2 + (const char*)guest::host(np);
-						strcpy((char*)guest::host(scratch + 0x100), key2.c_str());
-						guest::store<uint32_t>(scratch, 0);
-						c->r[ECX] = scratch;
-						rt::callGuest(c, 0x4cc910, {scratch + 0x100}, 4);
-						c->r[ECX] = mgr;
-						uint32_t res = rt::callGuestRet(c, guest::load<uint32_t>(guest::load<uint32_t>(mgr) + 0x3c), {scratch, 0u}, 8);
-						if (res < 0x400000) continue;
-						std::string var = prefix1 + std::to_string(i);
-						uint32_t h = 0x811c9dc5u; for (char ch : var) h = (h * 0x1000193u) ^ (uint8_t)ch;
-						guest::store<uint32_t>(scratch + 0x20, h); guest::store<uint32_t>(scratch + 0x24, 0);
-						c->r[ECX] = store;
-						uint32_t ok = rt::callGuestRet(c, 0x91b040, {scratch + 0x20, res, 1u}, 12) & 0xff;
-						if (logged++ < 12) rt::log("   set var '%s' <- text of '%s': %u", var.c_str(), key2.c_str(), ok);
+						std::string nm = lodName(a1, i);
+						if (nm.empty()) break;
+						setVar(prefix1 + std::to_string(i), lookup(prefix2 + nm), prefix2 + nm);
+					}
+					uint32_t obj = (ecx > 0x400000 && ecx < 0x30000000) ? guest::load<uint32_t>(ecx + 0x2c) : 0;
+					if (a1 == 1 && obj > 0x400000 && obj < 0x30000000 && guest::load<uint32_t>(obj + 0x48) == a2)
+					{
+						// overall preset list
+						static const char* presets[] = {"VeryLow", "Low", "Medium", "High", "UltraHigh", "Custom"};
+						std::string pp1 = cstr(guest::load<uint32_t>(obj + 0x18)), pp2 = cstr(guest::load<uint32_t>(obj + 0x20));
+						if (pp1.compare(0, 4, "APT:") == 0 && pp2.compare(0, 4, "APT:") == 0)
+							for (uint32_t i = 0; i < 6; i++) setVar(pp1 + std::to_string(i), lookup(pp2 + presets[i]), pp2 + presets[i]);
+						// anti-aliasing list: item 0 is a string-table label, the rest are literal names ("2x", ...)
+						std::string ap1 = cstr(guest::load<uint32_t>(obj + 0x30)), ap0 = cstr(guest::load<uint32_t>(obj + 0x38));
+						int ac = (int)rt::callGuestRet(c, 0x61c0d0, {0u});
+						if (ap1.compare(0, 4, "APT:") == 0)
+							for (uint32_t i = 0; (int)i < ac && i < 8; i++)
+							{
+								if (i == 0) { setVar(ap1 + "0", lookup(ap0), ap0); continue; }
+								std::string nm = lodName(0, i);
+								if (nm.empty()) break;
+								strcpy((char*)guest::host(scratch + 0x180), nm.c_str());
+								guest::store<uint32_t>(scratch + 0x60, 0);
+								c->r[ECX] = scratch + 0x60;
+								rt::callGuest(c, 0x4cbbc0, {scratch + 0x180}, 4);
+								setVar(ap1 + std::to_string(i), scratch + 0x60, "'" + nm + "'");
+							}
 					}
 				}
 				*c = saved;
