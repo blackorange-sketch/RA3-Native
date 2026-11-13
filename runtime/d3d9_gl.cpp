@@ -1,5 +1,6 @@
 #include <set>
 #include <string>
+#include <cmath>
 #include <map>
 #include <tuple>
 #include <cstdio>
@@ -855,7 +856,7 @@ void draw(const DrawCall& dc)
 		static int logged = 0;
 		uint32_t bl = (dev.rs[27] ? 1u : 0u) | (dev.rs[19] & 15) << 4 | (dev.rs[20] & 15) << 8;
 		gDiagPair = false;
-		static bool diagOn = access("/sdcard/ra3_diag", F_OK) == 0;
+		static bool diagOn = verbose() && access("/sdcard/ra3_diag", F_OK) == 0;
 		if (diagOn && gFrameNo >= 3000 && logged < 120)
 		{
 			int& n = seen[{vs->hash, ps->hash, bl}];
@@ -871,6 +872,98 @@ void draw(const DrawCall& dc)
 			std::string vsrc = shdr::compose(vs->info), psrc = shdr::compose(ps->info, &vs->info.outputs);
 			log("DD VS source:\n%s", vsrc.c_str());
 			log("DD PS source:\n%s", psrc.c_str());
+		}
+	}
+	{
+		// Effects diagnostics (create /sdcard/ra3_fxdiag): describe the first draws of every alpha-blended
+		// shader pair during gameplay - state, textures, vertex layout, raw vertices and constants.
+		static bool fxOn = access("/sdcard/ra3_fxdiag", F_OK) == 0;
+		static std::map<std::tuple<uint64_t, uint64_t, uint32_t>, int> fxSeen;
+		static int fxLogged = 0, fxSrc = 0;
+		if (fxOn && gFrameNo >= 1500 && dev.rs[27] && fxLogged < 160)
+		{
+			uint32_t key = (dev.rs[19] & 15) | (dev.rs[20] & 15) << 4 | (dc.upVerts ? 256u : 0u);
+			int& n = fxSeen[{vs->hash, ps->hash, key}];
+			if (n < 2)
+			{
+				bool first = n == 0;
+				n++; fxLogged++;
+				uint32_t rw = 0, rh = 0; targetSize(dev.rt0, rw, rh);
+				log("FX #%d frame %u vs %016llx ps %016llx prim %u cnt %u idx %d start %u base %d min %u nv %u up %d | z %u zw %u zfunc %u src %u dst %u cull %u atest %u aref %u cw %x | rt %s %ux%u vp %u,%u,%u,%u",
+					fxLogged, gFrameNo, (unsigned long long)vs->hash, (unsigned long long)ps->hash, dc.prim, dc.primCount, (int)dc.indexed, dc.startIndex, (int)dc.baseVertex, dc.minIndex, dc.numVertices, dc.upVerts ? 1 : 0,
+					dev.rs[7], dev.rs[14], dev.rs[23], dev.rs[19], dev.rs[20], dev.rs[22], dev.rs[15], dev.rs[24], dev.rs[168], isBack(dev.rt0) ? "back" : "tex", rw, rh, dev.vp[0], dev.vp[1], dev.vp[2], dev.vp[3]);
+				std::string tx;
+				for (int i = 0; i < 8; i++)
+					if (Obj* t = dev.tex[i])
+					{
+						unsigned nz = 0;
+						if (t->data && t->size) { const uint8_t* b = (const uint8_t*)guest::host(t->data); for (uint32_t k = 0; k < std::min<uint32_t>(t->size, 8192); k += 5) nz += b[k] != 0; }
+						char b2[112]; snprintf(b2, sizeof b2, " t%d=%ux%u/f%u/l%u/nz%u%s%s", i, t->w, t->h, t->fmt, t->levels, nz, t->rtTex ? "/RT" : "", t->data ? "" : "/nodata");
+						tx += b2;
+					}
+				log("FX   tex:%s", tx.c_str());
+				if (dev.vdecl)
+				{
+					std::string de;
+					for (size_t i = 0; i < dev.vdecl->blob.size() / 8; i++)
+					{
+						DeclElem e; memcpy(&e, dev.vdecl->blob.data() + 8 * i, 8);
+						if (e.stream == 0xff) break;
+						char b3[48]; snprintf(b3, sizeof b3, " s%u+%u:t%u:u%u.%u", e.stream, e.offset, e.type, e.usage, e.index); de += b3;
+					}
+					log("FX   decl:%s", de.c_str());
+				}
+				for (int si = 0; si < 4; si++)
+				{
+					Stream& st = dev.streams[si];
+					if (!st.vb) continue;
+					std::string o;
+					char hb[96]; snprintf(hb, sizeof hb, " s%d size %u stride %u off %u freq %x usage %x%s:", si, st.vb->size, st.stride, st.offset, st.freq, st.vb->usage, st.vb->data ? "" : " NODATA");
+					o += hb;
+					if (st.vb->data && st.stride)
+						for (uint32_t k = 0; k < 4; k++)
+						{
+							int64_t vi = dc.baseVertex;
+							if (dc.indexed && dev.ib && dev.ib->data)
+							{
+								uint32_t isz = dev.ib->fmt == 102 ? 4 : 2;
+								if ((uint64_t)(dc.startIndex + k + 1) * isz > dev.ib->size) break;
+								const uint8_t* ip = (const uint8_t*)guest::host(dev.ib->data);
+								vi += isz == 4 ? ((const uint32_t*)ip)[dc.startIndex + k] : ((const uint16_t*)ip)[dc.startIndex + k];
+							}
+							else vi += dc.startIndex + k;
+							uint64_t off = st.offset + (uint64_t)vi * st.stride;
+							if (vi < 0 || off + st.stride > st.vb->size) { o += " (out of range)"; break; }
+							const uint8_t* vp = (const uint8_t*)guest::host(st.vb->data) + off;
+							char vb2[32]; snprintf(vb2, sizeof vb2, " v%lld[", (long long)vi); o += vb2;
+							for (uint32_t b = 0; b + 4 <= st.stride && b < 64; b += 4) { float f; memcpy(&f, vp + b, 4); uint32_t u; memcpy(&u, vp + b, 4); char fb[40]; bool fl = u == 0 || (fabsf(f) > 1e-4f && fabsf(f) < 1e7f); if (fl) snprintf(fb, sizeof fb, "%g ", (double)f); else snprintf(fb, sizeof fb, "x%08x ", u); o += fb; }
+							o += "]";
+						}
+					log("FX   stream%s", o.c_str());
+				}
+				if (first)
+				{
+					for (int pass = 0; pass < 2; pass++)
+					{
+						auto& ct = pass == 0 ? vs->info.ctab : ps->info.ctab;
+						const float* base = pass == 0 ? dev.vsF : dev.psF;
+						uint32_t maxReg = pass == 0 ? 256 : 224;
+						for (auto& cc : ct)
+						{
+							if (cc.regSet != 2 || cc.regIndex >= maxReg) continue;
+							std::string vv;
+							for (uint32_t r = 0; r < std::min<uint32_t>(cc.regCount, 4) && cc.regIndex + r < maxReg; r++)
+								{ char b5[96]; const float* f = base + 4 * (cc.regIndex + r); snprintf(b5, sizeof b5, " [%g %g %g %g]", (double)f[0], (double)f[1], (double)f[2], (double)f[3]); vv += b5; }
+							log("FX   %s c %s r%u x%u:%s", pass == 0 ? "VS" : "PS", cc.name.c_str(), cc.regIndex, cc.regCount, vv.c_str());
+						}
+					}
+					if (fxSrc++ < 14)
+					{
+						log("FX VS source:\n%s", shdr::compose(vs->info).c_str());
+						log("FX PS source:\n%s", shdr::compose(ps->info, &vs->info.outputs).c_str());
+					}
+				}
+			}
 		}
 	}
 	if (gDiagPair && dc.primCount >= 500)
