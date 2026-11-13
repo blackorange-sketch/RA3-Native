@@ -103,6 +103,24 @@ static void onFault(int sig, siginfo_t* si, void* uctx)
 		}
 	}
 #endif
+	if (CPU* gc = thisThread().cpu)
+	{
+		// guest registers (as of the last call boundary) and the top of the guest stack, with printable text
+		char t[400];
+		snprintf(t, sizeof t, "   guest eax=%08x ecx=%08x edx=%08x ebx=%08x esp=%08x ebp=%08x esi=%08x edi=%08x\n", gc->r[EAX], gc->r[ECX], gc->r[EDX], gc->r[EBX], gc->r[ESP], gc->r[EBP], gc->r[ESI], gc->r[EDI]);
+		emit(t);
+		uint32_t sp = gc->r[ESP] & ~3u;
+		if (sp > 0x60000000u && sp < 0x7fff0000u)
+			for (uint32_t row = 0; row < 0x280; row += 32)
+			{
+				int n = snprintf(t, sizeof t, "   stk %08x:", sp + row);
+				for (uint32_t k = 0; k < 32; k += 4) n += snprintf(t + n, sizeof t - n, " %08x", guest::load<uint32_t>(sp + row + k));
+				n += snprintf(t + n, sizeof t - n, "  ");
+				for (uint32_t k = 0; k < 32; k++) { uint8_t ch = guest::load<uint8_t>(sp + row + k); t[n++] = (ch >= 0x20 && ch < 0x7f) ? (char)ch : '.'; }
+				t[n++] = '\n'; t[n] = 0;
+				emit(t);
+			}
+	}
 	traceDumpCurrent(64);
 	traceDump();
 	_exit(72);

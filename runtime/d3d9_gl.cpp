@@ -791,7 +791,7 @@ static inline uint64_t nowUs() { return std::chrono::duration_cast<std::chrono::
 static uint64_t tProg, tState, tUni, tSamp, tAttr, tDraw, nDraw;
 
 static bool gDiagPair = false;   // set per draw: first draws of each new shader pair during gameplay
-static bool isDiagFrame() { return gFrameNo == 700 || gFrameNo == 1800 || gFrameNo == 3600 || gDiagPair; }
+static bool isDiagFrame() { return verbose() && (gFrameNo == 700 || gFrameNo == 1800 || gFrameNo == 3600 || gDiagPair); }
 static void dumpBmp(const char* path, uint32_t w, uint32_t h)
 {
 	if (!w || !h || w > 4096 || h > 4096) return;
