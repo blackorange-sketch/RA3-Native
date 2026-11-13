@@ -558,7 +558,7 @@ IMP_STD(K, WideCharToMultiByte, 8)
 	uint32_t srcLen = ARG(3);
 	std::u16string w = srcLen == 0xffffffffu ? gwstr(ARG(2)) + std::u16string(1, u'\0') : std::u16string((char16_t*)guest::host(ARG(2)), srcLen);
 	std::string s;
-	if (ARG(0) == 65001) { s = utf16to8(w); if (srcLen == 0xffffffffu) s += '\0'; }
+	if (ARG(0) == 65001) s = utf16to8(w);   // w already carries the terminator when the length was -1
 	else for (char16_t ch : w) s += ch < 0x100 ? (char)ch : (ch >= 0x410 && ch <= 0x44f && ARG(0) == 1251 ? (char)(0xc0 + ch - 0x410) : '?');
 	if (ARG(5) == 0) { SET(s.size()); return; }
 	if (s.size() > ARG(5)) { setLastError(122); SET(0); return; }

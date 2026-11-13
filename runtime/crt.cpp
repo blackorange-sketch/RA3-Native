@@ -88,7 +88,7 @@ IMP_C(DLL, free) { gfree(ARG(0)); }
 IMP_C(DLL, _aligned_malloc) { SET(gmalloc(ARG(0), ARG(1))); }
 IMP_C(DLL, _aligned_free) { gfree(ARG(0)); }
 IMP_C(DLL, _aligned_realloc) { uint32_t n = gmalloc(ARG(1), ARG(2)); if (ARG(0)) { memcpy(guest::host(n), guest::host(ARG(0)), std::min(gsize(ARG(0)), ARG(1))); gfree(ARG(0)); } SET(n); }
-IMP_C(DLL, memcpy) { memcpy(guest::host(ARG(0)), guest::host(ARG(1)), ARG(2)); SET(ARG(0)); }
+IMP_C(DLL, memcpy) { memmove(guest::host(ARG(0)), guest::host(ARG(1)), ARG(2)); SET(ARG(0)); }
 IMP_C(DLL, memmove) { memmove(guest::host(ARG(0)), guest::host(ARG(1)), ARG(2)); SET(ARG(0)); }
 IMP_C(DLL, memset) { memset(guest::host(ARG(0)), (int)ARG(1), ARG(2)); SET(ARG(0)); }
 IMP_C(DLL, memchr) { void* p = memchr(guest::host(ARG(0)), (int)ARG(1), ARG(2)); SET(p ? (uint8_t*)p - guest::base : 0); }
