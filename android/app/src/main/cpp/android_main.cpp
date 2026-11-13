@@ -7,6 +7,7 @@
 #include "gfx.h"
 #include <android/hardware_buffer.h>
 #include <android_native_app_glue.h>
+#include <android/window.h>
 #include <dirent.h>
 #include <jni.h>
 #include <sys/stat.h>
