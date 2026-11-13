@@ -140,11 +140,6 @@ void onTouch(int action, int idx, int count, const float* xs, const float* ys)
 		int bx, by, bw2, bh2;
 		kbButtonRect(bx, by, bw2, bh2);
 		if (action == DOWN && xs[0] >= bx && xs[0] < bx + bw2 && ys[0] >= by && ys[0] < by + bh2) { kbToggle = true; swallow = true; return; }
-		for (int i = 0; i < 2; i++)
-		{
-			int mx, my, mw, mh; modButtonRect(i, mx, my, mw, mh);
-			if (action == DOWN && xs[0] >= mx && xs[0] < mx + mw && ys[0] >= my && ys[0] < my + mh) { if (i == 0) ctrlSticky = !ctrlSticky; else altSticky = !altSticky; swallow = true; return; }
-		}
 		if (swallow) { if (action == UP || action == CANCEL) swallow = false; return; }
 	}
 	if (action == DOWN)

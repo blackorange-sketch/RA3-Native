@@ -264,6 +264,7 @@ int32_t onInput(android_app*, AInputEvent* ev)
 		if (AInputEvent_getType(ev) == AINPUT_EVENT_TYPE_KEY)
 		{
 			int k = AKeyEvent_getKeyCode(ev), a = AKeyEvent_getAction(ev);
+			if (k == AKEYCODE_VOLUME_UP || k == AKEYCODE_VOLUME_DOWN || k == AKEYCODE_VOLUME_MUTE) return 0;   // let the system change the volume
 			if (a == AKEY_EVENT_ACTION_DOWN || a == AKEY_EVENT_ACTION_UP) input::onKey(a == AKEY_EVENT_ACTION_DOWN, k, AKeyEvent_getMetaState(ev));
 			return 1;
 		}
@@ -338,6 +339,7 @@ void android_main(android_app* app)
 	registerNatives(app);
 	app->onAppCmd = onCmd;
 	app->onInputEvent = onInput;
+	ANativeActivity_setWindowFlags(app->activity, AWINDOW_FLAG_KEEP_SCREEN_ON, 0);   // no screen timeout while playing
 	savedFile = std::string(app->activity->internalDataPath ? app->activity->internalDataPath : "/data/local/tmp") + "/gamepath.txt";
 	rt::logHook = logSink;
 	rt::config.dataRoot = app->activity->internalDataPath ? app->activity->internalDataPath : "/data/local/tmp";

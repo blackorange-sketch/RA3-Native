@@ -89,7 +89,7 @@ void text(const hud::DrawRect& rect, const std::string& s, R box, float r, float
 }
 
 int unit() { return std::max(48, scrH / 12); }
-R editRect() { int u = unit(); int h = u * 3 / 4, gap = u / 6; return {u / 3, u / 3 + u + u / 4 + 2 * (h + gap), u * 3 / 2, h}; }
+R editRect() { int u = unit(); int h = u * 3 / 4, gap = u / 6; return {u / 3, u / 3 + u + u / 4, u * 3 / 2, h}; }
 R btnRect(int side, int index)
 {
 	int u = unit(); int w = u * 3 / 2, h = u * 3 / 4, gap = u / 6;

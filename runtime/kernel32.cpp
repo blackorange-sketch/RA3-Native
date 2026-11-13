@@ -30,7 +30,7 @@ std::atomic<uint32_t> bumpThread{rt::ThreadBase};
 uint32_t pebAddr;
 std::map<uint32_t, std::pair<uint32_t, uint32_t>> gWaiting;
 std::map<uint32_t, uint32_t> gWaitEsp, gWaitTop;   // tid -> (handle, timeout) of threads currently blocked in WaitForSingleObject
-std::atomic<uint64_t> gReadCalls{0}, gReadBytes{0}, gWaitCalls{0};
+std::atomic<uint64_t> gReadCalls{0}, gReadBytes{0}, gWaitCalls{0}, gReadUs{0};
 std::mutex waitMu;               // one lock + condvar for all waitable objects: simple and correct
 std::condition_variable waitCv;
 
@@ -704,7 +704,10 @@ IMP_STD(K, ReadFile, 5)
 {
 	FileObj* f = fileOf(ARG(0));
 	if (!f || f->fd < 0) { SET(0); return; }
+	auto rt0 = std::chrono::steady_clock::now();
 	ssize_t n = read(f->fd, guest::host(ARG(1)), ARG(2));
+	gReadUs += (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - rt0).count();
+	if (verbose())
 	{
 		static int reads = 0;
 		if (reads++ < 150 || n < 0 || (uint32_t)n != ARG(2))
@@ -712,6 +715,7 @@ IMP_STD(K, ReadFile, 5)
 	}
 	if (n < 0) { SET(0); return; }
 	gReadCalls++; gReadBytes += (uint64_t)n;
+	if (verbose())
 	{
 		static std::mutex m; static std::map<std::string, std::pair<uint64_t, uint64_t>> per; static uint64_t total = 0;
 		std::lock_guard<std::mutex> g(m);
@@ -897,3 +901,8 @@ IMP_STD(K, GetDiskFreeSpaceA, 5)
 	SET(1);
 }
 IMP_STD(K, FindClose, 1) { if (auto* fo = (FindObj*)getHandle(ARG(0), KFind)) { delete fo; closeHandle(ARG(0)); } SET(1); }
+
+namespace rt
+{
+void ioStats(uint64_t& bytes, uint64_t& us, uint64_t& calls) { bytes = gReadBytes; us = gReadUs; calls = gReadCalls; }
+}
