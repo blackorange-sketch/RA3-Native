@@ -163,6 +163,22 @@ PRef refOfSet(Obj* o, uint32_t h)
 	}
 	return r;
 }
+static void syncParam(FxParam& q)
+{
+	ShareGroup* g = (ShareGroup*)q.shareGroup;
+	if (!g || q.shareVer == g->ver) return;
+	q.shareVer = g->ver;
+	if (!g->src || g->src == &q || g->srcW.expired()) return;
+	if (q.val.size() == g->src->val.size()) q.val = g->src->val;
+	q.texObj = g->src->texObj;
+}
+// reads of a shared parameter see the latest value written through any effect
+PRef refOfGet(Obj* o, uint32_t h)
+{
+	PRef r = refOf(o, h);
+	if (r.valid() && r.p->shareGroup) syncParam(*r.p);
+	return r;
+}
 static void syncShared(FxInfo& fx)
 {
 	for (uint32_t i : fx.sharedIdx)
@@ -530,13 +546,13 @@ H("ID3DXEffect::SetArrayRange") { SET(0); } END;
 // ---- getters
 H("ID3DXEffect::GetValue")
 {
-	PRef r = refOf(o, ARG(1));
+	PRef r = refOfGet(o, ARG(1));
 	if (r.valid() && ARG(2)) { uint32_t n = std::min(ARG(3) / 4, (uint32_t)r.p->val.size() - std::min<uint32_t>(r.off, (uint32_t)r.p->val.size())); memcpy(guest::host(ARG(2)), r.p->val.data() + r.off, 4ull * n); }
 	SET(0);
 } END;
 H("ID3DXEffect::GetBool")
 {
-	PRef r = refOf(o, ARG(1));
+	PRef r = refOfGet(o, ARG(1));
 	if (r.valid()) { uint32_t v = 0; readVals(r, &v, 1, 1); if (ARG(2)) guest::store<uint32_t>(ARG(2), v); SET(0); return; }
 	const FxAnn* an = annOf(ARG(1));
 	if (ARG(2)) guest::store<uint32_t>(ARG(2), an && !an->vals.empty() && an->vals[0] ? 1 : 0);
@@ -544,7 +560,7 @@ H("ID3DXEffect::GetBool")
 } END;
 H("ID3DXEffect::GetInt")
 {
-	PRef r = refOf(o, ARG(1));
+	PRef r = refOfGet(o, ARG(1));
 	if (r.valid()) { uint32_t v = 0; readVals(r, &v, 1, 2); if (ARG(2)) guest::store<uint32_t>(ARG(2), v); SET(0); return; }
 	const FxAnn* an = annOf(ARG(1));
 	if (ARG(2)) guest::store<uint32_t>(ARG(2), an && !an->vals.empty() ? (an->type == 3 ? (uint32_t)(int)*(float*)&an->vals[0] : an->vals[0]) : 0);
@@ -552,7 +568,7 @@ H("ID3DXEffect::GetInt")
 } END;
 H("ID3DXEffect::GetFloat")
 {
-	PRef r = refOf(o, ARG(1));
+	PRef r = refOfGet(o, ARG(1));
 	if (r.valid()) { uint32_t v = 0; readVals(r, &v, 1, 3); if (ARG(2)) guest::store<uint32_t>(ARG(2), v); SET(0); return; }
 	const FxAnn* an = annOf(ARG(1));
 	float v = 0.f;
@@ -560,30 +576,30 @@ H("ID3DXEffect::GetFloat")
 	if (ARG(2)) guest::store<float>(ARG(2), v);
 	SET(0);
 } END;
-H("ID3DXEffect::GetFloatArray") { PRef r = refOf(o, ARG(1)); if (r.valid() && ARG(2)) readVals(r, (uint32_t*)guest::host(ARG(2)), ARG(3), 3); SET(0); } END;
-H("ID3DXEffect::GetIntArray") { PRef r = refOf(o, ARG(1)); if (r.valid() && ARG(2)) readVals(r, (uint32_t*)guest::host(ARG(2)), ARG(3), 2); SET(0); } END;
-H("ID3DXEffect::GetBoolArray") { PRef r = refOf(o, ARG(1)); if (r.valid() && ARG(2)) readVals(r, (uint32_t*)guest::host(ARG(2)), ARG(3), 1); SET(0); } END;
+H("ID3DXEffect::GetFloatArray") { PRef r = refOfGet(o, ARG(1)); if (r.valid() && ARG(2)) readVals(r, (uint32_t*)guest::host(ARG(2)), ARG(3), 3); SET(0); } END;
+H("ID3DXEffect::GetIntArray") { PRef r = refOfGet(o, ARG(1)); if (r.valid() && ARG(2)) readVals(r, (uint32_t*)guest::host(ARG(2)), ARG(3), 2); SET(0); } END;
+H("ID3DXEffect::GetBoolArray") { PRef r = refOfGet(o, ARG(1)); if (r.valid() && ARG(2)) readVals(r, (uint32_t*)guest::host(ARG(2)), ARG(3), 1); SET(0); } END;
 H("ID3DXEffect::GetVector")
 {
-	PRef r = refOf(o, ARG(1));
+	PRef r = refOfGet(o, ARG(1));
 	if (r.valid() && ARG(2)) { float v[4] = {0, 0, 0, 0}; readVals(r, (uint32_t*)v, std::min(r.ty->scalars(), 4u), 3); memcpy(guest::host(ARG(2)), v, 16); }
 	SET(0);
 } END;
 H("ID3DXEffect::GetMatrix")
 {
-	PRef r = refOf(o, ARG(1));
+	PRef r = refOfGet(o, ARG(1));
 	if (r.valid() && ARG(2)) { float m[16]; getMatrix(r, m, false); memcpy(guest::host(ARG(2)), m, 64); }
 	SET(0);
 } END;
 H("ID3DXEffect::GetMatrixTranspose")
 {
-	PRef r = refOf(o, ARG(1));
+	PRef r = refOfGet(o, ARG(1));
 	if (r.valid() && ARG(2)) { float m[16]; getMatrix(r, m, true); memcpy(guest::host(ARG(2)), m, 64); }
 	SET(0);
 } END;
 H("ID3DXEffect::GetTexture")
 {
-	PRef r = refOf(o, ARG(1));
+	PRef r = refOfGet(o, ARG(1));
 	if (ARG(2)) guest::store<uint32_t>(ARG(2), r.valid() ? r.p->texObj : 0);
 	if (r.valid() && r.p->texObj) if (Obj* t = objectAt(r.p->texObj)) t->ref++;
 	SET(0);
