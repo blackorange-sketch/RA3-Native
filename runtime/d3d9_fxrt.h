@@ -4,6 +4,7 @@
 #include <cmath>
 #include <deque>
 #include <functional>
+#include <unordered_map>
 
 #include "d3d9_sh.h"
 #include "d3dx_fx.h"
@@ -169,42 +170,97 @@ struct PresOut
 	double last = 0;                              // last float written (array index expressions)
 };
 // `fill` provides the input register file (4 doubles per register) for the CTAB constants.
-inline bool runPreshader(const uint8_t* blob, size_t n, const std::function<void(const d3d::CtabConst&, double*, size_t)>& fill, PresOut& res)
+struct PresProg
 {
+	bool ok = false;
+	std::vector<d3d::CtabConst> ctab;
+	std::vector<double> lit;
+	const uint8_t* fxlcP = nullptr; size_t fxlcN = 0;
+	size_t nIn = 4, nTmp = 4, nOut = 4, nB = 4;   // register file sizes (components) the program touches
+	size_t n = 0; uint64_t sig = 0;               // identity check: the address may be reused by another blob
+};
+inline uint64_t presSig(const uint8_t* b, size_t n)
+{
+	uint64_t h = 1469598103934665603ull ^ n;
+	size_t step = n > 256 ? n / 64 : 1;
+	for (size_t i = 0; i < n; i += step) h = (h ^ b[i]) * 1099511628211ull;
+	return h;
+}
+// Parses a pre-shader once (keyed by its address: shader and effect blobs live as long as the program runs).
+inline const PresProg& presProg(const uint8_t* blob, size_t n)
+{
+	static thread_local std::unordered_map<const uint8_t*, PresProg> cache;
+	uint64_t sig = presSig(blob, n);
+	auto it = cache.find(blob);
+	if (it != cache.end() && it->second.n == n && it->second.sig == sig) return it->second;
+	PresProg& pp = cache[blob];
+	pp = PresProg();
+	pp.n = n; pp.sig = sig;
 	auto u = [&](size_t p) { uint32_t v = 0; if (p + 4 <= n) memcpy(&v, blob + p, 4); return v; };
-	if (n < 8 || (u(0) & 0xffffff00u) != 0x46580200) return false;
+	if (n < 8 || (u(0) & 0xffffff00u) != 0x46580200) return pp;
 	size_t p = 4;
 	const uint8_t* ctabP = nullptr; size_t ctabN = 0;
 	const uint8_t* clitP = nullptr; size_t clitN = 0;
-	const uint8_t* fxlcP = nullptr; size_t fxlcN = 0;
 	while (p + 4 <= n)
 	{
 		uint32_t t = u(p);
 		if (t == 0xffff) break;
-		if ((t & 0xffff) != 0xfffe) return false;
+		if ((t & 0xffff) != 0xfffe) return pp;
 		size_t len = (size_t)(t >> 16) * 4;
-		if (p + 4 + len > n) return false;
+		if (p + 4 + len > n) return pp;
 		uint32_t tag = u(p + 4);
 		const uint8_t* body = blob + p + 8;
 		size_t bl = len >= 4 ? len - 4 : 0;
 		if (tag == 0x42415443) { ctabP = body; ctabN = bl; }
 		else if (tag == 0x54494c43) { clitP = body; clitN = bl; }
-		else if (tag == 0x434c5846) { fxlcP = body; fxlcN = bl; }
+		else if (tag == 0x434c5846) { pp.fxlcP = body; pp.fxlcN = bl; }
 		p += 4 + len;
 	}
-	if (!fxlcP) return false;
-	std::vector<d3d::CtabConst> ctab;
-	if (ctabP) shdr::parseCtab(ctabP, ctabN, ctab);
-	std::vector<double> in(1024, 0.0), tmp(1024, 0.0), oF(1024, 0.0), oB(64, 0.0), lit;
-	for (auto& c : ctab)
-	{
-		if (c.regIndex * 4 + 4 * std::max(1u, c.regCount) <= in.size()) fill(c, &in[c.regIndex * 4], 4 * std::max(1u, c.regCount));
-	}
+	if (!pp.fxlcP) return pp;
+	if (ctabP) shdr::parseCtab(ctabP, ctabN, pp.ctab);
 	if (clitP && clitN >= 4)
 	{
 		uint32_t cnt;
 		memcpy(&cnt, clitP, 4);
-		if (4 + 8ull * cnt <= clitN) { lit.resize(cnt); memcpy(lit.data(), clitP + 4, 8ull * cnt); }
+		if (4 + 8ull * cnt <= clitN) { pp.lit.resize(cnt); memcpy(pp.lit.data(), clitP + 4, 8ull * cnt); }
+	}
+	for (auto& c : pp.ctab) pp.nIn = std::max<size_t>(pp.nIn, c.regIndex * 4 + 4 * std::max(1u, c.regCount));
+	// operand ranges
+	auto fu = [&](size_t q) { uint32_t v = 0; if (q + 4 <= pp.fxlcN) memcpy(&v, pp.fxlcP + q, 4); return v; };
+	uint32_t cnt = fu(0);
+	size_t q = 4;
+	for (uint32_t i = 0; i < cnt && cnt < 4096; i++)
+	{
+		uint32_t tok = fu(q), nin = fu(q + 4);
+		q += 8;
+		if (nin > 8) return pp;
+		uint32_t comps = std::max(1u, tok & 0xffff);
+		for (uint32_t k = 0; k <= nin; k++)
+		{
+			uint32_t t = fu(q + 4), idx = fu(q + 8);
+			q += 12;
+			size_t top = (size_t)idx + comps + 1;
+			if (t == 7) pp.nTmp = std::max(pp.nTmp, top);
+			else if (t == 4) pp.nOut = std::max(pp.nOut, top);
+			else if (t == 5) pp.nB = std::max(pp.nB, top);
+			else if (t == 2) pp.nIn = std::max(pp.nIn, top);
+		}
+	}
+	pp.ok = pp.nIn <= 4096 && pp.nTmp <= 4096 && pp.nOut <= 4096 && pp.nB <= 4096;
+	return pp;
+}
+// `fill` provides the input register file (4 doubles per register) for the CTAB constants.
+inline bool runPreshader(const uint8_t* blob, size_t n, const std::function<void(const d3d::CtabConst&, double*, size_t)>& fill, PresOut& res)
+{
+	const PresProg& pp = presProg(blob, n);
+	if (!pp.ok) return false;
+	static thread_local std::vector<double> in, tmp, oF, oB;
+	in.assign(pp.nIn, 0.0); tmp.assign(pp.nTmp, 0.0); oF.assign(pp.nOut, 0.0); oB.assign(pp.nB, 0.0);
+	const std::vector<double>& lit = pp.lit;
+	const uint8_t* fxlcP = pp.fxlcP; size_t fxlcN = pp.fxlcN;
+	for (auto& c : pp.ctab)
+	{
+		if (c.regIndex * 4 + 4 * std::max(1u, c.regCount) <= in.size()) fill(c, &in[c.regIndex * 4], 4 * std::max(1u, c.regCount));
 	}
 	auto fu = [&](size_t q) { uint32_t v = 0; if (q + 4 <= fxlcN) memcpy(&v, fxlcP + q, 4); return v; };
 	uint32_t cnt = fu(0);

@@ -49,6 +49,8 @@ struct FxParam
 	uint32_t smpTex = 0;      // sampler parameters: index of the texture parameter it samples + 1
 	struct SS { uint32_t op, v; };
 	std::vector<SS> smp;      // sampler parameters: states (D3DSAMP_* id, value)
+	void* shareGroup = nullptr;   // shared (effect pool) parameters: the group of same-named copies
+	uint64_t shareVer = 0;        // version of the group value this copy holds
 };
 struct FxState { uint32_t op = 0, index = 0, vo = 0, typeCls = 0, typeType = 0; };
 struct FxPass
@@ -83,6 +85,7 @@ struct FxInfo
 	std::unordered_map<uint64_t, void*> shCache;
 	std::unordered_map<const void*, std::vector<int>> ctabIdx;
 	std::unordered_map<uint64_t, int> resIdx;
+	std::vector<uint32_t> sharedIdx;   // indices of shared (pool) parameters
 	uint32_t u32(size_t p) const { uint32_t v = 0; if (p + 4 <= blob.size()) memcpy(&v, blob.data() + p, 4); return v; }
 };
 

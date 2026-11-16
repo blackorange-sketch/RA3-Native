@@ -125,13 +125,13 @@ PRef refOf(Obj* o, uint32_t h)
 	return r;
 }
 
-// ---- shared parameters (D3DXEffectPool): a write to a shared parameter of one effect is copied to the same-named
-// parameter of every other effect before the next draw
+// ---- shared parameters (D3DXEffectPool): all effects see the last value written to a same-named shared
+// parameter. Copied lazily: a write records its source and bumps the group version; an effect brings its copies
+// up to date when one of its passes is applied.
 static std::mutex gShareMu;
-struct ShareMember { std::weak_ptr<FxInfo> w; FxInfo* fx; uint32_t idx; };
-static std::unordered_map<std::string, std::vector<ShareMember>> gShareGroups;   // shared parameter name -> copies
-static std::vector<std::pair<FxInfo*, FxParam*>> gDirtyShared;
-static std::atomic<bool> gAnyDirty{false};
+struct ShareGroup { std::weak_ptr<FxInfo> srcW; FxInfo* srcFx = nullptr; FxParam* src = nullptr; uint64_t ver = 0; };
+static std::unordered_map<std::string, ShareGroup> gShareGroups;   // shared parameter name -> latest source
+static uint64_t gShareVer = 0;
 }   // anonymous namespace (reopened below)
 void fxRegister(const std::shared_ptr<FxInfo>& fx)
 {
@@ -142,9 +142,9 @@ void fxRegister(const std::shared_ptr<FxInfo>& fx)
 		auto& p = fx->params[i];
 		if (!(p.flags & 1)) continue;
 		sh += (sh.empty() ? "" : ",") + p.name;
-		auto& g = gShareGroups[p.name];
-		g.erase(std::remove_if(g.begin(), g.end(), [](const ShareMember& m) { return m.w.expired(); }), g.end());
-		g.push_back({fx, fx.get(), i});
+		p.shareGroup = &gShareGroups[p.name];
+		p.shareVer = 0;
+		fx->sharedIdx.push_back(i);
 	}
 	log("   shared params: %s", sh.c_str());
 }
@@ -153,34 +153,28 @@ namespace
 PRef refOfSet(Obj* o, uint32_t h)
 {
 	PRef r = refOf(o, h);
-	if (r.valid() && (r.p->flags & 1))
+	if (r.valid() && r.p->shareGroup)
 	{
-		std::lock_guard<std::mutex> l(gShareMu);
+		ShareGroup* g = (ShareGroup*)r.p->shareGroup;
 		FxInfo* fx = F(o);
-		for (auto& d : gDirtyShared) if (d.second == r.p) return r;
-		gDirtyShared.push_back({fx, r.p});
-		gAnyDirty = true;
+		if (g->srcFx != fx || g->src != r.p) { g->srcW = o->fx; g->srcFx = fx; g->src = r.p; }
+		g->ver = ++gShareVer;
+		r.p->shareVer = g->ver;
 	}
 	return r;
 }
-static void flushShared()
+static void syncShared(FxInfo& fx)
 {
-	if (!gAnyDirty.load(std::memory_order_relaxed)) return;
-	std::lock_guard<std::mutex> l(gShareMu);
-	for (auto& d : gDirtyShared)
+	for (uint32_t i : fx.sharedIdx)
 	{
-		auto g = gShareGroups.find(d.second->name);
-		if (g == gShareGroups.end()) continue;
-		for (auto& m : g->second)
-		{
-			if (m.fx == d.first || m.w.expired() || m.idx >= m.fx->params.size()) continue;
-			FxParam& q = m.fx->params[m.idx];
-			if (q.val.size() == d.second->val.size()) q.val = d.second->val;
-			q.texObj = d.second->texObj;
-		}
+		FxParam& q = fx.params[i];
+		ShareGroup* g = (ShareGroup*)q.shareGroup;
+		if (!g || q.shareVer == g->ver) continue;
+		q.shareVer = g->ver;
+		if (!g->src || g->src == &q || g->srcW.expired()) continue;
+		if (q.val.size() == g->src->val.size()) q.val = g->src->val;
+		q.texObj = g->src->texObj;
 	}
-	gDirtyShared.clear();
-	gAnyDirty = false;
 }
 uint32_t handleOf(Obj* o, const PRef& r)
 {
@@ -692,9 +686,9 @@ static void applyShaderState(FxInfo& fx, const FxPass& ps, uint32_t tech, uint32
 
 void fxApplyPass(Obj* o)
 {
-	flushShared();
 	FxInfo* fx = F(o);
 	if (!fx || !gPass.active || gPass.fx != fx) return;
+	syncShared(*fx);
 	const FxPass& ps = fx->techs[gPass.tech].passes[gPass.pass];
 	for (uint32_t i = 0; i < ps.sts.size(); i++) applyShaderState(*fx, ps, gPass.tech, gPass.pass, i);
 	// samplers and constants required by the selected shaders
