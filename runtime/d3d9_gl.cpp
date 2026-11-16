@@ -53,6 +53,8 @@ GLuint gDummy2D = 0, gDummyCube = 0, gDummy3D = 0;
 bool gHasS3tc = false;
 std::atomic<uint32_t> gDrawsThisFrame{0};
 uint32_t gFrameNo = 0;
+static inline uint64_t nowUs();
+static inline uint64_t profNow() { static const bool v = verbose(); return v ? nowUs() : 0; }
 static inline uint64_t nowUs() { return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 // frame-time breakdown (logged once a minute)
 static uint64_t gTDraw = 0, gTUpload = 0, gTSwap = 0, gTPresent = 0, gNDraws = 0, gNUploads = 0;
@@ -390,7 +392,38 @@ struct Prog
 	GLuint id = 0;
 	bool failed = false;
 	GLint vc = -1, vci = -1, vcb = -1, pc = -1, pci = -1, pcb = -1, flip = -1, bgra = -1, at = -1, s[16];
+	// last values uploaded to this program (uniforms persist per program): only changed ranges are re-sent
+	bool samplersSet = false, shadowValid = false;
+	std::vector<float> vcShadow, pcShadow;
+	std::vector<GLint> vcLoc, pcLoc;   // location of each array element
+	int32_t vciShadow[64], psiShadow[64], vcbShadow[16], pcbShadow[16];
+	float flipShadow = 0.f, atShadow[4] = {-1, -1, -1, -1};
+	GLint bgraShadow = -1;
 };
+// Uploads registers [0, n) of `src` to a vec4 uniform array, sending only the range that differs from `shadow`.
+static void uploadVec4Range(GLint base, std::vector<GLint>& locs, std::vector<float>& shadow, const float* src, int n, GLuint prog, const char* name, bool valid)
+{
+	if (base < 0 || n <= 0) return;
+	if ((int)shadow.size() < n * 4) { shadow.assign(n * 4, 0.f); valid = false; }
+	int lo = 0, hi = n - 1;
+	if (valid)
+	{
+		while (lo < n && memcmp(&shadow[lo * 4], src + lo * 4, 16) == 0) lo++;
+		if (lo == n) return;
+		while (hi > lo && memcmp(&shadow[hi * 4], src + hi * 4, 16) == 0) hi--;
+	}
+	if (lo > 0)
+	{
+		if (locs.empty())
+		{
+			locs.assign(n, -1);
+			for (int i = 0; i < n; i++) { char b[32]; snprintf(b, sizeof b, "%s[%d]", name, i); locs[i] = glGetUniformLocation(prog, b); }
+		}
+		if (lo >= (int)locs.size() || locs[lo] < 0) lo = 0;
+	}
+	glUniform4fv(lo == 0 ? base : locs[lo], hi - lo + 1, src + lo * 4);
+	memcpy(&shadow[lo * 4], src + lo * 4, (size_t)(hi - lo + 1) * 16);
+}
 std::unordered_map<uint64_t, Prog> gProgs;
 
 Prog* getProgram(ShaderObj* vs, ShaderObj* ps)
@@ -570,22 +603,27 @@ void bindSamplers(Prog* p, ShaderObj* ps)
 			noFilter = texFmtOf(texOwner(t)->fmt).floatNoFilter;
 		}
 		glBindTexture(target, name ? name : dummyTex(target));
-		glUniform1i(p->s[i], i);
+		if (!p->samplersSet) glUniform1i(p->s[i], i);
 		if (!gSamplers[i]) glGenSamplers(1, &gSamplers[i]);
 		const uint32_t* s = dev.samp[i];
-		glSamplerParameteri(gSamplers[i], GL_TEXTURE_WRAP_S, wrapMode(s[1]));
-		glSamplerParameteri(gSamplers[i], GL_TEXTURE_WRAP_T, wrapMode(s[2]));
-		glSamplerParameteri(gSamplers[i], GL_TEXTURE_WRAP_R, wrapMode(s[3]));
+		static GLenum cache[16][5];
+		static bool cacheValid[16];
+		auto sp = [&](int k, GLenum pname, GLenum v) { if (!cacheValid[i] || cache[i][k] != v) { glSamplerParameteri(gSamplers[i], pname, v); cache[i][k] = v; } };
+		sp(0, GL_TEXTURE_WRAP_S, wrapMode(s[1]));
+		sp(1, GL_TEXTURE_WRAP_T, wrapMode(s[2]));
+		sp(2, GL_TEXTURE_WRAP_R, wrapMode(s[3]));
 		uint32_t mag = s[5], mn = s[6], mip = s[7];
 		bool hasMips = t && texOwner(t)->levels > 1;
 		GLenum minF;
 		if (noFilter) minF = GL_NEAREST;
 		else if (mn == 1) minF = (!hasMips || mip == 0) ? GL_NEAREST : mip == 1 ? GL_NEAREST_MIPMAP_NEAREST : GL_NEAREST_MIPMAP_LINEAR;
 		else minF = (!hasMips || mip == 0) ? GL_LINEAR : mip == 1 ? GL_LINEAR_MIPMAP_NEAREST : GL_LINEAR_MIPMAP_LINEAR;
-		glSamplerParameteri(gSamplers[i], GL_TEXTURE_MIN_FILTER, minF);
-		glSamplerParameteri(gSamplers[i], GL_TEXTURE_MAG_FILTER, (noFilter || mag == 1) ? GL_NEAREST : GL_LINEAR);
+		sp(3, GL_TEXTURE_MIN_FILTER, minF);
+		sp(4, GL_TEXTURE_MAG_FILTER, (noFilter || mag == 1) ? GL_NEAREST : GL_LINEAR);
+		cacheValid[i] = true;
 		glBindSampler(i, gSamplers[i]);
 	}
+	p->samplersSet = true;
 	glActiveTexture(GL_TEXTURE0);
 }
 
@@ -832,9 +870,9 @@ static void dumpBmp(const char* path, uint32_t w, uint32_t h)
 static void drawImpl(const DrawCall& dc);
 void draw(const DrawCall& dc)
 {
-	uint64_t t0 = nowUs();
-	drawImpl(dc);
-	gTDraw += nowUs() - t0; gNDraws++;
+	// time one draw in 8 (clock reads are not free at ~1000 draws per frame)
+	if ((gNDraws++ & 7) == 0) { uint64_t t0 = nowUs(); drawImpl(dc); gTDraw += (nowUs() - t0) * 8; }
+	else drawImpl(dc);
 }
 static void drawImpl(const DrawCall& dc)
 {
@@ -847,7 +885,7 @@ static void drawImpl(const DrawCall& dc)
 		if (noShader++ < 5) log("d3d9: draw without shaders (fixed function not implemented): fvf %x vdecl %p", dev.fvf, (void*)dev.vdecl);
 		return;
 	}
-	uint64_t t0 = nowUs();
+	uint64_t t0 = profNow();
 	Prog* p = getProgram(vs, ps);
 	if (!p) { static int nf = 0; if (nf++ < 10) log("d3d9: draw skipped: no program for vs %016llx ps %016llx", (unsigned long long)vs->hash, (unsigned long long)ps->hash); return; }
 	if (verbose())
@@ -1096,14 +1134,15 @@ static void drawImpl(const DrawCall& dc)
 	bindTargets();
 	uint32_t tw, th;
 	targetSize(dev.rt0, tw, th);
-	uint64_t t1 = nowUs();
+	uint64_t t1 = profNow();
 	applyState(tw, th);
 	glUseProgram(p->id);
-	uint64_t t2 = nowUs();
+	uint64_t t2 = profNow();
 	glBindVertexArray(gVao);
 	// constants
-	if (p->vc >= 0)
 	{
+		const float* vsrc = dev.vsF;
+		int nv = std::max(1, std::min(256, vs->info.numC + 0));
 		if (vs->info.relC && !vs->info.defF.empty())
 		{
 			// D3D: constants a shader defines itself (def c#) live in the constant registers, so relative
@@ -1111,20 +1150,25 @@ static void drawImpl(const DrawCall& dc)
 			static float merged[256 * 4];
 			memcpy(merged, dev.vsF, sizeof merged);
 			for (auto& d : vs->info.defF) if (d.first >= 0 && d.first < 256) memcpy(merged + 4 * d.first, d.second.data(), 16);
-			glUniform4fv(p->vc, 256, merged);
+			vsrc = merged; nv = 256;
 		}
-		else glUniform4fv(p->vc, std::max(1, std::min(256, vs->info.numC + 0)), dev.vsF);
+		uploadVec4Range(p->vc, p->vcLoc, p->vcShadow, vsrc, nv, p->id, "vc", p->shadowValid);
+		uploadVec4Range(p->pc, p->pcLoc, p->pcShadow, dev.psF, std::max(1, std::min(224, ps->info.numC + 0)), p->id, "pc", p->shadowValid);
+		if (p->vci >= 0 && (!p->shadowValid || memcmp(p->vciShadow, dev.vsI, 64 * 4))) { glUniform4iv(p->vci, 16, dev.vsI); memcpy(p->vciShadow, dev.vsI, 64 * 4); }
+		if (p->vcb >= 0 && (!p->shadowValid || memcmp(p->vcbShadow, dev.vsB, 16 * 4))) { glUniform1iv(p->vcb, 16, dev.vsB); memcpy(p->vcbShadow, dev.vsB, 16 * 4); }
+		if (p->pci >= 0 && (!p->shadowValid || memcmp(p->psiShadow, dev.psI, 64 * 4))) { glUniform4iv(p->pci, 16, dev.psI); memcpy(p->psiShadow, dev.psI, 64 * 4); }
+		if (p->pcb >= 0 && (!p->shadowValid || memcmp(p->pcbShadow, dev.psB, 16 * 4))) { glUniform1iv(p->pcb, 16, dev.psB); memcpy(p->pcbShadow, dev.psB, 16 * 4); }
+		if (p->flip >= 0 && (!p->shadowValid || p->flipShadow != -1.f)) { glUniform1f(p->flip, -1.f); p->flipShadow = -1.f; }
+		if (p->at >= 0)
+		{
+			float at[4] = {dev.rs[15] ? (float)dev.rs[25] : 0.f, (dev.rs[24] & 255) / 255.f, 0.f, 0.f};
+			if (!p->shadowValid || memcmp(at, p->atShadow, 16)) { glUniform4f(p->at, at[0], at[1], 0.f, 0.f); memcpy(p->atShadow, at, 16); }
+		}
+		p->shadowValid = true;
 	}
-	if (p->vci >= 0) glUniform4iv(p->vci, 16, dev.vsI);
-	if (p->vcb >= 0) glUniform1iv(p->vcb, 16, dev.vsB);
-	if (p->pc >= 0) glUniform4fv(p->pc, std::max(1, std::min(224, ps->info.numC + 0)), dev.psF);
-	if (p->pci >= 0) glUniform4iv(p->pci, 16, dev.psI);
-	if (p->pcb >= 0) glUniform1iv(p->pcb, 16, dev.psB);
-	if (p->flip >= 0) glUniform1f(p->flip, -1.f);
-	if (p->at >= 0) glUniform4f(p->at, dev.rs[15] ? (float)dev.rs[25] : 0.f, (dev.rs[24] & 255) / 255.f, 0.f, 0.f);
-	uint64_t t3 = nowUs();
+	uint64_t t3 = profNow();
 	bindSamplers(p, ps);
-	uint64_t t4 = nowUs();
+	uint64_t t4 = profNow();
 	// vertex attributes
 	std::vector<DeclElem> els;
 	if (dev.vdecl)
@@ -1249,8 +1293,8 @@ static void drawImpl(const DrawCall& dc)
 	}
 	for (int loc = 0; loc < 16; loc++)
 		if (!(enabled >> loc & 1)) { glDisableVertexAttribArray(loc); glVertexAttrib4f(loc, 0.f, 0.f, 0.f, 1.f); }
-	if (p->bgra >= 0) glUniform1i(p->bgra, (GLint)bgra);
-	uint64_t t5 = nowUs();
+	if (p->bgra >= 0 && p->bgraShadow != (GLint)bgra) { glUniform1i(p->bgra, (GLint)bgra); p->bgraShadow = (GLint)bgra; }
+	uint64_t t5 = profNow();
 	GLenum mode = primMode(dc.prim);
 	if (verbose()) { static uint64_t cnt[8]; static uint32_t shown; if (dc.prim < 8) cnt[dc.prim]++; if ((dc.prim == 1 || dc.prim == 2 || dc.prim == 3) && shown < 20) { shown++; log("draw: prim %u count %u indexed %d stride? rt %p", dc.prim, dc.primCount, (int)dc.indexed, (void*)dev.rt0); } if (gDrawsThisFrame == 0 && gFrameNo % 300 == 0) log("draw: prim totals pt %llu line %llu strip %llu tri %llu tstrip %llu tfan %llu", (unsigned long long)cnt[1], (unsigned long long)cnt[2], (unsigned long long)cnt[3], (unsigned long long)cnt[4], (unsigned long long)cnt[5], (unsigned long long)cnt[6]); }
 	uint32_t nv = (uint32_t)primVertices(dc.prim, dc.primCount);
@@ -1286,7 +1330,7 @@ static void drawImpl(const DrawCall& dc)
 		}
 	}
 	if (gInstUsed) { for (int loc = 0; loc < 16; loc++) glVertexAttribDivisor(loc, 0); gInstUsed = false; }
-	uint64_t t6 = nowUs();
+	uint64_t t6 = profNow();
 	tProg += t1 - t0; tState += t2 - t1; tUni += t3 - t2; tSamp += t4 - t3; tAttr += t5 - t4; tDraw += t6 - t5; nDraw++;
 	gDrawsThisFrame++;
 	if (gDrawsThisFrame <= 3 && gFrameNo < 5) glErr("draw");
