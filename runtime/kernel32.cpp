@@ -253,7 +253,8 @@ IMP_STD(K, GetProcessAffinityMask, 3) { guest::store<uint32_t>(ARG(1), 0xff); gu
 // until 1000 / (15 * k) ms have passed, k = render frames per logic frame (logic runs at 15 Hz). It only ever
 // lowers k when frames are slow and never raises it above the start value, so when the limiter is actually
 // waiting (spare time), step k up towards cap / 15.
-bool gFps60 = false;
+namespace rt { bool gFps60 = false; }
+using rt::gFps60;
 static void limiterHeadroom(CPU* c)
 {
 	if (!gFps60 || guest::load<uint32_t>(c->r[ESP] + 12) != 0x629863u) return;
