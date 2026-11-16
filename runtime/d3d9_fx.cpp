@@ -150,11 +150,14 @@ void fxRegister(const std::shared_ptr<FxInfo>& fx)
 }
 namespace
 {
+static void syncParam(FxParam& q);
 PRef refOfSet(Obj* o, uint32_t h)
 {
 	PRef r = refOf(o, h);
 	if (r.valid() && r.p->shareGroup)
 	{
+		// partial writes (struct members, array elements) must land on an up-to-date copy
+		syncParam(*r.p);
 		ShareGroup* g = (ShareGroup*)r.p->shareGroup;
 		FxInfo* fx = F(o);
 		if (g->srcFx != fx || g->src != r.p) { g->srcW = o->fx; g->srcFx = fx; g->src = r.p; }
