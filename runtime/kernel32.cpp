@@ -255,9 +255,19 @@ IMP_STD(K, GetProcessAffinityMask, 3) { guest::store<uint32_t>(ARG(1), 0xff); gu
 // waiting (spare time), step k up towards cap / 15.
 namespace rt { bool gFps60 = false; }
 using rt::gFps60;
+static std::atomic<uint64_t> gLimWait{0};
+namespace rt { uint64_t limiterWaitUs() { return gLimWait.exchange(0); } }
 static void limiterHeadroom(CPU* c)
 {
-	if (!gFps60 || guest::load<uint32_t>(c->r[ESP] + 12) != 0x629863u) return;
+	if (guest::load<uint32_t>(c->r[ESP] + 12) != 0x629863u) return;
+	{
+		// time spent in the limiter's wait loop: spans between consecutive calls belong to one wait
+		static uint64_t prev = 0;
+		uint64_t t = (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+		if (prev && t - prev < 3000) gLimWait += t - prev;
+		prev = t;
+	}
+	if (!gFps60) return;
 	static auto last = std::chrono::steady_clock::now();
 	auto now = std::chrono::steady_clock::now();
 	if (now - last < std::chrono::seconds(2)) return;

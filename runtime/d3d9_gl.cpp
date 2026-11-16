@@ -51,6 +51,9 @@ GLuint gDummy2D = 0, gDummyCube = 0, gDummy3D = 0;
 bool gHasS3tc = false;
 std::atomic<uint32_t> gDrawsThisFrame{0};
 uint32_t gFrameNo = 0;
+static inline uint64_t nowUs() { return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+// frame-time breakdown (logged once a minute)
+static uint64_t gTDraw = 0, gTUpload = 0, gTSwap = 0, gTPresent = 0, gNDraws = 0, gNUploads = 0;
 int gErrLogs = 0;
 
 void glErr(const char* where)
@@ -155,7 +158,14 @@ void expandLevel(uint32_t fmt, const uint8_t* src, uint32_t w, uint32_t h, std::
 
 GLenum targetOf(const Obj* o) { return o->iface == ICube ? GL_TEXTURE_CUBE_MAP : o->iface == IVolume ? GL_TEXTURE_3D : GL_TEXTURE_2D; }
 
+static void uploadTextureImpl(Obj* o);
 void uploadTexture(Obj* o)
+{
+	uint64_t t0 = nowUs();
+	uploadTextureImpl(o);
+	gTUpload += nowUs() - t0; gNUploads++;
+}
+static void uploadTextureImpl(Obj* o)
 {
 	TexFmt tf = texFmtOf(o->fmt);
 	GLenum target = targetOf(o);
@@ -791,7 +801,6 @@ static int64_t ringPut(GLenum target, GLuint& buf, uint32_t& pos, uint32_t cap, 
 }
 
 #include <chrono>
-static inline uint64_t nowUs() { return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 static uint64_t tProg, tState, tUni, tSamp, tAttr, tDraw, nDraw;
 
 static bool gDiagPair = false;   // set per draw: first draws of each new shader pair during gameplay
@@ -818,7 +827,14 @@ static void dumpBmp(const char* path, uint32_t w, uint32_t h)
 	else log("dump failed: %s", path);
 }
 
+static void drawImpl(const DrawCall& dc);
 void draw(const DrawCall& dc)
+{
+	uint64_t t0 = nowUs();
+	drawImpl(dc);
+	gTDraw += nowUs() - t0; gNDraws++;
+}
+static void drawImpl(const DrawCall& dc)
 {
 	{ static int n = 0; if (n++ < 5) log("GL: draw on tid %d ctx %p", (int)gettid(), (void*)eglGetCurrentContext()); }
 	if (!ensureGl()) return;
@@ -1280,7 +1296,26 @@ void draw(const DrawCall& dc)
 }
 
 static void reapReleased(uint32_t frame);
+static void presentImpl();
 void present()
+{
+	uint64_t t0 = nowUs();
+	presentImpl();
+	gTPresent += nowUs() - t0;
+	static uint64_t start = 0; static uint32_t f0 = 0;
+	uint64_t t = nowUs();
+	if (!start) { start = t; f0 = gFrameNo; }
+	if (gFrameNo - f0 >= 1800)
+	{
+		double n = gFrameNo - f0, wall = (t - start) / 1000.0;
+		uint64_t lim = rt::limiterWaitUs();
+		double other = wall - (gTDraw + gTUpload + gTPresent + lim) / 1000.0;
+		log("perf: %.1f fps; per frame ms: total %.2f = game/other %.2f + draws %.2f (%.0f calls) + texture uploads %.2f (%.1f) + present %.2f (swap %.2f) + limiter wait %.2f",
+			n / (wall / 1000.0), wall / n, other / n, gTDraw / 1000.0 / n, gNDraws / n, gTUpload / 1000.0 / n, gNUploads / n, gTPresent / 1000.0 / n, gTSwap / 1000.0 / n, lim / 1000.0 / n);
+		start = t; f0 = gFrameNo; gTDraw = gTUpload = gTSwap = gTPresent = gNDraws = gNUploads = 0;
+	}
+}
+static void presentImpl()
 {
 	{ static int n = 0; if (n++ < 5) log("GL: present on tid %d ctx %p", (int)gettid(), (void*)eglGetCurrentContext()); }
 	if (!ensureGl()) { std::this_thread::sleep_for(std::chrono::milliseconds(16)); return; }
@@ -1329,7 +1364,7 @@ void present()
 		hud::draw(rect);
 		glDisable(GL_SCISSOR_TEST);
 	}
-	gfx::swap();
+	{ uint64_t ts = nowUs(); gfx::swap(); gTSwap += nowUs() - ts; }
 	glErr("present");
 	gFrameNo++;
 	if (gFrameNo == 1)
