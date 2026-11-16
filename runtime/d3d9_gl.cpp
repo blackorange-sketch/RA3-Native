@@ -1,6 +1,9 @@
 #include <set>
 #include <string>
 #include <cmath>
+#include <sched.h>
+#include <sys/resource.h>
+#include <unistd.h>
 #include <map>
 #include <tuple>
 #include <cstdio>
@@ -1329,6 +1332,21 @@ void present()
 	gfx::swap();
 	glErr("present");
 	gFrameNo++;
+	if (gFrameNo == 1)
+	{
+		// The game's main thread does logic and rendering: keep it on the fast cores and raise its priority.
+		unsigned long freq[16] = {0}, maxF = 0; int ncpu = 0;
+		for (int i = 0; i < 16; i++)
+		{
+			char path[96]; snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq", i);
+			if (FILE* f = fopen(path, "r")) { if (fscanf(f, "%lu", &freq[i]) == 1) { ncpu = i + 1; maxF = std::max(maxF, freq[i]); } fclose(f); }
+		}
+		cpu_set_t set; CPU_ZERO(&set); int picked = 0;
+		for (int i = 0; i < ncpu; i++) if (freq[i] * 4 >= maxF * 3) { CPU_SET(i, &set); picked++; }
+		int ra = picked ? sched_setaffinity(0, sizeof set, &set) : -1;
+		int rp = setpriority(PRIO_PROCESS, (id_t)gettid(), -10);
+		log("perf: main thread pinned to %d fast cores of %d (max %lu kHz): affinity %s, priority %s", picked, ncpu, maxF, ra == 0 ? "ok" : "failed", rp == 0 ? "ok" : "failed");
+	}
 	{
 		// load-time log: the first frame and every pause between frames longer than 1.5 s, with the share spent reading from disk
 		static uint64_t lastT = 0, lastBytes = 0, lastUs = 0, lastCalls = 0;
