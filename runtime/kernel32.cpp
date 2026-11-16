@@ -249,9 +249,26 @@ IMP_STD(K, SetThreadIdealProcessor, 2) { SET(0); }
 IMP_STD(K, SetProcessAffinityMask, 2) { SET(1); }
 IMP_STD(K, GetProcessAffinityMask, 3) { guest::store<uint32_t>(ARG(1), 0xff); guest::store<uint32_t>(ARG(2), 0xff); SET(1); }
 // Temporary diagnostics for the frame limiter: who makes the main thread wait, and for how long.
+// 60 fps experiment (/sdcard/ra3_fps60): the game's frame limiter (0x6297e0..0x629877, GameEngine update) waits
+// until 1000 / (15 * k) ms have passed, k = render frames per logic frame (logic runs at 15 Hz). It only ever
+// lowers k when frames are slow and never raises it above the start value, so when the limiter is actually
+// waiting (spare time), step k up towards cap / 15.
+bool gFps60 = false;
+static void limiterHeadroom(CPU* c)
+{
+	if (!gFps60 || guest::load<uint32_t>(c->r[ESP] + 12) != 0x629863u) return;
+	static auto last = std::chrono::steady_clock::now();
+	auto now = std::chrono::steady_clock::now();
+	if (now - last < std::chrono::seconds(2)) return;
+	last = now;
+	uint32_t obj = c->r[EDI];
+	if (obj < 0x400000 || obj >= 0x30000000) return;
+	uint32_t k = guest::load<uint32_t>(obj + 0x17c), kmax = guest::load<uint32_t>(0xcaf9d4) / std::max(1u, guest::load<uint32_t>(0xcaf9d0));
+	if (k >= 1 && k < kmax) { guest::store<uint32_t>(obj + 0x17c, k + 1); log("fps60: frame limiter has headroom, render frames per logic frame %u -> %u", k, k + 1); }
+}
 static void noteWait(CPU* c, const char* what, uint32_t ms)
 {
-	if (thisThread().tid != 4096) return;
+	if (thisThread().tid != 4096 || !verbose()) return;
 	static std::mutex m; static std::map<std::pair<uint32_t, const char*>, std::pair<uint32_t, uint64_t>> h; static uint32_t total = 0; static int dumps = 0;
 	std::lock_guard<std::mutex> l(m);
 	auto& e = h[{guest::load<uint32_t>(c->r[ESP]), what}];
@@ -271,7 +288,7 @@ static void noteWait(CPU* c, const char* what, uint32_t ms)
 	}
 }
 IMP_STD(K, Sleep, 1) { noteWait(c, "Sleep", ARG(0)); std::this_thread::sleep_for(std::chrono::milliseconds(ARG(0))); }
-IMP_STD(K, SleepEx, 2) { uint32_t ms = ARG(0); noteWait(c, "SleepEx", ms); if (ms) std::this_thread::sleep_for(std::chrono::milliseconds(ms)); else std::this_thread::sleep_for(std::chrono::microseconds(100)); SET(0); }
+IMP_STD(K, SleepEx, 2) { uint32_t ms = ARG(0); noteWait(c, "SleepEx", ms); limiterHeadroom(c); if (ms) std::this_thread::sleep_for(std::chrono::milliseconds(ms)); else std::this_thread::sleep_for(std::chrono::microseconds(100)); SET(0); }
 
 IMP_STD(K, CreateEventA, 4)
 {

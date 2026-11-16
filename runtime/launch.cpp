@@ -205,6 +205,17 @@ int launch(const std::string& gameFile)
 
 	static CPU cpu;
 	spawnMainThread(&cpu);
+	{
+		// 60 fps experiment: raise the game's client frame-rate cap (30) before any game code runs, so the
+		// values the game derives from it at start-up are consistent. Logic keeps its own 15 Hz constant.
+		extern bool gFps60;
+		gFps60 = access("/sdcard/ra3_fps60", F_OK) == 0;
+		if (gFps60 && guest::load<uint32_t>(0xcaf9d4) == 30 && guest::load<uint32_t>(0xcaf9d0) == 15)
+		{
+			guest::store<uint32_t>(0xcaf9d4, 60);
+			log("fps60: client frame-rate cap raised to 60 (logic stays at 15 Hz)");
+		}
+	}
 	callGuest(&cpu, imageEntry, {});
 	log("entry returned, eax=%08x", cpu.r[EAX]);
 	return (int)cpu.r[EAX];
