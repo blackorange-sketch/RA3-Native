@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstring>
 #include <map>
+#include <unordered_map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -77,6 +78,11 @@ struct FxInfo
 	std::vector<uint8_t> blob;
 	std::map<uint32_t, std::pair<uint32_t, uint32_t>> objs;   // object id -> (offset, size) of its data in blob
 	std::vector<FxRes> res;
+	// run-time caches (effect runtime): resolved shaders per (tech, pass, state), constant-table -> parameter
+	// index per shader, state -> FxRes index
+	std::unordered_map<uint64_t, void*> shCache;
+	std::unordered_map<const void*, std::vector<int>> ctabIdx;
+	std::unordered_map<uint64_t, int> resIdx;
 	uint32_t u32(size_t p) const { uint32_t v = 0; if (p + 4 <= blob.size()) memcpy(&v, blob.data() + p, 4); return v; }
 };
 

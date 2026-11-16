@@ -128,15 +128,24 @@ PRef refOf(Obj* o, uint32_t h)
 // ---- shared parameters (D3DXEffectPool): a write to a shared parameter of one effect is copied to the same-named
 // parameter of every other effect before the next draw
 static std::mutex gShareMu;
-static std::vector<std::weak_ptr<FxInfo>> gAllFx;
+struct ShareMember { std::weak_ptr<FxInfo> w; FxInfo* fx; uint32_t idx; };
+static std::unordered_map<std::string, std::vector<ShareMember>> gShareGroups;   // shared parameter name -> copies
 static std::vector<std::pair<FxInfo*, FxParam*>> gDirtyShared;
+static std::atomic<bool> gAnyDirty{false};
 }   // anonymous namespace (reopened below)
 void fxRegister(const std::shared_ptr<FxInfo>& fx)
 {
 	std::lock_guard<std::mutex> l(gShareMu);
-	gAllFx.push_back(fx);
 	std::string sh;
-	for (auto& p : fx->params) if (p.flags & 1) sh += (sh.empty() ? "" : ",") + p.name;
+	for (uint32_t i = 0; i < fx->params.size(); i++)
+	{
+		auto& p = fx->params[i];
+		if (!(p.flags & 1)) continue;
+		sh += (sh.empty() ? "" : ",") + p.name;
+		auto& g = gShareGroups[p.name];
+		g.erase(std::remove_if(g.begin(), g.end(), [](const ShareMember& m) { return m.w.expired(); }), g.end());
+		g.push_back({fx, fx.get(), i});
+	}
 	log("   shared params: %s", sh.c_str());
 }
 namespace
@@ -150,30 +159,28 @@ PRef refOfSet(Obj* o, uint32_t h)
 		FxInfo* fx = F(o);
 		for (auto& d : gDirtyShared) if (d.second == r.p) return r;
 		gDirtyShared.push_back({fx, r.p});
+		gAnyDirty = true;
 	}
 	return r;
 }
 static void flushShared()
 {
+	if (!gAnyDirty.load(std::memory_order_relaxed)) return;
 	std::lock_guard<std::mutex> l(gShareMu);
-	if (gDirtyShared.empty()) return;
 	for (auto& d : gDirtyShared)
-		for (auto& w : gAllFx)
+	{
+		auto g = gShareGroups.find(d.second->name);
+		if (g == gShareGroups.end()) continue;
+		for (auto& m : g->second)
 		{
-			auto fx2 = w.lock();
-			if (!fx2 || fx2.get() == d.first) continue;
-			int i = fxrt::findParam(*fx2, d.second->name);
-			if (i < 0) continue;
-			FxParam& q = fx2->params[i];
-			if (d.second->name == "ViewProjection")
-			{
-				static int fl = 0;
-				if (fl++ < 12) log("fx: flush ViewProjection %p -> %p sizes %zu/%zu v0 %g", (void*)d.first, (void*)fx2.get(), d.second->val.size(), q.val.size(), d.second->val.empty() ? 0.0 : (double)*(const float*)&d.second->val[0]);
-			}
+			if (m.fx == d.first || m.w.expired() || m.idx >= m.fx->params.size()) continue;
+			FxParam& q = m.fx->params[m.idx];
 			if (q.val.size() == d.second->val.size()) q.val = d.second->val;
 			q.texObj = d.second->texObj;
 		}
+	}
 	gDirtyShared.clear();
+	gAnyDirty = false;
 }
 uint32_t handleOf(Obj* o, const PRef& r)
 {
@@ -598,9 +605,8 @@ static std::string cstrAt(const FxInfo& fx, const FxRes& r)
 	return std::string(s, strnlen(s, r.size));
 }
 
-static void packConst(const FxInfo& fx, const CtabConst& c, ShaderObj* sh, bool isVs)
+static void packConst(const FxInfo& fx, const CtabConst& c, ShaderObj* sh, bool isVs, int k)
 {
-	int k = fxrt::findParam(fx, c.name);
 	if (k < 0) return;
 	const FxParam& p = fx.params[k];
 	if (p.ty.cls == 4 || p.val.empty() || p.skipConst) return;
@@ -626,32 +632,55 @@ static void packConst(const FxInfo& fx, const CtabConst& c, ShaderObj* sh, bool 
 	(void)sh;
 }
 
+// index of the FxRes record of a pass state (-1: plain constant), cached
+static int resOf(FxInfo& fx, uint32_t tech, uint32_t pass, uint32_t si)
+{
+	uint64_t key = (uint64_t)tech << 40 | (uint64_t)pass << 20 | si;
+	auto it = fx.resIdx.find(key);
+	if (it != fx.resIdx.end()) return it->second;
+	int found = -1;
+	for (size_t i = 0; i < fx.res.size(); i++)
+		if (fx.res[i].tech == tech && fx.res[i].pass == pass && fx.res[i].state == si) { found = (int)i; break; }
+	fx.resIdx[key] = found;
+	return found;
+}
 static void applyShaderState(FxInfo& fx, const FxPass& ps, uint32_t tech, uint32_t pass, uint32_t si)
 {
 	const FxState& st = ps.sts[si];
 	fxrt::StateInfo info = fxrt::stateInfo(st.op);
 	if (info.cls == fxrt::SC_VS || info.cls == fxrt::SC_PS)
 	{
-		fxrt::ShaderRef ref;
+		uint64_t key = (uint64_t)tech << 40 | (uint64_t)pass << 20 | si;
+		auto it = fx.shCache.find(key);
 		ShaderObj* sh = nullptr;
-		if (fxrt::resolveShader(fx, tech, pass, si, ref)) sh = getShader(ref.code, ref.size);
+		if (it != fx.shCache.end()) sh = (ShaderObj*)it->second;
+		else
+		{
+			fxrt::ShaderRef ref;
+			if (fxrt::resolveShader(fx, tech, pass, si, ref)) sh = getShader(ref.code, ref.size);
+			// shaders picked from an array by a pre-shader depend on parameter values: resolve those every time
+			bool dynamic = false;
+			int ri = resOf(fx, tech, pass, si);
+			if (ri >= 0 && fx.res[ri].usage == 2) dynamic = true;
+			if (!dynamic) fx.shCache[key] = sh;
+		}
 		if (info.cls == fxrt::SC_VS) dev.vs = sh; else dev.ps = sh;
 		return;
 	}
 	// value: constant at vo, or a parameter reference
 	uint32_t value = fx.u32(fx.base + st.vo);
-	for (auto& r : fx.res)
-		if (r.tech == tech && r.pass == pass && r.state == si)
+	int ri = resOf(fx, tech, pass, si);
+	if (ri >= 0)
+	{
+		const FxRes& r = fx.res[ri];
+		if (r.usage == 1)
 		{
-			if (r.usage == 1)
-			{
-				std::string path = cstrAt(fx, r);
-				PRef ref;
-				if (resolvePath(&fx, PRef(), path, ref) && ref.off < ref.p->val.size())
-					value = toLeaf(st.typeType, ref.ty->type, ref.p->val[ref.off]);
-			}
-			break;
+			std::string path = cstrAt(fx, r);
+			PRef ref;
+			if (resolvePath(&fx, PRef(), path, ref) && ref.off < ref.p->val.size())
+				value = toLeaf(st.typeType, ref.ty->type, ref.p->val[ref.off]);
 		}
+	}
 	switch (info.cls)
 	{
 	case fxrt::SC_RS:
@@ -673,11 +702,21 @@ void fxApplyPass(Obj* o)
 	{
 		ShaderObj* sh = stage == 0 ? dev.vs : dev.ps;
 		if (!sh || !sh->ok) continue;
-		for (auto& c : sh->info.ctab)
+		auto ci = fx->ctabIdx.find(sh);
+		if (ci == fx->ctabIdx.end())
 		{
+			std::vector<int> v;
+			for (auto& c : sh->info.ctab) v.push_back(fxrt::findParam(*fx, c.name));
+			ci = fx->ctabIdx.emplace(sh, std::move(v)).first;
+		}
+		const std::vector<int>& pidx = ci->second;
+		for (size_t cn = 0; cn < sh->info.ctab.size(); cn++)
+		{
+			const CtabConst& c = sh->info.ctab[cn];
+			int pk = pidx[cn];
 			if (c.regSet == 3)
 			{
-				int k = fxrt::findParam(*fx, c.name);
+				int k = pk;
 				if (k < 0 || c.regIndex >= 16) continue;
 				const FxParam& sp = fx->params[k];
 				{
@@ -692,7 +731,7 @@ void fxApplyPass(Obj* o)
 				else if (sp.texObj) dev.tex[c.regIndex] = objectAt(sp.texObj);
 				for (auto& s : sp.smp) if (s.op < 16) dev.samp[c.regIndex][s.op] = s.v;
 			}
-			else packConst(*fx, c, sh, stage == 0);
+			else packConst(*fx, c, sh, stage == 0, pk);
 		}
 		if (!sh->info.pres.empty())
 		{

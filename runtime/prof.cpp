@@ -26,7 +26,7 @@ namespace prof
 namespace
 {
 constexpr uint32_t N = 1u << 17;
-uintptr_t samples[N];
+uintptr_t samples[N], callers[N];
 std::atomic<uint32_t> head{0};
 
 void onProf(int, siginfo_t*, void* uctx)
@@ -35,6 +35,7 @@ void onProf(int, siginfo_t*, void* uctx)
 	ucontext_t* uc = (ucontext_t*)uctx;
 	uint32_t i = head.fetch_add(1, std::memory_order_relaxed);
 	samples[i & (N - 1)] = (uintptr_t)uc->uc_mcontext.pc;
+	callers[i & (N - 1)] = (uintptr_t)uc->uc_mcontext.regs[30];
 #else
 	(void)uctx;
 #endif
@@ -50,7 +51,12 @@ std::string nameOf(uintptr_t pc, std::unordered_map<uintptr_t, std::string>& cac
 	{
 		const char* base = strrchr(di.dli_fname, '/');
 		base = base ? base + 1 : di.dli_fname;
-		if (di.dli_sname) n = di.dli_sname;
+		if (di.dli_sname)
+		{
+			n = di.dli_sname;
+			size_t f = n.find("f_00");
+			if (n.compare(0, 2, "_Z") == 0 && f != std::string::npos && f < 6) n = n.substr(f, 10);
+		}
 		else { char b[96]; snprintf(b, sizeof b, "%s+0x%zx", base, (size_t)(pc - (uintptr_t)di.dli_fbase) & ~(size_t)0xfff); n = b; }
 		if (strcmp(base, "libra3native.so") != 0) n = std::string(base) + ":" + n;
 	}
@@ -70,7 +76,13 @@ void reporter()
 		uint32_t n = h - tail;
 		if (n > N) { tail = h - N; n = N; }
 		std::unordered_map<uintptr_t, uint32_t> perPc;
+		std::unordered_map<std::string, uint32_t> perCaller;   // for samples in code without a symbol (helpers, libc): who called it
 		for (uint32_t i = tail; i != h; i++) perPc[samples[i & (N - 1)]]++;
+		for (uint32_t i = tail; i != h; i++)
+		{
+			const std::string& nm = nameOf(samples[i & (N - 1)], cache);
+			if (nm.find('+') != std::string::npos || nm.find(':') != std::string::npos) perCaller[nm.substr(0, 40) + " <- " + nameOf(callers[i & (N - 1)], cache)]++;
+		}
 		tail = h;
 		if (!n) continue;
 		std::unordered_map<std::string, uint32_t> perFn;
@@ -79,7 +91,7 @@ void reporter()
 		for (auto& kv : perFn) v.push_back({kv.second, kv.first});
 		std::sort(v.rbegin(), v.rend());
 		uint32_t lifted = 0;
-		for (auto& kv : perFn) if (kv.first.compare(0, 2, "f_") == 0) lifted += kv.second;
+		for (auto& kv : perFn) if (kv.first.find("f_") != std::string::npos && kv.first.find(':') == std::string::npos) lifted += kv.second;
 		rt::log("prof: %u samples (main thread CPU time), %.1f%% in lifted game code, %zu functions; top:", n, 100.0 * lifted / n, v.size());
 		std::string line;
 		for (size_t i = 0; i < v.size() && i < 40; i++)
@@ -89,6 +101,17 @@ void reporter()
 			if ((i + 1) % 8 == 0) { rt::log("prof:%s", line.c_str()); line.clear(); }
 		}
 		if (!line.empty()) rt::log("prof:%s", line.c_str());
+		std::vector<std::pair<uint32_t, std::string>> vc;
+		for (auto& kv : perCaller) vc.push_back({kv.second, kv.first});
+		std::sort(vc.rbegin(), vc.rend());
+		line.clear();
+		for (size_t i = 0; i < vc.size() && i < 24; i++)
+		{
+			char b[200]; snprintf(b, sizeof b, " %s %.1f%% |", vc[i].second.c_str(), 100.0 * vc[i].first / n);
+			line += b;
+			if ((i + 1) % 6 == 0) { rt::log("prof callers:%s", line.c_str()); line.clear(); }
+		}
+		if (!line.empty()) rt::log("prof callers:%s", line.c_str());
 	}
 }
 }
