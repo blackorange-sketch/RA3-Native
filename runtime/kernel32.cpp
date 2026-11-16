@@ -253,7 +253,8 @@ IMP_STD(K, GetProcessAffinityMask, 3) { guest::store<uint32_t>(ARG(1), 0xff); gu
 // until 1000 / (15 * k) ms have passed, k = render frames per logic frame (logic runs at 15 Hz). It only ever
 // lowers k when frames are slow and never raises it above the start value, so when the limiter is actually
 // waiting (spare time), step k up towards cap / 15.
-namespace rt { bool gFps60 = false; }
+namespace rt { bool gFps60 = false, gFps60b = false; }
+using rt::gFps60b;
 using rt::gFps60;
 static std::atomic<uint64_t> gLimWait{0};
 static uint32_t gLimObj = 0;   // the game object that owns the frame limiter
@@ -278,12 +279,13 @@ namespace rt
 {
 void fpsPinTick()
 {
-	if (!gFps60 || !gLimObj) return;
-	uint32_t want = guest::load<uint32_t>(0xcaf9d4) / std::max(1u, guest::load<uint32_t>(0xcaf9d0));
+	if (!(gFps60 || gFps60b) || !gLimObj) return;
+	// variant B keeps the game's 30 fps cap (everything it derives stays as on PC) and only shortens the wait
+	uint32_t want = gFps60b ? 4 : guest::load<uint32_t>(0xcaf9d4) / std::max(1u, guest::load<uint32_t>(0xcaf9d0));
 	uint32_t k = guest::load<uint32_t>(gLimObj + 0x17c);
 	if (k == want || k == 0 || k > 16) return;
 	static int n = 0;
-	if (n++ < 20) log("fps60: game lowered render frames per logic frame to %u, restored %u", k, want);
+	if (n++ < 20 && !gFps60b) log("fps60: game lowered render frames per logic frame to %u, restored %u", k, want);
 	guest::store<uint32_t>(gLimObj + 0x17c, want);
 }
 }
