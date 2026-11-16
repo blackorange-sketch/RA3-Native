@@ -256,6 +256,7 @@ IMP_STD(K, GetProcessAffinityMask, 3) { guest::store<uint32_t>(ARG(1), 0xff); gu
 namespace rt { bool gFps60 = false; }
 using rt::gFps60;
 static std::atomic<uint64_t> gLimWait{0};
+static uint32_t gLimObj = 0;   // the game object that owns the frame limiter
 namespace rt { uint64_t limiterWaitUs() { return gLimWait.exchange(0); } }
 static void limiterHeadroom(CPU* c)
 {
@@ -267,15 +268,24 @@ static void limiterHeadroom(CPU* c)
 		if (prev && t - prev < 3000) gLimWait += t - prev;
 		prev = t;
 	}
-	if (!gFps60) return;
-	static auto last = std::chrono::steady_clock::now();
-	auto now = std::chrono::steady_clock::now();
-	if (now - last < std::chrono::seconds(2)) return;
-	last = now;
 	uint32_t obj = c->r[EDI];
-	if (obj < 0x400000 || obj >= 0x30000000) return;
-	uint32_t k = guest::load<uint32_t>(obj + 0x17c), kmax = guest::load<uint32_t>(0xcaf9d4) / std::max(1u, guest::load<uint32_t>(0xcaf9d0));
-	if (k >= 1 && k < kmax) { guest::store<uint32_t>(obj + 0x17c, k + 1); log("fps60: frame limiter has headroom, render frames per logic frame %u -> %u", k, k + 1); }
+	if (obj > 0x400000 && obj < 0x30000000) gLimObj = obj;
+}
+// Called once per presented frame. In 60 fps mode the game expects cap / 15 render frames per logic frame
+// everywhere (interpolation, construction animation, terrain updates), but its limiter drops that number when a
+// frame is slow. Keep it at cap / 15: a slow frame then just runs the game a little slower instead.
+namespace rt
+{
+void fpsPinTick()
+{
+	if (!gFps60 || !gLimObj) return;
+	uint32_t want = guest::load<uint32_t>(0xcaf9d4) / std::max(1u, guest::load<uint32_t>(0xcaf9d0));
+	uint32_t k = guest::load<uint32_t>(gLimObj + 0x17c);
+	if (k == want || k == 0 || k > 16) return;
+	static int n = 0;
+	if (n++ < 20) log("fps60: game lowered render frames per logic frame to %u, restored %u", k, want);
+	guest::store<uint32_t>(gLimObj + 0x17c, want);
+}
 }
 static void noteWait(CPU* c, const char* what, uint32_t ms)
 {

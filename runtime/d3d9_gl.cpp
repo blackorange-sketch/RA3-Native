@@ -1302,6 +1302,7 @@ static void presentImpl();
 void present()
 {
 	uint64_t t0 = nowUs();
+	rt::fpsPinTick();
 	presentImpl();
 	gTPresent += nowUs() - t0;
 	static uint64_t start = 0; static uint32_t f0 = 0;
