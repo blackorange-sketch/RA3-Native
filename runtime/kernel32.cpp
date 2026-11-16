@@ -248,8 +248,30 @@ IMP_STD(K, GetPriorityClass, 1) { SET(0x20); }
 IMP_STD(K, SetThreadIdealProcessor, 2) { SET(0); }
 IMP_STD(K, SetProcessAffinityMask, 2) { SET(1); }
 IMP_STD(K, GetProcessAffinityMask, 3) { guest::store<uint32_t>(ARG(1), 0xff); guest::store<uint32_t>(ARG(2), 0xff); SET(1); }
-IMP_STD(K, Sleep, 1) { std::this_thread::sleep_for(std::chrono::milliseconds(ARG(0))); }
-IMP_STD(K, SleepEx, 2) { uint32_t ms = ARG(0); if (ms) std::this_thread::sleep_for(std::chrono::milliseconds(ms)); else std::this_thread::sleep_for(std::chrono::microseconds(100)); SET(0); }
+// Temporary diagnostics for the frame limiter: who makes the main thread wait, and for how long.
+static void noteWait(CPU* c, const char* what, uint32_t ms)
+{
+	if (thisThread().tid != 4096) return;
+	static std::mutex m; static std::map<std::pair<uint32_t, const char*>, std::pair<uint32_t, uint64_t>> h; static uint32_t total = 0; static int dumps = 0;
+	std::lock_guard<std::mutex> l(m);
+	auto& e = h[{guest::load<uint32_t>(c->r[ESP]), what}];
+	e.first++; e.second += ms;
+	++total;
+	static auto lastDump = std::chrono::steady_clock::now();
+	if (dumps < 14 && std::chrono::steady_clock::now() - lastDump > std::chrono::seconds(25))
+	{
+		lastDump = std::chrono::steady_clock::now();
+		dumps++;
+		std::vector<std::pair<uint64_t, std::string>> v;
+		for (auto& kv : h) { char b[96]; snprintf(b, sizeof b, "%s<%08x n=%u ms=%llu", kv.first.second, kv.first.first, kv.second.first, (unsigned long long)kv.second.second); v.push_back({kv.second.second * 1000 + kv.second.first, b}); }
+		std::sort(v.rbegin(), v.rend());
+		std::string o; for (size_t i = 0; i < v.size() && i < 12; i++) o += " | " + v[i].second;
+		log("waitdiag (main thread, last 25 s):%s", o.c_str());
+		h.clear();
+	}
+}
+IMP_STD(K, Sleep, 1) { noteWait(c, "Sleep", ARG(0)); std::this_thread::sleep_for(std::chrono::milliseconds(ARG(0))); }
+IMP_STD(K, SleepEx, 2) { uint32_t ms = ARG(0); noteWait(c, "SleepEx", ms); if (ms) std::this_thread::sleep_for(std::chrono::milliseconds(ms)); else std::this_thread::sleep_for(std::chrono::microseconds(100)); SET(0); }
 
 IMP_STD(K, CreateEventA, 4)
 {
@@ -302,6 +324,7 @@ IMP_STD(K, WaitForSingleObject, 2)
 	Waitable* w = asWaitable(ARG(0));
 	if (!w) { SET(0xffffffff); return; }
 	uint32_t ms = ARG(1), tid = thisThread().tid;
+	if (ms != 0xffffffffu && ms != 0) noteWait(c, "WaitForSingleObject", ms);
 	std::unique_lock<std::mutex> l(waitMu);
 	gWaitCalls++;
 	gWaiting[tid] = {ARG(0), ms};
@@ -449,12 +472,12 @@ static uint64_t winFileTime()
 	timespec t; clock_gettime(CLOCK_REALTIME, &t);
 	return ((uint64_t)t.tv_sec + 11644473600ull) * 10000000ull + t.tv_nsec / 100;
 }
-IMP_STD(K, GetTickCount, 0) { timespec t; clock_gettime(CLOCK_MONOTONIC, &t); SET((uint32_t)(t.tv_sec * 1000 + t.tv_nsec / 1000000)); }
-IMP_ID("WINMM.dll", "timeGetTime", timeGetTime, 0) { timespec t; clock_gettime(CLOCK_MONOTONIC, &t); SET((uint32_t)(t.tv_sec * 1000 + t.tv_nsec / 1000000)); }
+IMP_STD(K, GetTickCount, 0) { noteWait(c, "GetTickCount", 0); timespec t; clock_gettime(CLOCK_MONOTONIC, &t); SET((uint32_t)(t.tv_sec * 1000 + t.tv_nsec / 1000000)); }
+IMP_ID("WINMM.dll", "timeGetTime", timeGetTime, 0) { noteWait(c, "timeGetTime", 0); timespec t; clock_gettime(CLOCK_MONOTONIC, &t); SET((uint32_t)(t.tv_sec * 1000 + t.tv_nsec / 1000000)); }
 IMP_ID("WINMM.dll", "timeBeginPeriod", timeBeginPeriod, 4) { SET(0); }
 IMP_ID("WINMM.dll", "timeEndPeriod", timeEndPeriod, 4) { SET(0); }
 IMP_STD(K, QueryPerformanceFrequency, 1) { guest::store<uint64_t>(ARG(0), 1000000000ull); SET(1); }
-IMP_STD(K, QueryPerformanceCounter, 1) { guest::store<uint64_t>(ARG(0), rdtsc_host()); SET(1); }
+IMP_STD(K, QueryPerformanceCounter, 1) { noteWait(c, "QPC", 0); guest::store<uint64_t>(ARG(0), rdtsc_host()); SET(1); }
 IMP_STD(K, GetSystemTimeAsFileTime, 1) { guest::store<uint64_t>(ARG(0), winFileTime()); }
 IMP_STD(K, GetLocalTime, 1)
 {

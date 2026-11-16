@@ -1,6 +1,7 @@
 #include "hud.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
@@ -200,6 +201,17 @@ void draw(const DrawRect& rect)
 {
 	std::lock_guard<std::mutex> g(mu);
 	load(); buildPages();
+	{
+		// small frames-per-second counter in the top right corner (averaged over about half a second)
+		static auto t0 = std::chrono::steady_clock::now();
+		static int frames = 0, shown = 0;
+		frames++;
+		double dt = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+		if (dt >= 0.5) { shown = (int)(frames / dt + 0.5); frames = 0; t0 = std::chrono::steady_clock::now(); }
+		int h = std::max(18, scrH / 36), w = h * 2;
+		rect(scrW - w - 6, 6, w, h, 0.05f, 0.05f, 0.06f);
+		text(rect, std::to_string(shown), {scrW - w - 6, 6, w, h}, shown >= 28 ? 0.45f : 0.95f, shown >= 28 ? 0.95f : (shown >= 20 ? 0.85f : 0.35f), 0.35f);
+	}
 	R e = editRect();
 	rect(e.x, e.y, e.w, e.h, editing ? 0.95f : 0.6f, editing ? 0.75f : 0.6f, editing ? 0.1f : 0.65f);
 	rect(e.x + 4, e.y + 4, e.w - 8, e.h - 8, 0.12f, 0.12f, 0.14f);
