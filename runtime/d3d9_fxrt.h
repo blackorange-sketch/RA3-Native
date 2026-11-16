@@ -159,11 +159,20 @@ inline int findParam(const FxInfo& fx, const std::string& name)
 }
 
 // ---- FXLC pre-shader evaluation -------------------------------------------------------------------------------------
-// `getInputs` fills the input register file (4 doubles per register) for the CTAB constants.
-inline bool evalPreshader(const uint8_t* blob, size_t n, const std::function<void(const d3d::CtabConst&, double*, size_t)>& fill, double& result)
+// A pre-shader is a small CPU program D3DX runs before a draw: it reads effect parameters (its own CTAB) and writes
+// shader constant registers. It appears both as the index expression of shader arrays and embedded in a shader
+// (the 'PRES' comment), where it produces float/bool constants the shader reads but its CTAB does not list.
+struct PresOut
+{
+	std::vector<std::pair<uint32_t, double>> f;   // float output: component index (register * 4 + component), value
+	std::vector<std::pair<uint32_t, double>> b;   // bool output: component index (register * 4), value
+	double last = 0;                              // last float written (array index expressions)
+};
+// `fill` provides the input register file (4 doubles per register) for the CTAB constants.
+inline bool runPreshader(const uint8_t* blob, size_t n, const std::function<void(const d3d::CtabConst&, double*, size_t)>& fill, PresOut& res)
 {
 	auto u = [&](size_t p) { uint32_t v = 0; if (p + 4 <= n) memcpy(&v, blob + p, 4); return v; };
-	if (n < 8 || u(0) != 0x46580200) return false;
+	if (n < 8 || (u(0) & 0xffffff00u) != 0x46580200) return false;
 	size_t p = 4;
 	const uint8_t* ctabP = nullptr; size_t ctabN = 0;
 	const uint8_t* clitP = nullptr; size_t clitN = 0;
@@ -186,7 +195,7 @@ inline bool evalPreshader(const uint8_t* blob, size_t n, const std::function<voi
 	if (!fxlcP) return false;
 	std::vector<d3d::CtabConst> ctab;
 	if (ctabP) shdr::parseCtab(ctabP, ctabN, ctab);
-	std::vector<double> in(1024, 0.0), tmp(256, 0.0), lit;
+	std::vector<double> in(1024, 0.0), tmp(1024, 0.0), oF(1024, 0.0), oB(64, 0.0), lit;
 	for (auto& c : ctab)
 	{
 		if (c.regIndex * 4 + 4 * std::max(1u, c.regCount) <= in.size()) fill(c, &in[c.regIndex * 4], 4 * std::max(1u, c.regCount));
@@ -200,54 +209,86 @@ inline bool evalPreshader(const uint8_t* blob, size_t n, const std::function<voi
 	auto fu = [&](size_t q) { uint32_t v = 0; if (q + 4 <= fxlcN) memcpy(&v, fxlcP + q, 4); return v; };
 	uint32_t cnt = fu(0);
 	size_t q = 4;
-	double out = 0;
 	auto rd = [&](uint32_t type, uint32_t idx) -> double {
 		switch (type)
 		{
 		case 1: return idx < lit.size() ? lit[idx] : 0.0;
 		case 2: return idx < in.size() ? in[idx] : 0.0;
 		case 7: return idx < tmp.size() ? tmp[idx] : 0.0;
-		case 4: return out;
+		case 4: return idx < oF.size() ? oF[idx] : 0.0;
+		case 5: return idx < oB.size() ? oB[idx] : 0.0;
 		}
 		return 0.0;
+	};
+	auto wr = [&](uint32_t type, uint32_t idx, double v) {
+		if (type == 7) { if (idx < tmp.size()) tmp[idx] = v; }
+		else if (type == 4) { if (idx < oF.size()) oF[idx] = v; res.f.push_back({idx, v}); res.last = v; }
+		else if (type == 5) { if (idx < oB.size()) oB[idx] = v; res.b.push_back({idx, v}); }
 	};
 	for (uint32_t i = 0; i < cnt && cnt < 4096; i++)
 	{
 		uint32_t tok = fu(q), nin = fu(q + 4);
 		q += 8;
 		if (nin > 8) return false;
-		double a[8] = {};
-		for (uint32_t k = 0; k < nin; k++) { a[k] = rd(fu(q + 4), fu(q + 8)); q += 12; }
+		uint32_t at[8] = {}, ai[8] = {};
+		for (uint32_t k = 0; k < nin; k++) { if (fu(q)) return false; /* indexed operands: not seen */ at[k] = fu(q + 4); ai[k] = fu(q + 8); q += 12; }
+		if (fu(q)) return false;
 		uint32_t ot = fu(q + 4), oi = fu(q + 8);
 		q += 12;
-		uint32_t opc = (tok >> 20) & 0x7ff;
-		double r = 0;
-		switch (opc)
+		uint32_t opc = (tok >> 20) & 0x7ff, comps = tok & 0xffff;
+		bool scalar = (tok & 0x10000) != 0;
+		if (comps == 0) comps = 1;
+		if (comps > 16) return false;
+		if (opc == 0x500)   // dot: all components -> one value
 		{
-		case 0x100: r = a[0]; break;
-		case 0x101: r = -a[0]; break;
-		case 0x102: r = a[0] != 0 ? 1.0 / a[0] : 0.0; break;
-		case 0x103: r = a[0] - std::floor(a[0]); break;
-		case 0x104: r = std::exp2(a[0]); break;
-		case 0x105: r = std::log2(a[0]); break;
-		case 0x106: r = a[0] > 0 ? 1.0 / std::sqrt(a[0]) : 0.0; break;
-		case 0x107: r = std::sin(a[0]); break;
-		case 0x108: r = std::cos(a[0]); break;
-		case 0x200: r = std::min(a[0], a[1]); break;
-		case 0x201: r = std::max(a[0], a[1]); break;
-		case 0x202: r = a[0] < a[1] ? 1.0 : 0.0; break;
-		case 0x203: r = a[0] >= a[1] ? 1.0 : 0.0; break;
-		case 0x204: r = a[0] + a[1]; break;
-		case 0x205: r = a[0] * a[1]; break;
-		case 0x206: r = std::atan2(a[0], a[1]); break;
-		case 0x207: r = a[1] != 0 ? a[0] / a[1] : 0.0; break;
-		case 0x300: r = a[0] >= 0 ? a[1] : a[2]; break;
-		default: return false;
+			double r = 0;
+			for (uint32_t j = 0; j < comps; j++) r += rd(at[0], ai[0] + j) * rd(at[1], ai[1] + j);
+			wr(ot, oi, r);
+			continue;
 		}
-		if (ot == 4) out = r;
-		else if (ot == 7 && oi < tmp.size()) tmp[oi] = r;
+		double outv[16];
+		for (uint32_t j = 0; j < comps; j++)
+		{
+			double a[8] = {};
+			for (uint32_t k = 0; k < nin; k++) a[k] = rd(at[k], ai[k] + ((scalar && k == 0) ? 0 : j));
+			double r = 0;
+			switch (opc)
+			{
+			case 0x100: r = a[0]; break;
+			case 0x101: r = -a[0]; break;
+			case 0x103: r = 1.0 / a[0]; break;
+			case 0x104: r = a[0] - std::floor(a[0]); break;
+			case 0x105: r = std::exp2(a[0]); break;
+			case 0x106: r = a[0] == 0 ? 0.0 : std::log2(std::fabs(a[0])); break;
+			case 0x107: r = 1.0 / std::sqrt(std::fabs(a[0])); break;
+			case 0x108: r = std::sin(a[0]); break;
+			case 0x109: r = std::cos(a[0]); break;
+			case 0x10a: r = std::asin(a[0]); break;
+			case 0x10b: r = std::acos(a[0]); break;
+			case 0x10c: r = std::atan(a[0]); break;
+			case 0x200: r = std::min(a[0], a[1]); break;
+			case 0x201: r = std::max(a[0], a[1]); break;
+			case 0x202: r = a[0] < a[1] ? 1.0 : 0.0; break;
+			case 0x203: r = a[0] >= a[1] ? 1.0 : 0.0; break;
+			case 0x204: r = a[0] + a[1]; break;
+			case 0x205: r = a[0] * a[1]; break;
+			case 0x206: r = std::atan2(a[0], a[1]); break;
+			case 0x208: r = a[0] / a[1]; break;
+			case 0x300: r = a[0] >= 0 ? a[1] : a[2]; break;
+			case 0x301: r = a[0] != 0 ? a[1] : a[2]; break;
+			default: return false;
+			}
+			outv[j] = r;
+		}
+		for (uint32_t j = 0; j < comps; j++) wr(ot, oi + j, outv[j]);
 	}
-	result = out;
+	return true;
+}
+inline bool evalPreshader(const uint8_t* blob, size_t n, const std::function<void(const d3d::CtabConst&, double*, size_t)>& fill, double& result)
+{
+	PresOut o;
+	if (!runPreshader(blob, n, fill, o)) return false;
+	result = o.last;
 	return true;
 }
 

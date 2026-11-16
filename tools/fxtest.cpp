@@ -5,7 +5,7 @@
 using namespace d3d;
 int main(int argc, char** argv)
 {
-	int nfx = 0, bad = 0, nsh = 0, miss = 0, maxArr = 0;
+	int npres = 0, nfx = 0, bad = 0, nsh = 0, miss = 0, maxArr = 0;
 	for (int i = 1; i < argc; i++)
 	{
 		std::ifstream f(argv[i], std::ios::binary);
@@ -27,8 +27,15 @@ int main(int argc, char** argv)
 					if (!shdr::translate(r.code, r.size, sh)) { printf("translate fail %s: %s\n", argv[i], sh.err.c_str()); bad++; }
 					if (sh.isVs != (si.cls == fxrt::SC_VS)) { printf("stage mismatch %s\n", argv[i]); bad++; }
 					nsh++;
+					if (!sh.pres.empty())
+					{
+						std::function<void(const d3d::CtabConst&, double*, size_t)> fill = [&](const d3d::CtabConst& c, double* dst, size_t nd) { for (size_t k = 0; k < nd; k++) dst[k] = 1.5; };
+						fxrt::PresOut po;
+						if (!fxrt::runPreshader(sh.pres.data(), sh.pres.size(), fill, po)) { printf("pres FAIL %s\n", argv[i]); bad++; }
+						else npres++;
+					}
 					maxArr = std::max(maxArr, r.arrayIndex);
 				}
 	}
-	printf("effects %d, shaders resolved %d, missing %d, bad %d, max array index %d\n", nfx, nsh, miss, bad, maxArr);
+	printf("pres ok %d; effects %d, shaders resolved %d, missing %d, bad %d, max array index %d\n", npres, nfx, nsh, miss, bad, maxArr);
 }

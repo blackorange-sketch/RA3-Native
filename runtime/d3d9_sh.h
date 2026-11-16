@@ -36,6 +36,7 @@ struct ShaderInfo
 	int numC = 0;
 	bool relC = false;                   // reads float constants through a0 (relative addressing)
 	std::vector<std::pair<int, std::array<float, 4>>> defF;   // constants the shader defines itself (def c#)
+	std::vector<uint8_t> pres;           // embedded pre-shader ('PRES' comment), run before draws by the effect runtime
 	int psOutputs = 0;                   // PS: bitmask of oC registers written
 	ShaderInfo() { memset(samplerType, 0, sizeof samplerType); }
 };
@@ -312,6 +313,8 @@ struct Translator
 				size_t len = (tok >> 16) & 0x7fff;
 				if (p + 1 < nw && w[p + 1] == 0x42415443 /* CTAB */ && p + 2 + len <= nw + 1)
 					parseCtab((const uint8_t*)(w + p + 2), (len - 1) * 4, si.ctab);
+				else if (len >= 2 && p + 1 < nw && w[p + 1] == 0x53455250 /* PRES */ && p + 1 + len <= nw)
+					si.pres.assign((const uint8_t*)(w + p + 2), (const uint8_t*)(w + p + 1 + len));
 				p += 1 + len;
 				continue;
 			}

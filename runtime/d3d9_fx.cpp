@@ -694,6 +694,32 @@ void fxApplyPass(Obj* o)
 			}
 			else packConst(*fx, c, sh, stage == 0);
 		}
+		if (!sh->info.pres.empty())
+		{
+			// embedded pre-shader: constants computed from effect parameters (time, atlas layout, ...) that the
+			// shader reads but its own constant table does not list
+			std::function<void(const CtabConst&, double*, size_t)> fill = [&](const CtabConst& c, double* dst, size_t nd) {
+				int k = fxrt::findParam(*fx, c.name);
+				if (k < 0) return;
+				const FxParam& pp = fx->params[k];
+				if (pp.ty.cls == 4 || pp.val.empty()) return;
+				std::vector<uint32_t> regs(nd, 0);
+				fxrt::packToRegs(pp.ty, pp.val.data(), pp.val.size(), 2, 0, regs.data(), (uint32_t)(nd / 4));
+				for (size_t i = 0; i < nd; i++) { float f; memcpy(&f, &regs[i], 4); dst[i] = f; }
+			};
+			fxrt::PresOut po;
+			bool okp = fxrt::runPreshader(sh->info.pres.data(), sh->info.pres.size(), fill, po);
+			float* fregs = stage == 0 ? dev.vsF : dev.psF;
+			int32_t* bregs = stage == 0 ? dev.vsB : dev.psB;
+			uint32_t maxF = stage == 0 ? 256 : 224;
+			if (okp)
+			{
+				for (auto& w : po.f) if (w.first < maxF * 4) fregs[w.first] = (float)w.second;
+				for (auto& w : po.b) if (w.first / 4 < 16) bregs[w.first / 4] = w.second != 0;
+			}
+			static int npl = 0;
+			if (npl < 6 && (!okp || verbose())) { npl++; log("fx: pre-shader %s: %zu float, %zu bool outputs", okp ? "ok" : "FAILED", po.f.size(), po.b.size()); }
+		}
 	}
 }
 void fxCommit(Obj* o) { fxApplyPass(o); }
