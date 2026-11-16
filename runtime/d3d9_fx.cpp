@@ -670,7 +670,12 @@ static void applyShaderState(FxInfo& fx, const FxPass& ps, uint32_t tech, uint32
 		else
 		{
 			fxrt::ShaderRef ref;
-			if (fxrt::resolveShader(fx, tech, pass, si, ref)) sh = getShader(ref.code, ref.size);
+			if (fxrt::resolveShader(fx, tech, pass, si, ref))
+			{
+				auto ci = fx.codeCache.find(ref.code);
+				if (ci != fx.codeCache.end()) sh = (ShaderObj*)ci->second;
+				else { sh = getShader(ref.code, ref.size); fx.codeCache[ref.code] = sh; }
+			}
 			// shaders picked from an array by a pre-shader depend on parameter values: resolve those every time
 			bool dynamic = false;
 			int ri = resOf(fx, tech, pass, si);

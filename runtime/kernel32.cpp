@@ -311,7 +311,17 @@ static void noteWait(CPU* c, const char* what, uint32_t ms)
 	}
 }
 IMP_STD(K, Sleep, 1) { noteWait(c, "Sleep", ARG(0)); std::this_thread::sleep_for(std::chrono::milliseconds(ARG(0))); }
-IMP_STD(K, SleepEx, 2) { uint32_t ms = ARG(0); noteWait(c, "SleepEx", ms); limiterHeadroom(c); if (ms) std::this_thread::sleep_for(std::chrono::milliseconds(ms)); else std::this_thread::sleep_for(std::chrono::microseconds(100)); SET(0); }
+IMP_STD(K, SleepEx, 2)
+{
+	uint32_t ms = ARG(0);
+	noteWait(c, "SleepEx", ms);
+	limiterHeadroom(c);
+	// the frame limiter spins on SleepEx(0) + timeGetTime until the frame time is reached: 1 ms naps there save power
+	bool limiter = guest::load<uint32_t>(c->r[ESP] + 12) == 0x629863u;
+	if (ms) std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+	else std::this_thread::sleep_for(std::chrono::microseconds(limiter ? 1000 : 100));
+	SET(0);
+}
 
 IMP_STD(K, CreateEventA, 4)
 {

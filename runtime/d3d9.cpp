@@ -151,8 +151,22 @@ ShaderObj* getShader(const uint8_t* code, size_t n)
 	return (cache[h] = std::move(sh)).get();
 }
 
+// Fast lookup without the lock: every guest object block keeps its index into an append-only table at +12.
+static constexpr uint32_t kMaxObjs = 1u << 20;
+static std::atomic<Obj*> objTable[kMaxObjs];
+static std::atomic<uint32_t> objCount{1};
+static std::atomic<uint32_t> objLo{0xffffffffu}, objHi{0};   // address range of object blocks (committed heap)
 Obj* objectAt(uint32_t addr)
 {
+	if (addr >= objLo.load(std::memory_order_relaxed) && addr <= objHi.load(std::memory_order_relaxed))
+	{
+		uint32_t idx = guest::load<uint32_t>(addr + 12);
+		if (idx && idx < kMaxObjs)
+		{
+			Obj* o = objTable[idx].load(std::memory_order_acquire);
+			if (o && o->addr == addr) return o;
+		}
+	}
 	std::lock_guard<std::mutex> l(objMu);
 	auto it = objs.find(addr);
 	return it == objs.end() ? nullptr : it->second;
@@ -182,6 +196,13 @@ Obj* newObj(Iface i)
 	guest::store<uint32_t>(o->addr, defs[i].vtable);
 	guest::store<uint32_t>(o->addr + 4, 1);
 	guest::store<uint32_t>(o->addr + 8, i);
+	uint32_t idx = objCount.fetch_add(1);
+	if (idx < kMaxObjs) { objTable[idx].store(o, std::memory_order_release); guest::store<uint32_t>(o->addr + 12, idx); }
+	{
+		uint32_t lo = objLo.load(), hi = objHi.load();
+		while (o->addr < lo && !objLo.compare_exchange_weak(lo, o->addr)) {}
+		while (o->addr > hi && !objHi.compare_exchange_weak(hi, o->addr)) {}
+	}
 	std::lock_guard<std::mutex> l(objMu);
 	objs[o->addr] = o;
 	return o;

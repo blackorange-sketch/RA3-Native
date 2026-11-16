@@ -85,6 +85,7 @@ struct FxInfo
 	std::unordered_map<uint64_t, void*> shCache;
 	std::unordered_map<const void*, std::vector<int>> ctabIdx;
 	std::unordered_map<uint64_t, int> resIdx;
+	std::unordered_map<const void*, void*> codeCache;   // shader bytecode in this effect -> translated shader
 	std::vector<uint32_t> sharedIdx;   // indices of shared (pool) parameters
 	uint32_t u32(size_t p) const { uint32_t v = 0; if (p + 4 <= blob.size()) memcpy(&v, blob.data() + p, 4); return v; }
 };
