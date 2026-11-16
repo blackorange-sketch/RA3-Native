@@ -37,6 +37,8 @@ using namespace rt;
 #define GL_COMPRESSED_RGBA_S3TC_DXT5_EXT 0x83F3
 #endif
 
+void profStart();
+
 namespace d3d
 {
 namespace glr
@@ -1380,6 +1382,7 @@ static void presentImpl()
 		for (int i = 0; i < ncpu; i++) if (freq[i] * 4 >= maxF * 3) { CPU_SET(i, &set); picked++; }
 		int ra = picked ? sched_setaffinity(0, sizeof set, &set) : -1;
 		int rp = setpriority(PRIO_PROCESS, (id_t)gettid(), -10);
+		::profStart();
 		log("perf: main thread pinned to %d fast cores of %d (max %lu kHz): affinity %s, priority %s", picked, ncpu, maxF, ra == 0 ? "ok" : "failed", rp == 0 ? "ok" : "failed");
 	}
 	{

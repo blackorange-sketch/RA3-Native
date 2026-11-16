@@ -404,13 +404,18 @@ void call_target(CPU* c, uint32_t addr)
 		c->r[ESP] += 4 + e->pop;
 		return;
 	}
+	// indirect calls (virtual methods, function pointers) are frequent: cache guest address -> table index
+	static std::atomic<uint64_t> cache[1u << 14];
+	uint32_t slot = (addr ^ (addr >> 14)) & ((1u << 14) - 1);
+	uint64_t ce = cache[slot].load(std::memory_order_relaxed);
+	if ((uint32_t)ce == addr && addr) { lifted_table[ce >> 32].fn(c); return; }
 	unsigned lo = 0, hi = lifted_count;
 	while (lo < hi)
 	{
 		unsigned mid = (lo + hi) / 2;
 		if (lifted_table[mid].addr < addr) lo = mid + 1; else hi = mid;
 	}
-	if (lo < lifted_count && lifted_table[lo].addr == addr) { lifted_table[lo].fn(c); return; }
+	if (lo < lifted_count && lifted_table[lo].addr == addr) { cache[slot].store((uint64_t)lo << 32 | addr, std::memory_order_relaxed); lifted_table[lo].fn(c); return; }
 	{
 		const char* nm[8] = {"eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"};
 		for (int i = 0; i < 8; i++)
