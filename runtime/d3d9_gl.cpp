@@ -1081,7 +1081,19 @@ void draw(const DrawCall& dc)
 	uint64_t t2 = nowUs();
 	glBindVertexArray(gVao);
 	// constants
-	if (p->vc >= 0) glUniform4fv(p->vc, std::max(1, std::min(256, vs->info.numC + 0)), dev.vsF);
+	if (p->vc >= 0)
+	{
+		if (vs->info.relC && !vs->info.defF.empty())
+		{
+			// D3D: constants a shader defines itself (def c#) live in the constant registers, so relative
+			// addressing (c[a0 + n]) must see them - e.g. the random and corner tables of the particle shaders.
+			static float merged[256 * 4];
+			memcpy(merged, dev.vsF, sizeof merged);
+			for (auto& d : vs->info.defF) if (d.first >= 0 && d.first < 256) memcpy(merged + 4 * d.first, d.second.data(), 16);
+			glUniform4fv(p->vc, 256, merged);
+		}
+		else glUniform4fv(p->vc, std::max(1, std::min(256, vs->info.numC + 0)), dev.vsF);
+	}
 	if (p->vci >= 0) glUniform4iv(p->vci, 16, dev.vsI);
 	if (p->vcb >= 0) glUniform1iv(p->vcb, 16, dev.vsB);
 	if (p->pc >= 0) glUniform4fv(p->pc, std::max(1, std::min(224, ps->info.numC + 0)), dev.psF);

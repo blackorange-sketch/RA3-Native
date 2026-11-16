@@ -1,6 +1,7 @@
 // Direct3D 9 shader byte code (vs/ps 2.0 and 3.0) -> GLSL ES 3.00 translator.
 // Pure C++ (no GL, no guest memory), so it can be unit-tested on the host with every shader of the game.
 #pragma once
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -33,6 +34,8 @@ struct ShaderInfo
 	std::vector<std::string> psIns;      // PS: varying names consumed
 	bool usesFragCoord = false, usesFace = false, writesDepth = false;
 	int numC = 0;
+	bool relC = false;                   // reads float constants through a0 (relative addressing)
+	std::vector<std::pair<int, std::array<float, 4>>> defF;   // constants the shader defines itself (def c#)
 	int psOutputs = 0;                   // PS: bitmask of oC registers written
 	ShaderInfo() { memset(samplerType, 0, sizeof samplerType); }
 };
@@ -149,7 +152,7 @@ struct Translator
 		{
 			if (!r.rel && defC.count(r.num)) { snprintf(b, sizeof b, "d%d", r.num); return b; }
 			si.numC = std::max(si.numC, r.num + 1);
-			if (r.rel) si.numC = 256;
+			if (r.rel) { si.numC = 256; si.relC = true; }
 			if (r.rel) snprintf(b, sizeof b, "%sc[%d + int(a0.%s)]", si.isVs ? "v" : "p", r.num, compName(r.relComp).c_str());
 			else snprintf(b, sizeof b, "%sc[%d]", si.isVs ? "v" : "p", r.num);
 			return b;
@@ -344,6 +347,7 @@ struct Translator
 				float f[4];
 				memcpy(f, w + q, 16);
 				q += 4;
+				si.defF.push_back({num, {f[0], f[1], f[2], f[3]}});
 				defC[num] = "vec4(" + fmtFloat(f[0]) + ", " + fmtFloat(f[1]) + ", " + fmtFloat(f[2]) + ", " + fmtFloat(f[3]) + ")";
 				break;
 			}
