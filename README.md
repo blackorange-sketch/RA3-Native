@@ -1,41 +1,166 @@
-# RA3 Native
+<p align="center">
+  <img src="docs/images/icon.png" width="128" alt="RA3 Native icon">
+</p>
 
-An experimental native Android port of **Command & Conquer: Red Alert 3** (patch 1.12), built by **static recompilation** of the original x86 executable into ARM64 code. No Winlator, no Box64, no emulator layer at run time.
+<h1 align="center">RA3 Native</h1>
 
-> **No game files are included or distributed.** This repository contains only tools and a runtime. You must supply your own legally obtained copy of the game. Generated code is never committed.
+<p align="center">
+  <b>Command &amp; Conquer: Red Alert 3 running natively on Android</b><br>
+  Static recompilation of the original x86 game into ARM64 — no Winlator, no Box64, no emulator at run time.
+</p>
+
+<p align="center">
+  <a href="https://github.com/blackorange-sketch/RA3-Native/releases/tag/latest"><img src="https://img.shields.io/github/v/release/blackorange-sketch/RA3-Native?include_prereleases&label=download&color=d0161a" alt="Download"></a>
+  <a href="https://github.com/blackorange-sketch/RA3-Native/releases"><img src="https://img.shields.io/github/downloads/blackorange-sketch/RA3-Native/total?color=ffc21a" alt="Downloads"></a>
+  <img src="https://img.shields.io/badge/android-8.0%2B%20%7C%20arm64-3ddc84" alt="Android 8.0+ arm64">
+  <img src="https://img.shields.io/badge/status-experimental-orange" alt="Experimental">
+</p>
+
+> [!IMPORTANT]
+> **No game files are included.** This project contains only tools and a runtime. You need your own legally obtained copy of Red Alert 3 (patch 1.12).
+
+---
+
+## Contents
+
+- [What works](#what-works)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Controls](#controls)
+- [Launcher options](#launcher-options)
+- [Performance](#performance)
+- [Known issues](#known-issues)
+- [How it works](#how-it-works)
+- [Troubleshooting and diagnostics](#troubleshooting-and-diagnostics)
+- [Building](#building)
+- [Legal](#legal)
+
+## What works
+
+| | |
+|---|---|
+| 🎮 **Gameplay** | Skirmish and campaign, all three factions, saving and loading |
+| 🖼️ **Graphics** | Full 3D world, water, shadows, explosions, fire and most weapon effects; all graphics presets selectable in the game's options |
+| ⚡ **Performance** | Stable 30 fps in large battles on a Snapdragon 8 Gen 2 (dedicated render thread, shader cache) |
+| 🎬 **Video** | Intro, briefings and campaign cutscenes at full speed |
+| 👆 **Touch controls** | Tap, long press, drag-select, pan, pinch zoom, camera rotation |
+| ⌨️ **Keyboard** | On-screen hotkey buttons and a full keyboard; physical keyboards work too |
+| 🌐 **Network** | Windows sockets on top of Android networking; the LAN menu opens — LAN play is being tested |
+| 🚀 **Launcher** | Start screen with language, cutscene, logging and 60 fps options, background file check |
+
+## Requirements
+
+- **Android 8.0 or newer, 64-bit (arm64)** with OpenGL ES 3.2. Developed and tested on a Snapdragon 8 Gen 2; other recent Snapdragon devices should work.
+- **Red Alert 3, patch 1.12** — the full game folder (about 8.7 GB), copied to the phone's internal storage.
+- About **4 GB of free RAM** recommended.
+
+## Installation
+
+1. Download **`ra3-native.apk`** from the [latest release](https://github.com/blackorange-sketch/RA3-Native/releases/tag/latest) and install it.
+2. Copy your game folder to the phone, for example to
+   `/sdcard/Command and Conquer - Red Alert 3/`
+   (the folder that contains `Data/ra3_1.12.game` and the `RA3_<language>_1.12.SkuDef` files).
+3. Open **RA3 Native** and allow **All files access** when asked — the game reads its files directly from storage.
+4. The launcher finds the game by itself (or use **Game folder** to pick it), checks the files and unlocks **Play**.
+
+> [!TIP]
+> Files the game never uses can be moved out to save space: `Launcher/`, `Support/`, `Trailers/`, the installer files in the root folder and `Data/ra3_1.0.game` … `ra3_1.11.game`. Keep every `.big` archive and every `.SkuDef` file.
+
+## Controls
+
+| Gesture | Action |
+|---|---|
+| Tap | Left click — select, give orders, press buttons |
+| Long press (½ s) | Right click |
+| Hold, then drag | Selection box |
+| Quick swipe | Scroll the map |
+| Two-finger tap | Right click (cancel / deselect) |
+| Pinch | Zoom |
+| Two-finger drag | Rotate the camera |
+| ⌨ button | Show or hide the on-screen keyboard |
+| `D` `ENT` `ESC` `SPC` | Hotkeys: special ability, chat, menu, jump to event |
+| `EDIT` | Text input through the Android keyboard (player names, chat) |
+
+The phone's volume keys keep working, and the screen stays on while the game runs.
+
+## Launcher options
+
+| Option | Default | |
+|---|---|---|
+| Interface language | detected | Every language installed in your game folder (`RA3_<language>_1.12.SkuDef`) |
+| Cutscenes | On | Intro, briefings and campaign videos |
+| Log file | On | Writes `/sdcard/ra3_native.log` — please attach it to bug reports |
+| 60 FPS (experimental) | Off | Smoother picture, but construction animations break and white flashes can appear |
+
+## Performance
+
+Measured on a Snapdragon 8 Gen 2 at 1920×1080:
+
+| Settings | Typical battle | Large battle |
+|---|---|---|
+| Medium | 30 fps | 30 fps |
+| High | 30 fps | 28–30 fps |
+
+The game logic itself is capped at 30 fps, like on PC. Rendering runs on its own thread, and compiled shaders are cached (well under 1 MB), so new effects no longer stutter on later runs.
+
+## Known issues
+
+- **Some laser weapons are invisible** (for example the King Oni's eye lasers). The effect is drawn but not visible; it is being investigated.
+- **Online play** — the original GameSpy servers were shut down in 2014. Support for the community C&C:Online servers is planned.
+- **LAN play** is new and largely untested.
+- **60 fps mode** breaks construction animations and can cause white flashes; it is experimental.
+- The game's interface is not scaled for small screens yet.
+
+Found something else? Please [open an issue](https://github.com/blackorange-sketch/RA3-Native/issues) with your device model and the `ra3_native.log` file.
 
 ## How it works
 
-1. `tools/` – a static analyser and a lifter (built on [Capstone](https://www.capstone-engine.org/)) that read `ra3_1.12.game` and emit C++ for every function (`f_XXXXXXXX(CPU*)`), with registers held as host locals.
-2. `runtime/` – the Android-side runtime that the lifted code links against:
-   - PE loader and a 4 GB guest address window
-   - Win32 / MSVCRT / DirectSound / network import layer
-   - Direct3D 9 → OpenGL ES 3 renderer (including FX9 effects)
-   - NEON implementations of the MMX helpers (used by the VP6 video decoder)
-   - Touch input mapped to RTS mouse/keyboard controls
-3. `android/` – the APK wrapper. The CI workflow builds the lifted code and the APK on GitHub Actions.
-
-## Status
-
-Working: 3D world rendering, resolution switching, minimap, touch controls (select / pan / rotate / zoom), video cutscenes at full speed.
-In progress: faster startup, 60 fps rendering, widescreen UI scaling, missing graphics settings, cleanup of diagnostics.
-
-See [`docs/PLAN.md`](docs/PLAN.md) for the analysis results and roadmap (the plan document is currently in Ukrainian).
-
-## Using it
-
-1. Install the APK from the `latest` GitHub release.
-2. Place your own game install at `/sdcard/Command and Conquer - Red Alert 3/`.
-3. Launch the app. A log is written to `/sdcard/ra3_native.log`.
-4. Optional: create an empty file `/sdcard/ra3_play_movies` to enable video cutscenes.
-
-## Building the analyser
+Red Alert 3 is a 32-bit Windows program. Instead of emulating an x86 CPU while you play, every function of the game is translated ahead of time into C++ and compiled for ARM64:
 
 ```
+ra3_1.12.game ──► analyser + lifter (tools/) ──► C++ per function ──► clang ──► libra3native.so
+                                                                                     │
+                     Android runtime (runtime/): Win32 · D3D9 → OpenGL ES · audio · input · sockets
+```
+
+- **`tools/`** — a static analyser and lifter built on [Capstone](https://www.capstone-engine.org/). It finds every function in the executable and emits C++ (`f_XXXXXXXX(CPU*)`) with the x86 registers held as host locals.
+- **`runtime/`** — what the translated code runs against:
+  - PE loader and a 4 GB guest address space
+  - Win32, MSVCRT, DirectSound, XInput and WinSock import layers
+  - **Direct3D 9 → OpenGL ES 3** renderer: shader translation from D3D bytecode to GLSL, the D3DX effect framework (FX9) including preshaders, a dedicated render thread and a program binary cache
+  - NEON versions of the MMX routines used by the VP6 video decoder
+  - Touch input mapped to the RTS mouse and keyboard controls
+- **`android/`** — the APK: launcher, native activity and the build scripts.
+
+GitHub Actions builds everything: it fetches the game executable from a private location, runs the lifter, compiles the generated code and packages the APK. Generated code and game files are never committed.
+
+## Troubleshooting and diagnostics
+
+Empty files with these names in `/sdcard` change the runtime's behaviour:
+
+| File | Effect |
+|---|---|
+| `ra3_st` | Render on the game thread instead of the render thread |
+| `ra3_nocache` | Re-send all graphics state for every draw (rules out state-cache bugs) |
+| `ra3_verbose` | Much more detailed log |
+| `ra3_prof` | CPU sampling profiler, report in the log every 30 s |
+| `ra3_fxstat` | Per-effect draw statistics |
+| `ra3_frame` | Full trace of two frames (and render-target dumps into `/sdcard/ra3_dump/` if that folder exists) |
+| `ra3_fps60` | 60 fps cap, same as the launcher option |
+
+Remove them again for normal play — some of them slow the game down.
+
+## Building
+
+The APK is built by [`.github/workflows/android.yml`](.github/workflows/android.yml). To build it in your own fork you need the game executable available to the workflow (see the workflow for the expected secret and release).
+
+The analyser alone:
+
+```sh
 g++ -O2 -std=c++17 -I<capstone>/include tools/analyze.cpp <capstone>/libcapstone.a -o analyze
 ./analyze ra3_1.12.game out
 ```
 
 ## Legal
 
-This is an unofficial fan/research project, not affiliated with or endorsed by Electronic Arts. Red Alert 3 and Command & Conquer are trademarks of Electronic Arts Inc. Bring your own game files.
+This is an unofficial, non-commercial fan and research project. It is not affiliated with, endorsed or sponsored by Electronic Arts. *Command & Conquer* and *Red Alert* are trademarks of Electronic Arts Inc. No game code or assets are distributed — you must own the game. The app icon is an original design.
