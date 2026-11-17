@@ -62,7 +62,21 @@ H("IDirect3DDevice9::GetTextureStageState") { if (ARG(3)) guest::store<uint32_t>
 H("IDirect3DDevice9::SetViewport")
 {
 	uint32_t p = ARG(1);
-	for (int i = 0; i < 4; i++) dev.vp[i] = guest::load<uint32_t>(p + 4 * i);
+	uint32_t v[4];
+	for (int i = 0; i < 4; i++) v[i] = guest::load<uint32_t>(p + 4 * i);
+	// D3D9 rejects a viewport that does not fit the current render target (D3DERR_INVALIDCALL) and keeps the
+	// previous one; the medium-detail depth pass sets a screen-sized viewport on a 1024x1024 target and relies
+	// on that to render scaled into it
+	uint32_t w = 0, h = 0;
+	glr::rtSize(dev.rt0, w, h);
+	if (w && h && ((uint64_t)v[0] + v[2] > w || (uint64_t)v[1] + v[3] > h))
+	{
+		static int n = 0;
+		if (n++ < 10) log("d3d9: SetViewport %u,%u %ux%u rejected for %ux%u target", v[0], v[1], v[2], v[3], w, h);
+		SET(0x8876086c);
+		return;
+	}
+	for (int i = 0; i < 4; i++) dev.vp[i] = v[i];
 	dev.vpZ[0] = guest::load<float>(p + 16); dev.vpZ[1] = guest::load<float>(p + 20);
 	SET(0);
 } END;
