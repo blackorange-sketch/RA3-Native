@@ -46,6 +46,8 @@ namespace glr
 namespace
 {
 bool gInit = false, gOk = false;
+bool gFboDirty = true;   // framebuffer bindings/attachments changed outside bindTargets
+bool gTexBindDirty = true;   // a texture was bound outside bindSamplers: its binding cache is stale
 GLuint gVao = 0, gBackFbo = 0, gBackTex = 0, gBackDepth = 0, gDrawFbo = 0, gReadFbo = 0, gUpVbo = 0, gUpIbo = 0;
 GLuint gBlitProg = 0;
 GLuint gSamplers[16] = {};
@@ -173,7 +175,7 @@ static void uploadTextureImpl(Obj* o)
 {
 	TexFmt tf = texFmtOf(o->fmt);
 	GLenum target = targetOf(o);
-	glBindTexture(target, o->glTex);
+	glBindTexture(target, o->glTex); gTexBindDirty = true;
 	if (tf.compressed && !gHasS3tc) { tf.compressed = false; tf.convert = true; }   // TODO: software DXT decode
 	if (!(o->rtTex && !o->data))
 	{
@@ -225,7 +227,7 @@ static void uploadTextureImpl(Obj* o)
 void createRtStorage(Obj* o)   // color or depth render target texture
 {
 	TexFmt tf = texFmtOf(o->fmt);
-	glBindTexture(GL_TEXTURE_2D, o->glTex);
+	glBindTexture(GL_TEXTURE_2D, o->glTex); gTexBindDirty = true;
 	if (tf.depth) glTexImage2D(GL_TEXTURE_2D, 0, tf.internal, o->w, o->h, 0, tf.format, tf.type, nullptr);
 	else if (tf.convert || tf.compressed || tf.none) glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, o->w, o->h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
 	else glTexImage2D(GL_TEXTURE_2D, 0, tf.internal, o->w, o->h, 0, tf.format, tf.type, nullptr);
@@ -274,7 +276,7 @@ GLuint ensureTexture(Obj* o0)
 			// render-target cube map (environment reflections): allocate all six faces
 			TexFmt tf = texFmtOf(o->fmt);
 			bool plain = !(tf.convert || tf.compressed || tf.none || tf.depth);
-			glBindTexture(GL_TEXTURE_CUBE_MAP, o->glTex);
+			glBindTexture(GL_TEXTURE_CUBE_MAP, o->glTex); gTexBindDirty = true;
 			for (uint32_t l = 0; l < std::max(1u, o->levels); l++)
 				for (uint32_t f = 0; f < 6; f++)
 				{
@@ -340,12 +342,12 @@ void resizeBackBufferImpl()
 	if (!gInit || !gBackTex) return;
 	GLint prev = 0;
 	glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev);
-	glBindTexture(GL_TEXTURE_2D, gBackTex);
+	glBindTexture(GL_TEXTURE_2D, gBackTex); gTexBindDirty = true;
 	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, backW, backH, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-	glBindTexture(GL_TEXTURE_2D, (GLuint)prev);
+	glBindTexture(GL_TEXTURE_2D, (GLuint)prev); gTexBindDirty = true;
 	glBindRenderbuffer(GL_RENDERBUFFER, gBackDepth);
 	glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, backW, backH);
-	glBindFramebuffer(GL_FRAMEBUFFER, gBackFbo);
+	glBindFramebuffer(GL_FRAMEBUFFER, gBackFbo); gFboDirty = true;
 	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gBackTex, 0);
 	glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, gBackDepth);
 	glClearColor(0.f, 0.f, 0.f, 1.f);
@@ -358,13 +360,22 @@ void bindTargets()
 {
 	resizeBackBufferImpl();
 	Obj* rt = dev.rt0;
+	static Obj* lastRt = nullptr; static Obj* lastDs = nullptr; static GLuint lastTex = 0, lastDt = 0; static uint32_t lastLvl = ~0u;
 	if (isBack(rt))
 	{
-		glBindFramebuffer(GL_FRAMEBUFFER, gBackFbo);
+		if (gFboDirty || lastRt != rt) { glBindFramebuffer(GL_FRAMEBUFFER, gBackFbo); lastRt = rt; gFboDirty = false; }
 		return;
 	}
-	glBindFramebuffer(GL_FRAMEBUFFER, gDrawFbo);
 	GLuint tex = ensureTexture(rt);
+	{
+		// same colour/depth targets as the previous draw: attachments are still in place
+		Obj* ds0 = dev.ds && dev.ds->fmt != 0x4c4c554e ? dev.ds : nullptr;
+		GLuint dt0 = ds0 ? ensureTexture(ds0) : 0;
+		uint32_t lvl0 = rt->iface == ISurface ? rt->level : 0;
+		if (!gFboDirty && lastRt == rt && lastDs == ds0 && lastTex == tex && lastDt == dt0 && lastLvl == lvl0) return;
+		lastRt = rt; lastDs = ds0; lastTex = tex; lastDt = dt0; lastLvl = lvl0; gFboDirty = false;
+	}
+	glBindFramebuffer(GL_FRAMEBUFFER, gDrawFbo);
 	uint32_t lvl = rt->iface == ISurface ? rt->level : 0;
 	Obj* owner = texOwner(rt);
 	GLenum faceTarget = owner->iface == ICube ? GL_TEXTURE_CUBE_MAP_POSITIVE_X + (rt->iface == ISurface ? rt->face : 0) : GL_TEXTURE_2D;
@@ -511,10 +522,28 @@ GLenum wrapMode(uint32_t a)
 	switch (a) { case 2: case 5: return GL_MIRRORED_REPEAT; case 3: return GL_CLAMP_TO_EDGE; case 4: return gHasBorder ? 0x812D : GL_CLAMP_TO_EDGE; default: return GL_REPEAT; }
 }
 
+// Everything applyState reads; when it equals the last applied key and nothing else touched GL state since
+// (invalidateGlState: clears, copies, present), the ~20 GL state calls are skipped.
+static uint32_t gStKey[44];
+static bool gStValid = false;
+static GLuint gCurProg = 0; static bool gVaoBound = false;
+void invalidateGlState() { gStValid = false; gCurProg = 0; gVaoBound = false; gTexBindDirty = true; gFboDirty = true; }
 void applyState(uint32_t tw, uint32_t th)
 {
 	const uint32_t* rs = dev.rs;
 	bool hasDepth = isBack(dev.rt0) || (dev.ds && dev.ds->fmt != 0x4c4c554e);
+	{
+		static const uint8_t idx[] = {7, 14, 15, 19, 20, 22, 23, 27, 52, 53, 54, 55, 56, 57, 58, 59, 168, 171, 174, 175, 193, 195, 206, 207, 208, 209};
+		uint32_t key[44]; uint32_t n = 0;
+		for (uint8_t i : idx) key[n++] = rs[i];
+		key[n++] = hasDepth; key[n++] = tw; key[n++] = th;
+		for (int i = 0; i < 4; i++) key[n++] = dev.vp[i];
+		memcpy(&key[n], dev.vpZ, 8); n += 2;
+		for (int i = 0; i < 4; i++) key[n++] = (uint32_t)dev.scissor[i];
+		while (n < 44) key[n++] = 0;
+		if (gStValid && !memcmp(key, gStKey, sizeof key)) return;
+		memcpy(gStKey, key, sizeof key); gStValid = true;
+	}
 	if (rs[7] && hasDepth) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
 	glDepthFunc(cmpFunc(rs[23]));
 	glDepthMask(rs[14] && hasDepth ? GL_TRUE : GL_FALSE);
@@ -568,7 +597,7 @@ GLuint dummyTex(GLenum target)
 	if (!t)
 	{
 		glGenTextures(1, &t);
-		glBindTexture(target, t);
+		glBindTexture(target, t); gTexBindDirty = true;
 		uint8_t px[4] = {0, 0, 0, 255};
 		if (target == GL_TEXTURE_CUBE_MAP) for (int f = 0; f < 6; f++) glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + f, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
 		else if (target == GL_TEXTURE_3D) glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA8, 1, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
@@ -577,6 +606,7 @@ GLuint dummyTex(GLenum target)
 	return t;
 }
 
+static int activeUnit = -1;
 void bindSamplers(Prog* p, ShaderObj* ps)
 {
 	for (int i = 0; i < 16; i++)
@@ -588,7 +618,6 @@ void bindSamplers(Prog* p, ShaderObj* ps)
 		}
 		if (!st || p->s[i] < 0) continue;
 		GLenum target = st == 3 ? GL_TEXTURE_CUBE_MAP : st == 4 ? GL_TEXTURE_3D : GL_TEXTURE_2D;
-		glActiveTexture(GL_TEXTURE0 + i);
 		Obj* t = dev.tex[i];
 		{
 			static int nl2 = 0;
@@ -611,9 +640,23 @@ void bindSamplers(Prog* p, ShaderObj* ps)
 			}
 			noFilter = texFmtOf(texOwner(t)->fmt).floatNoFilter;
 		}
-		glBindTexture(target, name ? name : dummyTex(target));
+		GLuint bindName = name ? name : dummyTex(target);
+		{
+			// cached per unit: skip glActiveTexture/glBindTexture when the unit already holds this texture
+			static GLuint boundTex[16][3]; static bool samplerBound[16];
+			int ti = target == GL_TEXTURE_CUBE_MAP ? 1 : target == GL_TEXTURE_3D ? 2 : 0;
+			if (gTexBindDirty) { memset(boundTex, 0xff, sizeof boundTex); memset(samplerBound, 0, sizeof samplerBound); gTexBindDirty = false; activeUnit = -1; }
+			if (boundTex[i][ti] != bindName)
+			{
+				if (activeUnit != i) { glActiveTexture(GL_TEXTURE0 + i); activeUnit = i; }
+				glBindTexture(target, bindName);
+				if (gTexBindDirty) { memset(boundTex, 0xff, sizeof boundTex); memset(samplerBound, 0, sizeof samplerBound); gTexBindDirty = false; activeUnit = i; }
+				boundTex[i][ti] = bindName;
+			}
+			if (!gSamplers[i]) glGenSamplers(1, &gSamplers[i]);
+			if (!samplerBound[i]) { glBindSampler(i, gSamplers[i]); samplerBound[i] = true; }
+		}
 		if (!p->samplersSet) glUniform1i(p->s[i], i);
-		if (!gSamplers[i]) glGenSamplers(1, &gSamplers[i]);
 		const uint32_t* s = dev.samp[i];
 		static GLenum cache[16][5];
 		static bool cacheValid[16];
@@ -641,10 +684,9 @@ void bindSamplers(Prog* p, ShaderObj* ps)
 		sp(3, GL_TEXTURE_MIN_FILTER, minF);
 		sp(4, GL_TEXTURE_MAG_FILTER, (noFilter || mag == 1) ? GL_NEAREST : GL_LINEAR);
 		cacheValid[i] = true;
-		glBindSampler(i, gSamplers[i]);
 	}
 	p->samplersSet = true;
-	glActiveTexture(GL_TEXTURE0);
+	if (activeUnit != 0) { glActiveTexture(GL_TEXTURE0); activeUnit = 0; }
 }
 
 struct DeclElem { uint16_t stream, offset; uint8_t type, method, usage, index; };
@@ -687,6 +729,7 @@ GLenum primMode(uint32_t prim)
 const char* kBlitVs = "#version 300 es\nout vec2 uv;\nvoid main(){ vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)); uv = vec2(p.x, 1.0 - p.y); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }\n";
 const char* kBlitFs = "#version 300 es\nprecision mediump float;\nin vec2 uv;\nuniform sampler2D t;\nout vec4 o;\nvoid main(){ o = vec4(texture(t, uv).rgb, 1.0); }\n";
 }   // namespace
+void invalidateAttribCache();
 void resizeBackBuffer() { gResizePending = true; }   // may be called from a thread without the GL context: applied by the GL thread
 
 bool init()
@@ -707,7 +750,7 @@ bool init()
 	glGenFramebuffers(1, &gDrawFbo);
 	glGenFramebuffers(1, &gReadFbo);
 	glGenTextures(1, &gBackTex);
-	glBindTexture(GL_TEXTURE_2D, gBackTex);
+	glBindTexture(GL_TEXTURE_2D, gBackTex); gTexBindDirty = true;
 	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, backW, backH, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -779,6 +822,7 @@ void clear(uint32_t count, uint32_t rects, uint32_t flags, uint32_t color, float
 	bindTargets();
 	uint32_t tw, th;
 	targetSize(dev.rt0, tw, th);
+	gStValid = false;   // clear changes scissor/masks; bindings stay
 	glDisable(GL_SCISSOR_TEST);
 	GLbitfield m = 0;
 	if (flags & 1) { glColorMask(1, 1, 1, 1); glClearColor(((color >> 16) & 255) / 255.f, ((color >> 8) & 255) / 255.f, (color & 255) / 255.f, ((color >> 24) & 255) / 255.f); m |= GL_COLOR_BUFFER_BIT; }
@@ -843,7 +887,7 @@ static int64_t ringPut(GLenum target, GLuint& buf, uint32_t& pos, uint32_t cap, 
 					GLuint nb; glGenBuffers(1, &nb); glBindBuffer(target, nb);
 					pBufStorage(target, cap, nullptr, fl);
 					uint8_t* p = (uint8_t*)glMapBufferRange(target, 0, cap, fl);
-					if (p && glGetError() == GL_NO_ERROR) { glDeleteBuffers(1, &buf); buf = nb; pr.ptr = p; pr.ok = true; log("GL: persistent ring %u KB target %x", cap >> 10, target); }
+					if (p && glGetError() == GL_NO_ERROR) { glDeleteBuffers(1, &buf); invalidateAttribCache(); buf = nb; pr.ptr = p; pr.ok = true; log("GL: persistent ring %u KB target %x", cap >> 10, target); }
 					else { glDeleteBuffers(1, &nb); log("GL: persistent mapping failed"); }
 				}
 			}
@@ -922,6 +966,35 @@ static void dumpBmp(const char* path, uint32_t w, uint32_t h, uint32_t sc = 2)
 		}
 	if (FILE* f = fopen(path, "wb")) { fwrite(bmp.data(), 1, bmp.size(), f); fclose(f); log("dumped %s (%ux%u)", path, ow, oh); }
 	else log("dump failed: %s", path);
+}
+
+// Vertex attribute state of gVao, cached so unchanged attributes cost no GL calls.
+struct AttrState { GLuint buf; GLint size; GLenum type; GLboolean norm; GLsizei stride; uintptr_t off; GLuint div; bool on; };
+static AttrState gAttr[16];
+static bool gAttrValid = false;
+void invalidateAttribCache() { gAttrValid = false; }
+static void setAttrib(int loc, GLuint buf, GLint size, GLenum type, bool norm, GLsizei stride, uintptr_t off, GLuint div)
+{
+	if (!gAttrValid) { for (auto& a : gAttr) a = AttrState{~0u, 0, 0, 0, -1, ~(uintptr_t)0, ~0u, false}; gAttrValid = true; for (int l = 0; l < 16; l++) gAttr[l].on = true; }
+	AttrState& a = gAttr[loc];
+	if (!a.on) { glEnableVertexAttribArray(loc); a.on = true; }
+	if (a.buf != buf || a.size != size || a.type != type || a.norm != (GLboolean)norm || a.stride != stride || a.off != off)
+	{
+		glBindBuffer(GL_ARRAY_BUFFER, buf);
+		glVertexAttribPointer(loc, size, type, norm, stride, (const void*)off);
+		a.buf = buf; a.size = size; a.type = type; a.norm = norm; a.stride = stride; a.off = off;
+	}
+	if (a.div != div) { glVertexAttribDivisor(loc, div); a.div = div; }
+}
+static void disableAttribsExcept(uint32_t enabled)
+{
+	if (!gAttrValid) { for (auto& a : gAttr) a = AttrState{~0u, 0, 0, 0, -1, ~(uintptr_t)0, ~0u, true}; gAttrValid = true; }
+	for (int loc = 0; loc < 16; loc++)
+		if (!(enabled >> loc & 1) && gAttr[loc].on)
+		{
+			glDisableVertexAttribArray(loc); glVertexAttrib4f(loc, 0.f, 0.f, 0.f, 1.f);
+			gAttr[loc].on = false;
+		}
 }
 
 static void drawImpl(const DrawCall& dc);
@@ -1223,9 +1296,9 @@ static void drawImpl(const DrawCall& dc)
 	targetSize(dev.rt0, tw, th);
 	uint64_t t1 = profNow();
 	applyState(tw, th);
-	glUseProgram(p->id);
+	if (gCurProg != p->id) { glUseProgram(p->id); gCurProg = p->id; }
 	uint64_t t2 = profNow();
-	glBindVertexArray(gVao);
+	if (!gVaoBound) { glBindVertexArray(gVao); gVaoBound = true; }
 	// constants
 	{
 		const float* vsrc = dev.vsF;
@@ -1265,16 +1338,17 @@ static void drawImpl(const DrawCall& dc)
 	bindSamplers(p, ps);
 	uint64_t t4 = profNow();
 	// vertex attributes
-	std::vector<DeclElem> els;
+	DeclElem elsBuf[64];
+	uint32_t nEls = 0;
 	if (dev.vdecl)
 	{
-		size_t n = dev.vdecl->blob.size() / 8;
+		size_t n = std::min<size_t>(dev.vdecl->blob.size() / 8, 64);
 		for (size_t i = 0; i < n; i++)
 		{
 			DeclElem e;
 			memcpy(&e, dev.vdecl->blob.data() + 8 * i, 8);
 			if (e.stream == 0xff) break;
-			els.push_back(e);
+			elsBuf[nEls++] = e;
 		}
 	}
 	else
@@ -1297,7 +1371,16 @@ static void drawImpl(const DrawCall& dc)
 	const uint32_t nvAll = (uint32_t)primVertices(dc.prim, dc.primCount);
 	// exact vertex range from the indices: the game passes numVertices for a whole buffer
 	uint32_t useMin = dc.minIndex, useCount = dc.numVertices;
-	if (dc.indexed && !dc.upIdx && dev.ib && dev.ib->data && (uint64_t)(dc.startIndex + nvAll) * (dev.ib->fmt == 102 ? 4 : 2) <= dev.ib->size && nvAll)
+	// only needed when a dynamic vertex stream is copied to the ring (static buffers are used in place):
+	// scanning every index of every draw cost tens of microseconds on big terrain/water meshes
+	bool needRange = false;
+	if (!dc.upVerts)
+		for (uint32_t k = 0; k < nEls; k++)
+		{
+			const Stream& st = dev.streams[elsBuf[k].stream < 16 ? elsBuf[k].stream : 0];
+			if (st.vb && (st.vb->usage & 0x200) && !(st.freq & 0x80000000u)) { needRange = true; break; }
+		}
+	if (needRange && dc.indexed && !dc.upIdx && dev.ib && dev.ib->data && (uint64_t)(dc.startIndex + nvAll) * (dev.ib->fmt == 102 ? 4 : 2) <= dev.ib->size && nvAll)
 	{
 		const uint8_t* ip = (const uint8_t*)guest::host(dev.ib->data) + (uint64_t)dc.startIndex * (dev.ib->fmt == 102 ? 4 : 2);
 		uint32_t lo = 0xffffffffu, hi = 0;
@@ -1319,8 +1402,9 @@ static void drawImpl(const DrawCall& dc)
 	if (instanced) { static int n = 0; if (n++ < 10) log("draw: instanced x%u prim %u count %u", instCount, dc.prim, dc.primCount); }
 	int64_t ringBase[16];
 	for (int i = 0; i < 16; i++) ringBase[i] = -2; // -2: not tried yet, -1: not on the ring
-	for (auto& e : els)
+	for (uint32_t k = 0; k < nEls; k++)
 	{
+		const DeclElem& e = elsBuf[k];
 		int loc = shdr::attrLocation(e.usage, e.index);
 		if (loc < 0) continue;
 		GLint size;
@@ -1330,6 +1414,7 @@ static void drawImpl(const DrawCall& dc)
 		Stream& st = dev.streams[e.stream < 16 ? e.stream : 0];
 		uint32_t stride;
 		uintptr_t off = e.offset;
+		GLuint attrBuf = gUpVbo;
 		if (dc.upVerts)
 		{
 			if (e.stream != 0) continue;
@@ -1343,11 +1428,8 @@ static void drawImpl(const DrawCall& dc)
 			if (instanced && (st.freq & 0x80000000u))
 			{
 				// per-instance stream: plain buffer, no base vertex, divisor 1
-				glBindBuffer(GL_ARRAY_BUFFER, ensureBuffer(st.vb, GL_ARRAY_BUFFER));
 				if (e.type == 4) bgra |= 1u << loc;
-				glEnableVertexAttribArray(loc);
-				glVertexAttribPointer(loc, size, gtype, norm, stride, (const void*)(uintptr_t)(st.offset + off));
-				glVertexAttribDivisor(loc, 1);
+				setAttrib(loc, ensureBuffer(st.vb, GL_ARRAY_BUFFER), size, gtype, norm, stride, st.offset + off, 1);
 				gInstUsed = true;
 				enabled |= 1u << loc;
 				continue;
@@ -1372,22 +1454,20 @@ static void drawImpl(const DrawCall& dc)
 			}
 			if (ringBase[si] >= 0)
 			{
-				glBindBuffer(GL_ARRAY_BUFFER, gRingVbo);
+				attrBuf = gRingVbo;
 				off += (uint64_t)ringBase[si];
 			}
 			else
 			{
-				glBindBuffer(GL_ARRAY_BUFFER, ensureBuffer(st.vb, GL_ARRAY_BUFFER));
+				attrBuf = ensureBuffer(st.vb, GL_ARRAY_BUFFER);
 				off += st.offset + (int64_t)dc.baseVertex * (int64_t)stride;
 			}
 		}
 		if (e.type == 4) bgra |= 1u << loc;
-		glEnableVertexAttribArray(loc);
-		glVertexAttribPointer(loc, size, gtype, norm, stride, (const void*)off);
+		setAttrib(loc, attrBuf, size, gtype, norm, stride, off, 0);
 		enabled |= 1u << loc;
 	}
-	for (int loc = 0; loc < 16; loc++)
-		if (!(enabled >> loc & 1)) { glDisableVertexAttribArray(loc); glVertexAttrib4f(loc, 0.f, 0.f, 0.f, 1.f); }
+	disableAttribsExcept(enabled);
 	if (p->bgra >= 0 && p->bgraShadow != (GLint)bgra) { glUniform1i(p->bgra, (GLint)bgra); p->bgraShadow = (GLint)bgra; }
 	uint64_t t5 = profNow();
 	GLenum mode = primMode(dc.prim);
@@ -1424,7 +1504,7 @@ static void drawImpl(const DrawCall& dc)
 			else glDrawElements(mode, nv, wide ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT, (const void*)(uintptr_t)(dc.startIndex * isz));
 		}
 	}
-	if (gInstUsed) { for (int loc = 0; loc < 16; loc++) glVertexAttribDivisor(loc, 0); gInstUsed = false; }
+	gInstUsed = false;   // divisors are part of the cached attribute state (setAttrib)
 	if (dc.primCount <= 2 && traceDump() && (!dev.rt0 || isBack(dev.rt0) || dev.rt0->fmt == 21 || dev.rt0->fmt == 22)) dumpTraced("draw", tw, th);
 	uint64_t t6 = profNow();
 	tProg += t1 - t0; tState += t2 - t1; tUni += t3 - t2; tSamp += t4 - t3; tAttr += t5 - t4; tDraw += t6 - t5; nDraw++;
@@ -1466,6 +1546,7 @@ static void presentImpl()
 	resizeBackBufferImpl();
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 	int sw = gfx::width(), sh = gfx::height();
+	invalidateGlState();
 	glDisable(GL_SCISSOR_TEST); glDisable(GL_DEPTH_TEST); glDisable(GL_BLEND); glDisable(GL_CULL_FACE); glDisable(GL_STENCIL_TEST);
 	glColorMask(1, 1, 1, 1);
 	glViewport(0, 0, sw, sh);
@@ -1615,8 +1696,8 @@ static void reapReleased(uint32_t frame)
 		bool bound = o == dev.ib || o == dev.rt0 || o == dev.ds || o == gBackBuffer;
 		for (int i = 0; i < 16 && !bound; i++) bound = dev.tex[i] == o || dev.streams[i].vb == o;
 		if (bound || frame - o->lastUse < 1800 || o->lastUse > frame) { requeueReleased(o); continue; }
-		if (o->glTex) { glDeleteTextures(1, &o->glTex); o->glTex = 0; }
-		if (o->glBuf) { glDeleteBuffers(1, &o->glBuf); o->glBuf = 0; }
+		if (o->glTex) { glDeleteTextures(1, &o->glTex); o->glTex = 0; gFboDirty = true; gTexBindDirty = true; }
+		if (o->glBuf) { glDeleteBuffers(1, &o->glBuf); o->glBuf = 0; invalidateAttribCache(); }
 		o->glVer = 0; o->glSize = 0;
 		if (o->ownsData && o->data) { freedBytes += o->size; rt::gfree(o->data); o->data = 0; }
 		freedObjs++;
@@ -1653,6 +1734,7 @@ void stretchRect(Obj* src, const int32_t* sr, Obj* dst, const int32_t* dr, uint3
 		// only as large as its smallest attachment, so the blit would be clipped to that size - detach it
 		glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
 	}
+	invalidateGlState();
 	glDisable(GL_SCISSOR_TEST);
 	int32_t s[4] = {0, 0, (int32_t)sw, (int32_t)sh}, d[4] = {0, 0, (int32_t)dw, (int32_t)dh};
 	if (sr) memcpy(s, sr, 16);
