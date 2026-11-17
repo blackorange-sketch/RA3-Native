@@ -77,6 +77,7 @@ struct FxInfo
 	std::vector<FxTech> techs;
 	uint32_t current = 0;
 	int diagId = -1;     // effect-usage statistics
+	int shroudIdx = -2;  // index of the Terrain.Shroud parameter (-1 none, -2 not looked up yet)
 	uint32_t base = 0;   // header size that offsets are relative to (4 or 8)
 	std::vector<uint8_t> blob;
 	std::map<uint32_t, std::pair<uint32_t, uint32_t>> objs;   // object id -> (offset, size) of its data in blob

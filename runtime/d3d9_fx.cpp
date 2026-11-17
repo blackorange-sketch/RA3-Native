@@ -417,10 +417,28 @@ H("ID3DXEffect::GetParameterDesc")
 	SET(0);
 } END;
 
+static float gLastShroud[4];
+static bool gHaveShroud = false;
+static void noteShroud(const char* how, Obj* o, const PRef& r, uint32_t src)
+{
+	if (r.valid() && src && r.p->name == "Shroud" && r.off == 0)
+	{
+		const float* w = (const float*)guest::host(src);
+		if (w[0] != 0.f || w[1] != 0.f) { memcpy(gLastShroud, w, 16); gHaveShroud = true; }
+	}
+	// which values the game binds to Terrain.Shroud (lasers and tracers fade with it)
+	static int n = 0;
+	if (!r.valid() || n >= 30 || r.p->name != "Shroud" || !src) return;
+	n++;
+	const float* v = (const float*)guest::host(src);
+	FxInfo* fx = F(o);
+	log("fx: %s Shroud = %g %g %g %g (effect blob %zu, param off %u)", how, v[0], v[1], v[2], v[3], fx ? fx->blob.size() : (size_t)0, r.off);
+}
 // ---- setters
 H("ID3DXEffect::SetValue")
 {
 	PRef r = refOfSet(o, ARG(1));
+	noteShroud("SetValue", o, r, ARG(2));
 	if (r.valid() && ARG(2))
 	{
 		if (r.ty->cls == 4)
@@ -475,6 +493,7 @@ H("ID3DXEffect::SetVector")
 {
 	PRef r = refOfSet(o, ARG(1));
 	noteBad("SetVector", ARG(1), r);
+	noteShroud("SetVector", o, r, ARG(2));
 	if (r.valid() && ARG(2))
 	{
 		writeVals(r, (const uint32_t*)guest::host(ARG(2)), std::min(r.ty->scalars(), 4u), 3);
@@ -737,6 +756,36 @@ void fxApplyPass(Obj* o)
 		}
 	}
 	gFxDiagCur = fx->diagId; gFxDiagTech = gPass.tech; gFxDiagBlob = (uint32_t)fx->blob.size();
+	// Terrain.Shroud left unset (zero scale) - e.g. lasers: the shader would sample one corner texel of the shroud map
+	// and fade the beam out completely. Use the value the game binds for every other effect.
+	if (fx->shroudIdx == -2)
+	{
+		fx->shroudIdx = -1;
+		for (size_t i = 0; i < fx->params.size(); i++) if (fx->params[i].name == "Shroud" && fx->params[i].val.size() >= 4) { fx->shroudIdx = (int)i; break; }
+	}
+	if (fx->shroudIdx >= 0 && gHaveShroud)
+	{
+		auto& q = fx->params[fx->shroudIdx];
+		float v[2]; memcpy(v, q.val.data(), 8);
+		if (v[0] == 0.f && v[1] == 0.f)
+		{
+			memcpy(q.val.data(), gLastShroud, 16);
+			static int nf = 0;
+			if (nf++ < 5) log("fx: effect (blob %zu) had no shroud scale, using %g %g %g %g", fx->blob.size(), gLastShroud[0], gLastShroud[1], gLastShroud[2], gLastShroud[3]);
+		}
+	}
+	if (fx->blob.size() == 11012)
+	{
+		static int nl = 0;
+		if (nl < 3)
+			for (auto& q : fx->params)
+				if (q.name == "Shroud" && q.val.size() >= 4)
+				{
+					nl++;
+					float v[4]; memcpy(v, q.val.data(), 16);
+					log("fx: laser applied, its Shroud = %g %g %g %g (shared %d)", v[0], v[1], v[2], v[3], q.shareGroup ? 1 : 0);
+				}
+	}
 	syncShared(*fx);
 	const FxPass& ps = fx->techs[gPass.tech].passes[gPass.pass];
 	for (uint32_t i = 0; i < ps.sts.size(); i++) applyShaderState(*fx, ps, gPass.tech, gPass.pass, i);

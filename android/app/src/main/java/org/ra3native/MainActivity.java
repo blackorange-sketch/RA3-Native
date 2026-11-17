@@ -59,6 +59,8 @@ public class MainActivity extends NativeActivity {
                     edit.setOnKeyListener(new View.OnKeyListener() {
                         public boolean onKey(View v, int keyCode, KeyEvent ev) {
                             if (keyCode == KeyEvent.KEYCODE_BACK) return false;
+                            // volume keys belong to the system
+                            if (keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || keyCode == KeyEvent.KEYCODE_VOLUME_MUTE) return false;
                             if (ev.getAction() == KeyEvent.ACTION_DOWN || ev.getAction() == KeyEvent.ACTION_UP) nativeKey(keyCode, ev.getAction() == KeyEvent.ACTION_DOWN);
                             return true;
                         }
@@ -80,6 +82,7 @@ public class MainActivity extends NativeActivity {
                 } else {
                     imm.hideSoftInputFromWindow(edit.getWindowToken(), 0);
                     edit.clearFocus();
+                    edit.setVisibility(View.GONE);   // otherwise it keeps the focus and swallows hardware keys
                     shown = false;
                 }
             }
