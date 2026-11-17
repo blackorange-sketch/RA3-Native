@@ -1248,7 +1248,11 @@ static void drawImpl(const DrawCall& dc)
 		static bool fxOn = access("/sdcard/ra3_fxdiag", F_OK) == 0;
 		static std::map<std::tuple<uint64_t, uint64_t, uint32_t>, int> fxSeen;
 		static int fxLogged = 0, fxSrc = 0;
-		if (fxOn && gFrameNo >= 1500 && dev.rs[27] && fxLogged < 160)
+		// with /sdcard/ra3_fxstat: also the first draws of the laser effect (laser.fxo, blob 11012 bytes)
+		static int laserLogged = 0;
+		bool laserDiag = fxStatOn() && gFxDiagBlob == 11012 && gFrameNo >= 1500 && laserLogged < 6;
+		if (laserDiag) fxSeen.erase({vs->hash, ps->hash, (dev.rs[19] & 15) | (dev.rs[20] & 15) << 4 | (dc.upVerts ? 256u : 0u)}), laserLogged++;
+		if ((fxOn && gFrameNo >= 1500 && dev.rs[27] && fxLogged < 160) || laserDiag)
 		{
 			uint32_t key = (dev.rs[19] & 15) | (dev.rs[20] & 15) << 4 | (dc.upVerts ? 256u : 0u);
 			int& n = fxSeen[{vs->hash, ps->hash, key}];
@@ -1266,7 +1270,7 @@ static void drawImpl(const DrawCall& dc)
 					{
 						unsigned nz = 0;
 						if (t->data && t->size) { const uint8_t* b = (const uint8_t*)guest::host(t->data); for (uint32_t k = 0; k < std::min<uint32_t>(t->size, 8192); k += 5) nz += b[k] != 0; }
-						char b2[112]; snprintf(b2, sizeof b2, " t%d=%ux%u/f%u/l%u/nz%u%s%s", i, t->w, t->h, t->fmt, t->levels, nz, t->rtTex ? "/RT" : "", t->data ? "" : "/nodata");
+						char b2[160]; snprintf(b2, sizeof b2, " t%d=%ux%u/f%u/l%u/nz%u%s%s[a%u/%u f%u/%u/%u]", i, t->w, t->h, t->fmt, t->levels, nz, t->rtTex ? "/RT" : "", t->data ? "" : "/nodata", dev.samp[i][1], dev.samp[i][2], dev.samp[i][5], dev.samp[i][6], dev.samp[i][7]);
 						tx += b2;
 					}
 				log("FX   tex:%s", tx.c_str());
