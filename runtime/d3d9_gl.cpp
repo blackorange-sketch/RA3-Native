@@ -3,6 +3,8 @@
 #include <cmath>
 #include <sched.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
+#include <dirent.h>
 #include <unistd.h>
 #include <map>
 #include <tuple>
@@ -450,6 +452,87 @@ static void uploadVec4Range(GLint base, std::vector<GLint>& locs, std::vector<fl
 }
 std::unordered_map<uint64_t, Prog> gProgs;
 
+// ---- program binary cache: linked programs are saved to <app data>/shadercache, so later runs skip compiling.
+// Keyed by the GLSL sources and the driver; a binary the driver rejects is simply rebuilt and overwritten.
+static std::string gBinDir;
+static uint64_t gDriverKey = 0;
+static uint64_t fnv64(const void* d, size_t n, uint64_t h = 1469598103934665603ull)
+{
+	const uint8_t* p = (const uint8_t*)d;
+	for (size_t i = 0; i < n; i++) { h ^= p[i]; h *= 1099511628211ull; }
+	return h;
+}
+static uint64_t binKey(const std::string& v, const std::string& f)
+{
+	return fnv64(f.data(), f.size(), fnv64(v.data(), v.size(), gDriverKey ^ 0x52413350u));
+}
+static void initBinCache()
+{
+	const char* r = (const char*)glGetString(GL_RENDERER);
+	const char* ver = (const char*)glGetString(GL_VERSION);
+	gDriverKey = fnv64(r ? r : "", r ? strlen(r) : 0, fnv64(ver ? ver : "", ver ? strlen(ver) : 0));
+	gBinDir = rt::config.dataRoot + "/shadercache";
+	mkdir(gBinDir.c_str(), 0755);
+	// keep it bounded: past 96 MB start over
+	uint64_t total = 0; unsigned files = 0;
+	if (DIR* d = opendir(gBinDir.c_str()))
+	{
+		while (dirent* e = readdir(d))
+		{
+			if (e->d_name[0] == '.') continue;
+			struct stat st;
+			if (stat((gBinDir + "/" + e->d_name).c_str(), &st) == 0) { total += st.st_size; files++; }
+		}
+		closedir(d);
+	}
+	if (total > (96ull << 20))
+	{
+		if (DIR* d = opendir(gBinDir.c_str())) { while (dirent* e = readdir(d)) if (e->d_name[0] != '.') unlink((gBinDir + "/" + e->d_name).c_str()); closedir(d); }
+		log("GL: shader cache was %llu MB, cleared", (unsigned long long)(total >> 20));
+		total = 0; files = 0;
+	}
+	log("GL: shader cache %s: %u programs, %llu KB", gBinDir.c_str(), files, (unsigned long long)(total >> 10));
+}
+static std::string binPath(uint64_t key) { char b[32]; snprintf(b, sizeof b, "/%016llx.bin", (unsigned long long)key); return gBinDir + b; }
+static bool loadProgramBinary(uint64_t key, Prog& p)
+{
+	if (gBinDir.empty()) return false;
+	FILE* f = fopen(binPath(key).c_str(), "rb");
+	if (!f) return false;
+	uint32_t hdr[3] = {};
+	std::vector<uint8_t> data;
+	bool okRead = fread(hdr, 4, 3, f) == 3 && hdr[0] == 0x50334152u && hdr[2] > 0 && hdr[2] < (64u << 20);
+	if (okRead) { data.resize(hdr[2]); okRead = fread(data.data(), 1, data.size(), f) == data.size(); }
+	fclose(f);
+	if (!okRead) return false;
+	p.id = glCreateProgram();
+	glProgramBinary(p.id, (GLenum)hdr[1], data.data(), (GLsizei)data.size());
+	GLint ok = 0;
+	glGetProgramiv(p.id, GL_LINK_STATUS, &ok);
+	if (!ok) { unlink(binPath(key).c_str()); p.id = 0; return false; }   // driver changed: rebuild
+	return true;
+}
+static void saveProgramBinary(uint64_t key, GLuint prog)
+{
+	if (gBinDir.empty()) return;
+	GLint len = 0;
+	glGetProgramiv(prog, GL_PROGRAM_BINARY_LENGTH, &len);
+	if (len <= 0 || len > (64 << 20)) return;
+	std::vector<uint8_t> data(len);
+	GLenum fmt = 0; GLsizei got = 0;
+	glGetProgramBinary(prog, len, &got, &fmt, data.data());
+	if (got <= 0) return;
+	std::string path = binPath(key), tmp = path + ".tmp";
+	if (FILE* f = fopen(tmp.c_str(), "wb"))
+	{
+		uint32_t hdr[3] = {0x50334152u, (uint32_t)fmt, (uint32_t)got};
+		bool w = fwrite(hdr, 4, 3, f) == 3 && fwrite(data.data(), 1, got, f) == (size_t)got;
+		fclose(f);
+		if (w) rename(tmp.c_str(), path.c_str()); else unlink(tmp.c_str());
+	}
+}
+static Prog* finishProgram(Prog& p, ShaderObj* vs, ShaderObj* ps, bool cached);
+
 Prog* getProgram(ShaderObj* vs, ShaderObj* ps)
 {
 	uint64_t key = vs->hash * 1000003ull ^ (ps->hash + 0x9e3779b97f4a7c15ull + (vs->hash << 6));
@@ -459,6 +542,8 @@ Prog* getProgram(ShaderObj* vs, ShaderObj* ps)
 	p.failed = true;
 	if (!vs->ok || !ps->ok || !vs->info.isVs || ps->info.isVs) return nullptr;
 	std::string vsrc = shdr::compose(vs->info), psrc = shdr::compose(ps->info, &vs->info.outputs);
+	uint64_t bkey = binKey(vsrc, psrc);
+	if (loadProgramBinary(bkey, p)) return finishProgram(p, vs, ps, true);
 	GLuint v = compileStage(GL_VERTEX_SHADER, vsrc, "vertex");
 	GLuint f = compileStage(GL_FRAGMENT_SHADER, psrc, "pixel");
 	if (!v || !f)
@@ -471,6 +556,7 @@ Prog* getProgram(ShaderObj* vs, ShaderObj* ps)
 	glAttachShader(p.id, v);
 	glAttachShader(p.id, f);
 	for (auto& a : vs->info.inputs) glBindAttribLocation(p.id, a.second, a.first.c_str());
+	glProgramParameteri(p.id, GL_PROGRAM_BINARY_RETRIEVABLE_HINT, GL_TRUE);
 	glLinkProgram(p.id);
 	glDeleteShader(v);
 	glDeleteShader(f);
@@ -483,13 +569,21 @@ Prog* getProgram(ShaderObj* vs, ShaderObj* ps)
 		log("GL: program link failed: %s", buf);
 		return nullptr;
 	}
+	saveProgramBinary(bkey, p.id);
+	return finishProgram(p, vs, ps, false);
+}
+static Prog* finishProgram(Prog& p, ShaderObj* vs, ShaderObj* ps, bool cached)
+{
 	p.failed = false;
 	p.vc = glGetUniformLocation(p.id, "vc"); p.vci = glGetUniformLocation(p.id, "vci"); p.vcb = glGetUniformLocation(p.id, "vcb");
 	p.pc = glGetUniformLocation(p.id, "pc"); p.pci = glGetUniformLocation(p.id, "pci"); p.pcb = glGetUniformLocation(p.id, "pcb");
 	p.flip = glGetUniformLocation(p.id, "u_flip"); p.bgra = glGetUniformLocation(p.id, "u_bgra"); p.at = glGetUniformLocation(p.id, "u_at"); p.hp = glGetUniformLocation(p.id, "u_hp");
 	for (int i = 0; i < 16; i++) { char n[8]; snprintf(n, sizeof n, "s%d", i); p.s[i] = glGetUniformLocation(p.id, n); }
 	static int linked = 0;
-	if (linked++ < 8) log("GL: linked program #%d (vs %016llx ps %016llx)", linked, (unsigned long long)vs->hash, (unsigned long long)ps->hash);
+	static int nCached = 0, nBuilt = 0;
+	(cached ? nCached : nBuilt)++;
+	if (linked++ < 8 || (nCached + nBuilt) % 100 == 0)
+		log("GL: program #%d (vs %016llx ps %016llx) %s; so far %d from the shader cache, %d compiled", linked, (unsigned long long)vs->hash, (unsigned long long)ps->hash, cached ? "from cache" : "compiled", nCached, nBuilt);
 	return &p;
 }
 
@@ -749,6 +843,7 @@ bool init()
 	if (!gfx::ready() || !gfx::ownedByGame()) { log("GL: no context for the game thread - drawing disabled"); return false; }
 	const char* ext = (const char*)glGetString(GL_EXTENSIONS);
 	gHasS3tc = ext && strstr(ext, "GL_EXT_texture_compression_s3tc");
+	initBinCache();
 	{
 		GLint maj = 0, mnr = 0; glGetIntegerv(GL_MAJOR_VERSION, &maj); glGetIntegerv(GL_MINOR_VERSION, &mnr);
 		gHasBorder = (maj > 3 || (maj == 3 && mnr >= 2)) || (ext && (strstr(ext, "_texture_border_clamp")));
