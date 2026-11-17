@@ -89,7 +89,19 @@ H("IDirect3DDevice9::GetViewport")
 	guest::store<float>(p + 16, dev.vpZ[0]); guest::store<float>(p + 20, dev.vpZ[1]);
 	SET(0);
 } END;
-H("IDirect3DDevice9::SetScissorRect") { uint32_t p = ARG(1); for (int i = 0; i < 4; i++) dev.scissor[i] = guest::load<int32_t>(p + 4 * i); SET(0); } END;
+H("IDirect3DDevice9::SetScissorRect")
+{
+	uint32_t p = ARG(1);
+	for (int i = 0; i < 4; i++) dev.scissor[i] = guest::load<int32_t>(p + 4 * i);
+	static int n = 0;
+	if (n < 16 && (dev.scissor[2] - dev.scissor[0] != (int32_t)backW || dev.scissor[3] - dev.scissor[1] != (int32_t)backH))
+	{
+		n++;
+		uint32_t w = 0, h = 0; glr::rtSize(dev.rt0, w, h);
+		log("d3d9: SetScissorRect %d,%d-%d,%d (target %ux%u, scissor test %u)", dev.scissor[0], dev.scissor[1], dev.scissor[2], dev.scissor[3], w, h, dev.rs[174]);
+	}
+	SET(0);
+} END;
 H("IDirect3DDevice9::GetScissorRect") { uint32_t p = ARG(1); for (int i = 0; i < 4; i++) guest::store<int32_t>(p + 4 * i, dev.scissor[i]); SET(0); } END;
 
 H("IDirect3DDevice9::SetStreamSource")

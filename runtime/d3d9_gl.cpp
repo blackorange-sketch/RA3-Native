@@ -372,6 +372,13 @@ void bindTargets()
 	Obj* ds = dev.ds;
 	if (ds && ds->fmt != 0x4c4c554e)
 	{
+		{
+			// diagnostics: a depth buffer smaller than the colour target limits GL rendering to their overlap
+			uint32_t rw, rh, dw, dh;
+			targetSize(rt, rw, rh); targetSize(ds, dw, dh);
+			static int nm = 0;
+			if ((dw < rw || dh < rh) && nm < 12) { nm++; log("GL: depth buffer %ux%u (fmt %u) smaller than render target %ux%u (fmt %u), frame %u", dw, dh, ds->fmt, rw, rh, rt->fmt, gFrameNo); }
+		}
 		TexFmt tf = texFmtOf(ds->fmt);
 		GLuint dt = ensureTexture(ds);
 		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, tf.depth ? dt : 0, 0);
