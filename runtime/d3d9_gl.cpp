@@ -504,9 +504,11 @@ GLenum stencilOp(uint32_t o)
 {
 	switch (o) { case 2: return GL_ZERO; case 3: return GL_REPLACE; case 4: return GL_INCR; case 5: return GL_DECR; case 6: return GL_INVERT; case 7: return GL_INCR_WRAP; case 8: return GL_DECR_WRAP; default: return GL_KEEP; }
 }
+static bool gHasBorder = false;   // GL_EXT/OES_texture_border_clamp (or GLES 3.2)
 GLenum wrapMode(uint32_t a)
 {
-	switch (a) { case 2: case 5: return GL_MIRRORED_REPEAT; case 3: case 4: return GL_CLAMP_TO_EDGE; default: return GL_REPEAT; }
+	// D3DTADDRESS_BORDER: samples outside [0,1] return the border colour (shadow maps rely on it: outside the map = lit)
+	switch (a) { case 2: case 5: return GL_MIRRORED_REPEAT; case 3: return GL_CLAMP_TO_EDGE; case 4: return gHasBorder ? 0x812D : GL_CLAMP_TO_EDGE; default: return GL_REPEAT; }
 }
 
 void applyState(uint32_t tw, uint32_t th)
@@ -619,6 +621,17 @@ void bindSamplers(Prog* p, ShaderObj* ps)
 		sp(0, GL_TEXTURE_WRAP_S, wrapMode(s[1]));
 		sp(1, GL_TEXTURE_WRAP_T, wrapMode(s[2]));
 		sp(2, GL_TEXTURE_WRAP_R, wrapMode(s[3]));
+		if (gHasBorder && (s[1] == 4 || s[2] == 4 || s[3] == 4))
+		{
+			static uint32_t bc[16]; static bool bcSet[16];
+			if (!bcSet[i] || bc[i] != s[4])
+			{
+				uint32_t c = s[4];
+				GLfloat f[4] = {((c >> 16) & 255) / 255.f, ((c >> 8) & 255) / 255.f, (c & 255) / 255.f, ((c >> 24) & 255) / 255.f};
+				glSamplerParameterfv(gSamplers[i], 0x1004, f);   // GL_TEXTURE_BORDER_COLOR
+				bc[i] = c; bcSet[i] = true;
+			}
+		}
 		uint32_t mag = s[5], mn = s[6], mip = s[7];
 		bool hasMips = t && texOwner(t)->levels > 1;
 		GLenum minF;
@@ -683,6 +696,11 @@ bool init()
 	if (!gfx::ready() || !gfx::ownedByGame()) { log("GL: no context for the game thread - drawing disabled"); return false; }
 	const char* ext = (const char*)glGetString(GL_EXTENSIONS);
 	gHasS3tc = ext && strstr(ext, "GL_EXT_texture_compression_s3tc");
+	{
+		GLint maj = 0, mnr = 0; glGetIntegerv(GL_MAJOR_VERSION, &maj); glGetIntegerv(GL_MINOR_VERSION, &mnr);
+		gHasBorder = (maj > 3 || (maj == 3 && mnr >= 2)) || (ext && (strstr(ext, "_texture_border_clamp")));
+		log("GL: border clamp %d (GLES %d.%d)", (int)gHasBorder, maj, mnr);
+	}
 	log("GL: %s | %s | s3tc %d | float rt %d", glGetString(GL_RENDERER), glGetString(GL_VERSION), (int)gHasS3tc, ext && strstr(ext, "EXT_color_buffer_float") != nullptr);
 	glGenVertexArrays(1, &gVao);
 	glGenFramebuffers(1, &gBackFbo);
