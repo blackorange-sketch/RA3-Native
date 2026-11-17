@@ -398,13 +398,13 @@ struct Prog
 {
 	GLuint id = 0;
 	bool failed = false;
-	GLint vc = -1, vci = -1, vcb = -1, pc = -1, pci = -1, pcb = -1, flip = -1, bgra = -1, at = -1, s[16];
+	GLint vc = -1, vci = -1, vcb = -1, pc = -1, pci = -1, pcb = -1, flip = -1, bgra = -1, at = -1, hp = -1, s[16];
 	// last values uploaded to this program (uniforms persist per program): only changed ranges are re-sent
 	bool samplersSet = false, shadowValid = false;
 	std::vector<float> vcShadow, pcShadow;
 	std::vector<GLint> vcLoc, pcLoc;   // location of each array element
 	int32_t vciShadow[64], psiShadow[64], vcbShadow[16], pcbShadow[16];
-	float flipShadow = 0.f, atShadow[4] = {-1, -1, -1, -1};
+	float flipShadow = 0.f, atShadow[4] = {-1, -1, -1, -1}, hpShadow[2] = {-1, -1};
 	GLint bgraShadow = -1;
 };
 // Uploads registers [0, n) of `src` to a vec4 uniform array, sending only the range that differs from `shadow`.
@@ -469,7 +469,7 @@ Prog* getProgram(ShaderObj* vs, ShaderObj* ps)
 	p.failed = false;
 	p.vc = glGetUniformLocation(p.id, "vc"); p.vci = glGetUniformLocation(p.id, "vci"); p.vcb = glGetUniformLocation(p.id, "vcb");
 	p.pc = glGetUniformLocation(p.id, "pc"); p.pci = glGetUniformLocation(p.id, "pci"); p.pcb = glGetUniformLocation(p.id, "pcb");
-	p.flip = glGetUniformLocation(p.id, "u_flip"); p.bgra = glGetUniformLocation(p.id, "u_bgra"); p.at = glGetUniformLocation(p.id, "u_at");
+	p.flip = glGetUniformLocation(p.id, "u_flip"); p.bgra = glGetUniformLocation(p.id, "u_bgra"); p.at = glGetUniformLocation(p.id, "u_at"); p.hp = glGetUniformLocation(p.id, "u_hp");
 	for (int i = 0; i < 16; i++) { char n[8]; snprintf(n, sizeof n, "s%d", i); p.s[i] = glGetUniformLocation(p.id, n); }
 	static int linked = 0;
 	if (linked++ < 8) log("GL: linked program #%d (vs %016llx ps %016llx)", linked, (unsigned long long)vs->hash, (unsigned long long)ps->hash);
@@ -1246,6 +1246,14 @@ static void drawImpl(const DrawCall& dc)
 		if (p->pci >= 0 && (!p->shadowValid || memcmp(p->psiShadow, dev.psI, 64 * 4))) { glUniform4iv(p->pci, 16, dev.psI); memcpy(p->psiShadow, dev.psI, 64 * 4); }
 		if (p->pcb >= 0 && (!p->shadowValid || memcmp(p->pcbShadow, dev.psB, 16 * 4))) { glUniform1iv(p->pcb, 16, dev.psB); memcpy(p->pcbShadow, dev.psB, 16 * 4); }
 		if (p->flip >= 0 && (!p->shadowValid || p->flipShadow != -1.f)) { glUniform1f(p->flip, -1.f); p->flipShadow = -1.f; }
+		if (p->hp >= 0)
+		{
+			// D3D9 puts pixel centres on integer coordinates, GL half a pixel further: shift geometry by half a pixel
+			// (right and down) so full-screen passes cover the last row/column exactly as on D3D9
+			uint32_t vw = dev.vp[2] ? dev.vp[2] : tw, vh = dev.vp[3] ? dev.vp[3] : th;
+			float hx = vw ? 1.f / (float)vw : 0.f, hy = vh ? 1.f / (float)vh : 0.f;
+			if (!p->shadowValid || p->hpShadow[0] != hx || p->hpShadow[1] != hy) { glUniform2f(p->hp, hx, hy); p->hpShadow[0] = hx; p->hpShadow[1] = hy; }
+		}
 		if (p->at >= 0)
 		{
 			float at[4] = {dev.rs[15] ? (float)dev.rs[25] : 0.f, (dev.rs[24] & 255) / 255.f, 0.f, 0.f};
