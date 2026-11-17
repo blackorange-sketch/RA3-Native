@@ -132,7 +132,7 @@ H("IDirect3DDevice9::SetRenderTarget")
 		// D3D9: setting render target 0 resets the viewport (and scissor rect) to the full size of the new target;
 		// passes that render into smaller targets (e.g. the 1024x1024 depth texture at medium detail) rely on it
 		uint32_t w = 0, h = 0;
-		glr::targetSize(dev.rt0, w, h);
+		glr::rtSize(dev.rt0, w, h);
 		if (w && h)
 		{
 			dev.vp[0] = 0; dev.vp[1] = 0; dev.vp[2] = w; dev.vp[3] = h;

@@ -1563,6 +1563,7 @@ void stretchRect(Obj* src, const int32_t* sr, Obj* dst, const int32_t* dr, uint3
 }
 
 void destroy(Obj*) {}
+void rtSize(Obj* rt, uint32_t& w, uint32_t& h) { targetSize(rt, w, h); }
 }   // namespace glr
 }   // namespace d3d
 
@@ -1578,7 +1579,7 @@ void draw(const DrawCall&) {}
 void present() {}
 void resizeBackBuffer() {}
 void stretchRect(Obj*, const int32_t*, Obj*, const int32_t*, uint32_t) {}
-void targetSize(Obj*, uint32_t& w, uint32_t& h) { w = h = 0; }
+void rtSize(Obj*, uint32_t& w, uint32_t& h) { w = h = 0; }
 void destroy(Obj*) {}
 }
 }
