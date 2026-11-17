@@ -1,4 +1,5 @@
 // ID3DXEffect: parameter storage and handles, technique/pass application onto the device state.
+#include <unistd.h>
 #include <set>
 #include <mutex>
 #include <tuple>
@@ -440,7 +441,19 @@ H("ID3DXEffect::SetValue")
 } END;
 H("ID3DXEffect::SetBool") { PRef r = refOfSet(o, ARG(1)); if (r.valid()) { uint32_t v = ARG(2) ? 1 : 0; writeVals(r, &v, 1, 1); } SET(0); } END;
 H("ID3DXEffect::SetInt") { PRef r = refOfSet(o, ARG(1)); if (r.valid()) { uint32_t v = ARG(2); writeVals(r, &v, 1, 2); } SET(0); } END;
-H("ID3DXEffect::SetFloat") { PRef r = refOfSet(o, ARG(1)); if (r.valid()) { uint32_t v = ARG(2); writeVals(r, &v, 1, 3); } SET(0); } END;
+H("ID3DXEffect::SetFloat")
+{
+	PRef r = refOfSet(o, ARG(1));
+	if (r.valid())
+	{
+		uint32_t v = ARG(2);
+		writeVals(r, &v, 1, 3);
+		static bool diag = access("/sdcard/ra3_fxdiag", F_OK) == 0;
+		static int n = 0;
+		if (diag && n < 20 && r.p->name == "Time") { n++; float f; memcpy(&f, &v, 4); log("FXTIME SetFloat Time=%g", f); }
+	}
+	SET(0);
+} END;
 H("ID3DXEffect::SetBoolArray") { PRef r = refOfSet(o, ARG(1)); if (r.valid() && ARG(2)) { std::vector<uint32_t> v(ARG(3)); for (uint32_t i = 0; i < ARG(3); i++) v[i] = guest::load<uint32_t>(ARG(2) + 4 * i) ? 1 : 0; writeVals(r, v.data(), ARG(3), 1); } SET(0); } END;
 H("ID3DXEffect::SetIntArray") { PRef r = refOfSet(o, ARG(1)); if (r.valid() && ARG(2)) writeVals(r, (const uint32_t*)guest::host(ARG(2)), ARG(3), 2); SET(0); } END;
 H("ID3DXEffect::SetFloatArray") { PRef r = refOfSet(o, ARG(1)); if (r.valid() && ARG(2)) writeVals(r, (const uint32_t*)guest::host(ARG(2)), ARG(3), 3); SET(0); } END;
@@ -776,6 +789,19 @@ void fxApplyPass(Obj* o)
 			}
 			static int npl = 0;
 			if (npl < 6 && (!okp || verbose())) { npl++; log("fx: pre-shader %s: %zu float, %zu bool outputs", okp ? "ok" : "FAILED", po.f.size(), po.b.size()); }
+			static bool presDiag = access("/sdcard/ra3_fxdiag", F_OK) == 0;
+			static int npd = 0;
+			if (presDiag && npd < 40 && okp)
+			{
+				// effects diagnostics: inputs and outputs of embedded pre-shaders (time, atlas constants)
+				npd++;
+				std::string in, out;
+				int ti = fxrt::findParam(*fx, "Time");
+				if (ti >= 0 && !fx->params[ti].val.empty()) { float tv; memcpy(&tv, &fx->params[ti].val[0], 4); char b[48]; snprintf(b, sizeof b, " Time=%g", tv); in += b; }
+				for (auto& w : po.f) { char b[48]; snprintf(b, sizeof b, " c%u.%c=%g", w.first / 4, "xyzw"[w.first % 4], w.second); out += b; }
+				for (auto& w : po.b) { char b[32]; snprintf(b, sizeof b, " b%u=%g", w.first / 4, w.second); out += b; }
+				log("FXPRES %s vs %016llx:%s ->%s", stage == 0 ? "VS" : "PS", (unsigned long long)sh->hash, in.c_str(), out.c_str());
+			}
 		}
 	}
 }
