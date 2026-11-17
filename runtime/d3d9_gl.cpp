@@ -729,6 +729,18 @@ bool ensureGl()
 }
 bool ready() { return gOk; }
 
+// Frame trace (create /sdcard/ra3_frame): log every clear, copy and draw of frames 3600 and 5400.
+static bool traceFrame()
+{
+	static bool on = access("/sdcard/ra3_frame", F_OK) == 0;
+	return on && (gFrameNo == 3600 || gFrameNo == 5400);
+}
+static std::string objTag(Obj* o)
+{
+	if (!o) return "back";
+	char b[64]; snprintf(b, sizeof b, "%x(%s%ux%u f%u)", o->parent ? o->parent : o->addr, o->parent ? "s:" : "", o->w, o->h, o->fmt);
+	return b;
+}
 void clear(uint32_t count, uint32_t rects, uint32_t flags, uint32_t color, float z, uint32_t stencil)
 {
 	if (!ensureGl()) return;
@@ -741,6 +753,7 @@ void clear(uint32_t count, uint32_t rects, uint32_t flags, uint32_t color, float
 	bool hasDepth = isBack(dev.rt0) || dev.ds;
 	if ((flags & 2) && hasDepth) { glDepthMask(GL_TRUE); glClearDepthf(z); m |= GL_DEPTH_BUFFER_BIT; }
 	if ((flags & 4) && hasDepth) { glStencilMask(0xff); glClearStencil((GLint)stencil); m |= GL_STENCIL_BUFFER_BIT; }
+	if (traceFrame()) log("TR clear rt %s flags %x color %08x z %g rects %u", objTag(dev.rt0).c_str(), flags, color, (double)z, count);
 	if (!m) return;
 	if (count && rects)
 	{
@@ -895,6 +908,36 @@ static void drawImpl(const DrawCall& dc)
 	uint64_t t0 = profNow();
 	Prog* p = getProgram(vs, ps);
 	if (!p) { static int nf = 0; if (nf++ < 10) log("d3d9: draw skipped: no program for vs %016llx ps %016llx", (unsigned long long)vs->hash, (unsigned long long)ps->hash); return; }
+	if (traceFrame())
+	{
+		std::string tx; bool anyRt = false;
+		for (int i = 0; i < 16; i++)
+			if (Obj* t = dev.tex[i])
+			{
+				char b[128]; snprintf(b, sizeof b, " t%d=%s%s a%u/%u f%u/%u", i, objTag(t).c_str(), t->rtTex ? "RT" : "", dev.samp[i][1], dev.samp[i][2], dev.samp[i][5], dev.samp[i][6]);
+				tx += b; anyRt |= t->rtTex;
+			}
+		uint32_t rw = 0, rh = 0; targetSize(dev.rt0, rw, rh);
+		log("TR draw vs %016llx ps %016llx prim %u n %u rt %s ds %s vp %u,%u,%u,%u sc %u[%d,%d,%d,%d] bl %u %u/%u z %u/%u cw %x |%s", (unsigned long long)vs->hash, (unsigned long long)ps->hash, dc.prim, dc.primCount,
+			objTag(dev.rt0).c_str(), dev.ds ? objTag(dev.ds).c_str() : "-", dev.vp[0], dev.vp[1], dev.vp[2], dev.vp[3], dev.rs[174], dev.scissor[0], dev.scissor[1], dev.scissor[2], dev.scissor[3],
+			dev.rs[27], dev.rs[19], dev.rs[20], dev.rs[7], dev.rs[14], dev.rs[168], tx.c_str());
+		static std::set<std::pair<uint64_t, uint64_t>> srcSeen;
+		if (anyRt && srcSeen.size() < 24 && srcSeen.insert({vs->hash, ps->hash}).second)
+		{
+			log("TR VS source:\n%s", shdr::compose(vs->info).c_str());
+			log("TR PS source:\n%s", shdr::compose(ps->info, &vs->info.outputs).c_str());
+			for (int pass = 0; pass < 2; pass++)
+				for (auto& cc : (pass == 0 ? vs->info.ctab : ps->info.ctab))
+				{
+					if (cc.regSet != 2) continue;
+					const float* base = pass == 0 ? dev.vsF : dev.psF;
+					std::string vv;
+					for (uint32_t r = 0; r < std::min<uint32_t>(cc.regCount, 4) && cc.regIndex + r < (pass == 0 ? 256u : 224u); r++)
+						{ char b5[96]; const float* f = base + 4 * (cc.regIndex + r); snprintf(b5, sizeof b5, " [%g %g %g %g]", (double)f[0], (double)f[1], (double)f[2], (double)f[3]); vv += b5; }
+					log("TR %s c %s r%u x%u:%s", pass == 0 ? "VS" : "PS", cc.name.c_str(), cc.regIndex, cc.regCount, vv.c_str());
+				}
+		}
+	}
 	if (verbose())
 	{
 		// diagnostics: which shader pairs / blend states are drawn (dumped as a histogram)
@@ -1565,6 +1608,7 @@ void stretchRect(Obj* src, const int32_t* sr, Obj* dst, const int32_t* dr, uint3
 	int32_t s[4] = {0, 0, (int32_t)sw, (int32_t)sh}, d[4] = {0, 0, (int32_t)dw, (int32_t)dh};
 	if (sr) memcpy(s, sr, 16);
 	if (dr) memcpy(d, dr, 16);
+	if (traceFrame()) log("TR stretch %s [%d,%d,%d,%d] -> %s [%d,%d,%d,%d] filter %u", isBack(src) ? "back" : objTag(src).c_str(), s[0], s[1], s[2], s[3], isBack(dst) ? "back" : objTag(dst).c_str(), d[0], d[1], d[2], d[3], filter);
 	glBlitFramebuffer(s[0], s[1], s[2], s[3], d[0], d[1], d[2], d[3], GL_COLOR_BUFFER_BIT, filter == 2 ? GL_LINEAR : GL_NEAREST);
 	glErr("stretchRect");
 }
