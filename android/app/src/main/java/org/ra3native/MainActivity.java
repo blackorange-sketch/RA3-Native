@@ -23,7 +23,17 @@ public class MainActivity extends NativeActivity {
     protected void onCreate(android.os.Bundle b) {
         running = true;
         super.onCreate(b);
+        // Wi-Fi drops broadcast/multicast packets unless a multicast lock is held: LAN games find each other by broadcast
+        try {
+            android.net.wifi.WifiManager wm = (android.net.wifi.WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
+            if (wm != null) {
+                multicastLock = wm.createMulticastLock("ra3-lan");
+                multicastLock.setReferenceCounted(false);
+                multicastLock.acquire();
+            }
+        } catch (Exception ignored) {}
     }
+    private android.net.wifi.WifiManager.MulticastLock multicastLock;
     private boolean shown;
 
     // registered from native code (RegisterNatives)

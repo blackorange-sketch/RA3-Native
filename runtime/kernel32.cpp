@@ -979,3 +979,40 @@ namespace rt
 {
 void ioStats(uint64_t& bytes, uint64_t& us, uint64_t& calls) { bytes = gReadBytes; us = gReadUs; calls = gReadCalls; }
 }
+
+// ---- events for other modules (WS2_32 uses kernel events for WSAEVENTs and overlapped completion)
+namespace rt
+{
+uint32_t eventCreate(bool manual, bool initial)
+{
+	auto* w = new Waitable;
+	w->kind = KEvent; w->manual = manual; w->signaled = initial;
+	w->createdBy = thisThread().tid;
+	return newHandle(w, KEvent);
+}
+uint32_t getLastError() { return tctx.teb ? guest::load<uint32_t>(tctx.teb + 0x34) : 0; }
+void eventSet(uint32_t h) { if (auto* w = asWaitable(h)) { std::lock_guard<std::mutex> l(waitMu); w->signaled = true; w->sets++; waitCv.notify_all(); } }
+void eventReset(uint32_t h) { if (auto* w = asWaitable(h)) { std::lock_guard<std::mutex> l(waitMu); w->signaled = false; } }
+// index of the signalled object (all: 0 once all are), -1 on timeout
+int waitHandles(const uint32_t* hs, int n, bool all, uint32_t ms)
+{
+	uint32_t tid = thisThread().tid;
+	std::vector<Waitable*> ws;
+	for (int i = 0; i < n; i++) ws.push_back(asWaitable(hs[i]));
+	int hit = -1;
+	auto ready = [&] {
+		if (all)
+		{
+			for (auto* w : ws) if (w && !w->signaled && w->kind == KEvent) return false;
+			for (auto* w : ws) if (w) waitReady(w, tid);
+			hit = 0; return true;
+		}
+		for (int i = 0; i < n; i++) if (ws[i] && waitReady(ws[i], tid)) { hit = i; return true; }
+		return false;
+	};
+	std::unique_lock<std::mutex> l(waitMu);
+	if (ms == 0xffffffffu) waitCv.wait(l, ready);
+	else waitCv.wait_for(l, std::chrono::milliseconds(ms), ready);
+	return hit;
+}
+}
