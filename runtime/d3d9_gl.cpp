@@ -753,6 +753,20 @@ static bool traceFrame()
 	static bool on = access("/sdcard/ra3_frame", F_OK) == 0;
 	return on && (gFrameNo == 3600 || gFrameNo == 5400);
 }
+// with /sdcard/ra3_dump present: save the target after every copy and full-screen pass of frame 5400
+static bool traceDump()
+{
+	static bool on = access("/sdcard/ra3_dump", F_OK) == 0;
+	return on && gFrameNo == 5400 && traceFrame();
+}
+static void dumpBmp(const char* path, uint32_t w, uint32_t h, uint32_t sc);
+static void dumpTraced(const char* what, uint32_t w, uint32_t h)
+{
+	static uint32_t seq = 0;
+	if (seq >= 40) return;
+	char path[128]; snprintf(path, sizeof path, "/sdcard/ra3_dump/tr%02u_%s_%ux%u.bmp", seq++, what, w, h);
+	dumpBmp(path, w, h, w > 1024 ? 2 : 1);
+}
 static std::string objTag(Obj* o)
 {
 	if (!o) return "back";
@@ -883,22 +897,27 @@ static uint64_t tProg, tState, tUni, tSamp, tAttr, tDraw, nDraw;
 
 static bool gDiagPair = false;   // set per draw: first draws of each new shader pair during gameplay
 static bool isDiagFrame() { return verbose() && (gFrameNo == 700 || gFrameNo == 1800 || gFrameNo == 3600 || gDiagPair); }
-static void dumpBmp(const char* path, uint32_t w, uint32_t h)
+static void dumpBmp(const char* path, uint32_t w, uint32_t h, uint32_t sc = 2)
 {
 	if (!w || !h || w > 4096 || h > 4096) return;
 	std::vector<uint8_t> px((size_t)w * h * 4);
 	glFinish();
+	GLint prevRead = 0, curDraw = 0;
+	glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prevRead);
+	glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &curDraw);
+	glBindFramebuffer(GL_READ_FRAMEBUFFER, curDraw);   // read what was just drawn
 	glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
-	// half size 24-bit BMP, bottom-up as read
-	uint32_t ow = w / 2, oh = h / 2, rowB = (ow * 3 + 3) & ~3u, imgB = rowB * oh;
+	glBindFramebuffer(GL_READ_FRAMEBUFFER, prevRead);
+	// scaled-down 24-bit BMP; GL row 0 is the top of the D3D image, BMP rows are stored bottom-up
+	uint32_t ow = w / sc, oh = h / sc, rowB = (ow * 3 + 3) & ~3u, imgB = rowB * oh;
 	std::vector<uint8_t> bmp(54 + imgB, 0);
 	auto w32 = [&](size_t o, uint32_t v) { memcpy(&bmp[o], &v, 4); };
 	bmp[0] = 'B'; bmp[1] = 'M'; w32(2, 54 + imgB); w32(10, 54); w32(14, 40); w32(18, ow); w32(22, oh); bmp[26] = 1; bmp[28] = 24; w32(34, imgB);
 	for (uint32_t y = 0; y < oh; y++)
 		for (uint32_t x = 0; x < ow; x++)
 		{
-			const uint8_t* q = &px[((size_t)(2 * y) * w + 2 * x) * 4];
-			uint8_t* o = &bmp[54 + (size_t)y * rowB + x * 3];
+			const uint8_t* q = &px[((size_t)(sc * y) * w + sc * x) * 4];
+			uint8_t* o = &bmp[54 + (size_t)(oh - 1 - y) * rowB + x * 3];
 			o[0] = q[2]; o[1] = q[1]; o[2] = q[0];
 		}
 	if (FILE* f = fopen(path, "wb")) { fwrite(bmp.data(), 1, bmp.size(), f); fclose(f); log("dumped %s (%ux%u)", path, ow, oh); }
@@ -950,7 +969,7 @@ static void drawImpl(const DrawCall& dc)
 					if (cc.regSet != 2) continue;
 					const float* base = pass == 0 ? dev.vsF : dev.psF;
 					std::string vv;
-					for (uint32_t r = 0; r < std::min<uint32_t>(cc.regCount, 4) && cc.regIndex + r < (pass == 0 ? 256u : 224u); r++)
+					for (uint32_t r = 0; r < std::min<uint32_t>(cc.regCount, 16) && cc.regIndex + r < (pass == 0 ? 256u : 224u); r++)
 						{ char b5[96]; const float* f = base + 4 * (cc.regIndex + r); snprintf(b5, sizeof b5, " [%g %g %g %g]", (double)f[0], (double)f[1], (double)f[2], (double)f[3]); vv += b5; }
 					log("TR %s c %s r%u x%u:%s", pass == 0 ? "VS" : "PS", cc.name.c_str(), cc.regIndex, cc.regCount, vv.c_str());
 				}
@@ -1398,11 +1417,12 @@ static void drawImpl(const DrawCall& dc)
 		}
 	}
 	if (gInstUsed) { for (int loc = 0; loc < 16; loc++) glVertexAttribDivisor(loc, 0); gInstUsed = false; }
+	if (dc.primCount <= 2 && traceDump() && (!dev.rt0 || isBack(dev.rt0) || dev.rt0->fmt == 21 || dev.rt0->fmt == 22)) dumpTraced("draw", tw, th);
 	uint64_t t6 = profNow();
 	tProg += t1 - t0; tState += t2 - t1; tUni += t3 - t2; tSamp += t4 - t3; tAttr += t5 - t4; tDraw += t6 - t5; nDraw++;
 	gDrawsThisFrame++;
 	if (gDrawsThisFrame <= 3 && gFrameNo < 5) glErr("draw");
-	if ((gFrameNo == 700 || gFrameNo == 1800 || gFrameNo == 3600) && !dev.rt0)
+	if (verbose() && (gFrameNo == 700 || gFrameNo == 1800 || gFrameNo == 3600) && !dev.rt0)
 	{
 		uint32_t dn = gDrawsThisFrame;
 		if (dn == 1 || dn == 10 || dn == 30 || dn == 60 || dn == 90 || dn == 120) dumpBmp(("/sdcard/ra3_f" + std::to_string(gFrameNo) + "_d" + std::to_string(dn) + ".bmp").c_str(), tw, th);
@@ -1631,6 +1651,7 @@ void stretchRect(Obj* src, const int32_t* sr, Obj* dst, const int32_t* dr, uint3
 	if (dr) memcpy(d, dr, 16);
 	if (traceFrame()) log("TR stretch %s [%d,%d,%d,%d] -> %s [%d,%d,%d,%d] filter %u", isBack(src) ? "back" : objTag(src).c_str(), s[0], s[1], s[2], s[3], isBack(dst) ? "back" : objTag(dst).c_str(), d[0], d[1], d[2], d[3], filter);
 	glBlitFramebuffer(s[0], s[1], s[2], s[3], d[0], d[1], d[2], d[3], GL_COLOR_BUFFER_BIT, filter == 2 ? GL_LINEAR : GL_NEAREST);
+	if (traceDump() && (isBack(dst) || dst->fmt == 21 || dst->fmt == 22)) dumpTraced("copy", dw, dh);
 	glErr("stretchRect");
 }
 
