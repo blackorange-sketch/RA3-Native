@@ -55,7 +55,6 @@ public class LauncherActivity extends Activity {
     TextView langValue, gameText, playButton, warnText, statusText;
     Backdrop backdrop;
     volatile boolean busy;
-    boolean missingAck;   // second PLAY after a failed file check starts anyway
     List<String> languages = new ArrayList<>();
     String gamePath = "";
 
@@ -123,6 +122,8 @@ public class LauncherActivity extends Activity {
 
         playButton = menuButton("PLAY", true);
         playButton.setOnClickListener(v -> play());
+        playButton.setEnabled(false);
+        playButton.setAlpha(0.35f);
         left.addView(playButton, buttonLp());
         TextView folder = menuButton("GAME FOLDER", false);
         folder.setOnClickListener(v -> chooseFolder());
@@ -282,6 +283,8 @@ public class LauncherActivity extends Activity {
     void refreshGame() {
         if (!hasStorage()) {
             gameText.setText("STORAGE ACCESS NEEDED  \u2022  tap PLAY to grant it");
+            playButton.setEnabled(true); playButton.setAlpha(1f);
+            playButton.setOnClickListener(v -> requestStorage());
             gameText.setTextColor(YELLOW);
             languages = new ArrayList<>(Collections.singletonList(prefs.getString("language", "russian")));
             showLanguage();
@@ -309,9 +312,11 @@ public class LauncherActivity extends Activity {
     }
 
     void showGame() {
+        playButton.setOnClickListener(v -> play());
         if (gamePath.isEmpty()) {
             gameText.setText("GAME NOT FOUND  \u2022  choose GAME FOLDER");
             gameText.setTextColor(YELLOW);
+            setPlayEnabled(false);
         } else {
             gameText.setText("GAME: " + gameRoot());
             gameText.setTextColor(TEXT_DIM);
@@ -342,6 +347,7 @@ public class LauncherActivity extends Activity {
         String cur = prefs.getString("language", "");
         if (!languages.contains(cur)) prefs.edit().putString("language", languages.contains("english") ? "english" : languages.get(0)).apply();
         showLanguage();
+        checkFiles();
     }
 
     void stepLanguage(int d) {
@@ -350,6 +356,7 @@ public class LauncherActivity extends Activity {
         i = ((i < 0 ? 0 : i) + d + languages.size()) % languages.size();
         prefs.edit().putString("language", languages.get(i)).apply();
         showLanguage();
+        if (!gamePath.isEmpty()) checkFiles();
     }
 
     void showLanguage() {
@@ -424,12 +431,28 @@ public class LauncherActivity extends Activity {
     }
 
     // ---------------------------------------------------------------- launch
+    void setPlayEnabled(boolean on) {
+        playButton.setEnabled(on);
+        playButton.setAlpha(on ? 1f : 0.35f);
+    }
+
     void play() {
         if (!hasStorage()) { requestStorage(); return; }
-        if (busy) return;
+        if (busy || !filesOk) return;
+        status("STARTING...", YELLOW);
+        launch();
+    }
+
+    boolean filesOk;
+    int checkGen;
+    // runs in the background when the launcher opens (and after the language or folder changes): PLAY unlocks when done
+    void checkFiles() {
+        filesOk = false;
+        setPlayEnabled(false);
         if (gamePath.isEmpty()) { status("GAME NOT FOUND - CHOOSE THE GAME FOLDER", RED_GLOW); return; }
-        if (missingAck) { launch(); return; }
+        final int gen = ++checkGen;
         busy = true;
+        backdrop.setProgress(0f);
         final String lang = prefs.getString("language", "russian");
         new Thread(() -> {
             // the files the language configuration asks for (RA3_<lang>_1.12.SkuDef and the configs it chains to)
@@ -459,27 +482,39 @@ public class LauncherActivity extends Activity {
                 String f = files.get(i);
                 File h = resolve(root, f);
                 if (h == null || !h.canRead() || h.length() == 0) missing.add(f.replace('\\', '/'));
-                status("CHECKING GAME FILES  " + (i + 1) + " / " + files.size(), YELLOW);
+                else if (f.toLowerCase(Locale.ROOT).endsWith(".big")) preloadIndex(h);
+                if (gen != checkGen) return;   // superseded by a newer check
+                status("LOADING GAME FILES  " + (i + 1) + " / " + files.size(), YELLOW);
                 final float pr = (i + 1) / (float) files.size();
                 runOnUiThread(() -> backdrop.setProgress(pr));
                 // keep the bar readable even when the check is instant
-                long due = start + (long) (700 * pr);
+                long due = start + (long) (1200 * pr);
                 long now = System.currentTimeMillis();
                 if (due > now) try { Thread.sleep(due - now); } catch (InterruptedException ignored) {}
             }
             runOnUiThread(() -> {
+                if (gen != checkGen) return;
                 busy = false;
                 // the game skips archives that are not there (e.g. MapsExtra.big is absent from many copies):
                 // only the executable and the language configuration itself are required
                 boolean critical = false;
                 for (String m : missing) { String l = m.toLowerCase(Locale.ROOT); if (l.endsWith(".game") || l.endsWith(".skudef")) critical = true; }
-                if (!critical) { status("STARTING...", YELLOW); launch(); }
-                else {
-                    missingAck = true;
-                    status("MISSING: " + missing.get(0) + (missing.size() > 1 ? "  (+" + (missing.size() - 1) + " MORE)" : "") + "  -  PLAY AGAIN TO START ANYWAY", RED_GLOW);
-                }
+                if (!critical) { filesOk = true; setPlayEnabled(true); status("READY", 0xff7ddc6a); }
+                else status("MISSING: " + missing.get(0) + (missing.size() > 1 ? "  (+" + (missing.size() - 1) + " MORE)" : "") + "  -  CHECK THE GAME FOLDER", RED_GLOW);
             });
         }).start();
+    }
+
+    // read the archive's header and file index, so it is already in memory when the game opens the archive
+    static void preloadIndex(File f) {
+        try (java.io.RandomAccessFile r = new java.io.RandomAccessFile(f, "r")) {
+            byte[] h = new byte[16];
+            r.readFully(h);
+            int index = ((h[12] & 255) << 24) | ((h[13] & 255) << 16) | ((h[14] & 255) << 8) | (h[15] & 255);   // big-endian
+            int n = (int) Math.min(Math.max(index, 0), Math.min(r.length(), 8L << 20));
+            byte[] buf = new byte[64 << 10];
+            for (int done = 16; done < n; ) { int k = r.read(buf, 0, Math.min(buf.length, n - done)); if (k <= 0) break; done += k; }
+        } catch (Exception ignored) {}
     }
 
     // a path from the game's configs (backslashes, any letter case) inside the game folder

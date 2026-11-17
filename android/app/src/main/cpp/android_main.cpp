@@ -1,3 +1,4 @@
+#include <chrono>
 // Android shell: NativeActivity glue, storage permission, game discovery, on-screen log console.
 #include "input.h"
 #include <android/log.h>
@@ -180,6 +181,8 @@ void requestAllFilesAccess(android_app* app)
 	app->activity->vm->DetachCurrentThread();
 }
 
+bool quietStart = false;   // launched from the launcher: loading screen instead of the log console
+static uint64_t rtNowMs() { return (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 void draw(ANativeWindow* w)
 {
 	if (!gfx::ready()) return;
@@ -221,6 +224,34 @@ void draw(ANativeWindow* w)
 			if (i >= (int)pickEntries.size()) break;
 			text(r + 1, pickEntries[i].label, pickEntries[i].kind == 0 ? 0xffd8d8d8 : 0xff80ff80);
 		}
+		unlockAndPost();
+		return;
+	}
+	bool fatalShown = false;
+	{
+		std::lock_guard<std::mutex> l(lineMu);
+		for (auto& s : lines) if (s.rfind("FATAL", 0) == 0) fatalShown = true;
+	}
+	if (quietStart && !fatalShown && !picking)
+	{
+		// started from the launcher: a quiet loading screen instead of the console (the console returns on errors)
+		for (int y = 0; y < b.height; y++)
+			for (int x = 0; x < b.width; x++) px[y * b.stride + x] = 0xff070708;
+		std::string msg = "LOADING";
+		int dots = (int)((rtNowMs() / 400) % 4);
+		msg += std::string(dots, '.');
+		int tx = (b.width / cw - 7) / 2 - 1, ty = b.height / ch / 2 - 1;
+		text(ty, std::string(std::max(0, tx), ' ') + msg, 0xffffc21a);   // yellow
+		// hazard stripe bar along the bottom, running
+		int bh = std::max(8, b.height / 60), off = (int)((rtNowMs() / 12) % (bh * 2));
+		for (int y = b.height - bh; y < b.height; y++)
+			for (int x = 0; x < b.width; x++)
+			{
+				int d = (x + off + (b.height - y)) % (bh * 2);
+				px[y * b.stride + x] = d < bh ? 0xffffc21a : 0xff111111;
+			}
+		for (int y = b.height - bh - 3; y < b.height - bh; y++)
+			for (int x = 0; x < b.width; x++) px[y * b.stride + x] = 0xff6e0a0c;
 		unlockAndPost();
 		return;
 	}
@@ -349,6 +380,7 @@ void android_main(android_app* app)
 	// settings chosen in the launcher (LauncherActivity writes <app data>/launcher.cfg as key=value lines)
 	if (FILE* f = fopen((rt::config.dataRoot + "/launcher.cfg").c_str(), "r"))
 	{
+		quietStart = true;
 		char ln[512];
 		while (fgets(ln, sizeof ln, f))
 		{
@@ -402,6 +434,6 @@ void android_main(android_app* app)
 		}
 		tick++;
 		gfx::servicePlatform();
-		if (window && dirty.exchange(false)) draw(window);
+		if (window && (dirty.exchange(false) || (quietStart && !gfx::ownedByGame()))) draw(window);
 	}
 }
