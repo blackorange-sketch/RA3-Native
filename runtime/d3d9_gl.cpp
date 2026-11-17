@@ -1144,6 +1144,7 @@ static void disableAttribsExcept(uint32_t enabled)
 		}
 }
 
+static uint32_t gFxDraws[512 * 8], gFxPrims[512 * 8];
 static void drawImpl(const DrawCall& dc);
 void draw(const DrawCall& dc)
 {
@@ -1165,6 +1166,7 @@ static void drawImpl(const DrawCall& dc)
 	uint64_t t0 = profNow();
 	Prog* p = getProgram(vs, ps);
 	if (!p) { static int nf = 0; if (nf++ < 10) log("d3d9: draw skipped: no program for vs %016llx ps %016llx", (unsigned long long)vs->hash, (unsigned long long)ps->hash); return; }
+	if (fxStatOn() && gFxDiagCur >= 0 && gFxDiagCur < 512) { gFxDraws[gFxDiagCur * 8 + (gFxDiagTech & 7)]++; gFxPrims[gFxDiagCur * 8 + (gFxDiagTech & 7)] += dc.primCount; }
 	if (traceFrame())
 	{
 		std::string tx; bool anyRt = false;
@@ -1780,6 +1782,15 @@ static void presentImpl()
 		lastT = t; lastBytes = b; lastUs = u; lastCalls = n;
 	}
 	if (gFrameNo % 600 == 0) reapReleased(gFrameNo);
+	if (fxStatOn() && gFrameNo % 1800 == 0)
+	{
+		// effect usage over the last minute: effect#.technique draws/primitives
+		std::string o;
+		for (int i = 0; i < 512 * 8; i++)
+			if (gFxDraws[i]) { char b[48]; snprintf(b, sizeof b, " %d.%d:%u/%u", i / 8, i % 8, gFxDraws[i], gFxPrims[i]); o += b; }
+		log("FXSTAT draws/primitives per effect.technique (last 1800 frames):%s", o.c_str());
+		memset(gFxDraws, 0, sizeof gFxDraws); memset(gFxPrims, 0, sizeof gFxPrims);
+	}
 	if (gFrameNo % 300 == 0 && verbose())
 	{
 		static uint64_t last = 0; uint64_t n = nowUs();

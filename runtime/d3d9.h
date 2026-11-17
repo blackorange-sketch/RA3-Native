@@ -10,6 +10,11 @@
 
 namespace d3d
 {
+// effect-usage statistics (verbose): effect applied last and its technique, counted per draw
+extern int gFxDiagCur;
+extern uint32_t gFxDiagTech;
+bool fxStatOn();   // /sdcard/ra3_fxstat exists
+
 enum Iface { IDirect3D9, IDevice, ITexture, ICube, IVolume, ISurface, IVB, IIB, IVDecl, IVS, IPS, IQuery, ISB, ISwap, IBuffer, IEffect, INumIfaces };
 
 struct FxInfo;

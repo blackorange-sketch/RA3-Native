@@ -721,10 +721,25 @@ static void applyShaderState(FxInfo& fx, const FxPass& ps, uint32_t tech, uint32
 	}
 }
 
+int gFxDiagCur = -1;
+bool fxStatOn() { static const bool on = access("/sdcard/ra3_fxstat", F_OK) == 0; return on; }
+uint32_t gFxDiagTech = 0;
 void fxApplyPass(Obj* o)
 {
 	FxInfo* fx = F(o);
 	if (!fx || !gPass.active || gPass.fx != fx) return;
+	if (fx->diagId < 0)
+	{
+		static int nextId = 0;
+		fx->diagId = nextId++;
+		if (fxStatOn())
+		{
+			std::string t;
+			for (auto& tc : fx->techs) { t += tc.name; t += ' '; }
+			log("FXSTAT effect #%d: %zu params, blob %zu, techniques: %s", fx->diagId, fx->params.size(), fx->blob.size(), t.c_str());
+		}
+	}
+	gFxDiagCur = fx->diagId; gFxDiagTech = gPass.tech;
 	syncShared(*fx);
 	const FxPass& ps = fx->techs[gPass.tech].passes[gPass.pass];
 	for (uint32_t i = 0; i < ps.sts.size(); i++) applyShaderState(*fx, ps, gPass.tech, gPass.pass, i);
