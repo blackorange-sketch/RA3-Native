@@ -52,7 +52,10 @@ public class LauncherActivity extends Activity {
 
     SharedPreferences prefs;
     Typeface condensed, condensedBold;
-    TextView langValue, gameText, playButton, warnText;
+    TextView langValue, gameText, playButton, warnText, statusText;
+    Backdrop backdrop;
+    volatile boolean busy;
+    boolean missingAck;   // second PLAY after a failed file check starts anyway
     List<String> languages = new ArrayList<>();
     String gamePath = "";
 
@@ -96,11 +99,12 @@ public class LauncherActivity extends Activity {
     // ---------------------------------------------------------------- UI
     void buildUi() {
         FrameLayout root = new FrameLayout(this);
-        root.addView(new Backdrop(this), new FrameLayout.LayoutParams(-1, -1));
+        backdrop = new Backdrop(this);
+        root.addView(backdrop, new FrameLayout.LayoutParams(-1, -1));
 
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setPadding(dp(36), dp(22), dp(36), dp(18));
+        row.setPadding(dp(28), dp(14), dp(28), dp(22));
         root.addView(row, new FrameLayout.LayoutParams(-1, -1));
 
         // left: title and main buttons
@@ -108,12 +112,13 @@ public class LauncherActivity extends Activity {
         left.setOrientation(LinearLayout.VERTICAL);
         row.addView(left, new LinearLayout.LayoutParams(0, -1, 1f));
 
-        left.addView(label("COMMAND & CONQUER", 15, TEXT_DIM, true, 0.35f));
-        TextView title = label("RED ALERT 3", 52, RED, true, 0.06f);
+        left.addView(label("COMMAND & CONQUER", 11, TEXT_DIM, true, 0.3f));
+        TextView title = label("RED ALERT 3", 34, RED, true, 0.04f);
+        title.setSingleLine(true);
         title.setShadowLayer(dp(10), 0, dp(2), 0xcc000000);
         left.addView(title);
-        TextView sub = label("NATIVE  •  ANDROID", 14, YELLOW, true, 0.4f);
-        sub.setPadding(dp(3), 0, 0, dp(18));
+        TextView sub = label("NATIVE  \u2022  ANDROID", 10, YELLOW, true, 0.35f);
+        sub.setPadding(dp(2), dp(2), 0, dp(12));
         left.addView(sub);
 
         playButton = menuButton("PLAY", true);
@@ -128,21 +133,21 @@ public class LauncherActivity extends Activity {
 
         View spacer = new View(this);
         left.addView(spacer, new LinearLayout.LayoutParams(1, 0, 1f));
-        gameText = label("", 12, TEXT_DIM, false, 0f);
+        gameText = label("", 10, TEXT_DIM, false, 0f);
         left.addView(gameText);
-        TextView ver = label("BUILD " + BuildConfig.BUILD_ID.substring(0, Math.min(8, BuildConfig.BUILD_ID.length())).toUpperCase(Locale.ROOT), 11, 0xff6b7176, false, 0.2f);
+        TextView ver = label("BUILD " + BuildConfig.BUILD_ID.substring(0, Math.min(8, BuildConfig.BUILD_ID.length())).toUpperCase(Locale.ROOT), 9, 0xff6b7176, false, 0.2f);
         left.addView(ver);
 
         // right: settings panel
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
         panel.setBackground(new PanelDrawable());
-        panel.setPadding(dp(22), dp(16), dp(22), dp(16));
-        LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(dp(400), -1);
+        panel.setPadding(dp(18), dp(12), dp(18), dp(10));
+        LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(dp(330), -1);
         plp.leftMargin = dp(24);
         row.addView(panel, plp);
 
-        TextView ph = label("OPTIONS", 20, TEXT, true, 0.3f);
+        TextView ph = label("OPTIONS", 15, TEXT, true, 0.3f);
         ph.setPadding(0, 0, 0, dp(4));
         panel.addView(ph);
         View rule = new View(this);
@@ -160,10 +165,10 @@ public class LauncherActivity extends Activity {
         LinearLayout lr = optionRow(opts, "INTERFACE LANGUAGE", "Language files found in the game folder");
         LinearLayout sel = new LinearLayout(this);
         sel.setGravity(Gravity.CENTER_VERTICAL);
-        TextView prev = arrow("◀"), next = arrow("▶");
-        langValue = label("", 15, TEXT, true, 0.15f);
+        TextView prev = arrow("\u25C0"), next = arrow("\u25B6");
+        langValue = label("", 12, TEXT, true, 0.12f);
         langValue.setGravity(Gravity.CENTER);
-        langValue.setMinWidth(dp(110));
+        langValue.setMinWidth(dp(80));
         prev.setOnClickListener(v -> stepLanguage(-1));
         next.setOnClickListener(v -> stepLanguage(1));
         sel.addView(prev); sel.addView(langValue); sel.addView(next);
@@ -173,16 +178,25 @@ public class LauncherActivity extends Activity {
         toggleRow(opts, "LOG FILE", "Writes /sdcard/ra3_native.log for bug reports", "log", true);
         toggleRow(opts, "60 FPS  (EXPERIMENTAL)", "Smoother picture; may break build animations and cause white flashes", "fps60", false);
 
-        warnText = label("", 12, YELLOW, false, 0f);
-        warnText.setPadding(0, dp(10), 0, 0);
+        warnText = label("", 10, YELLOW, false, 0f);
+        warnText.setPadding(0, dp(8), 0, 0);
         opts.addView(warnText);
+
+        statusText = label("", 10, YELLOW, true, 0.15f);
+        FrameLayout.LayoutParams slp = new FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM | Gravity.LEFT);
+        slp.leftMargin = dp(28); slp.bottomMargin = dp(14);
+        root.addView(statusText, slp);
 
         setContentView(root);
     }
 
+    void status(final String text, final int color) {
+        runOnUiThread(() -> { statusText.setText(text); statusText.setTextColor(color); });
+    }
+
     LinearLayout.LayoutParams buttonLp() {
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(300), dp(54));
-        lp.bottomMargin = dp(12);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(230), dp(40));
+        lp.bottomMargin = dp(9);
         return lp;
     }
 
@@ -198,18 +212,18 @@ public class LauncherActivity extends Activity {
     }
 
     TextView arrow(String s) {
-        TextView t = label(s, 16, YELLOW, true, 0f);
+        TextView t = label(s, 12, YELLOW, true, 0f);
         t.setGravity(Gravity.CENTER);
-        t.setPadding(dp(10), dp(6), dp(10), dp(6));
+        t.setPadding(dp(8), dp(4), dp(8), dp(4));
         t.setBackground(bevel(STEEL_LIGHT, STEEL, STEEL_EDGE, 0xff5a6066, 0xff33373b));
         return t;
     }
 
     // angled red/steel button, as in the game's menus
     TextView menuButton(String s, boolean primary) {
-        TextView t = label(s, 20, TEXT, true, 0.25f);
+        TextView t = label(s, 15, TEXT, true, 0.2f);
         t.setGravity(Gravity.CENTER_VERTICAL);
-        t.setPadding(dp(22), 0, dp(16), 0);
+        t.setPadding(dp(18), 0, dp(14), 0);
         t.setBackground(new ButtonDrawable(primary));
         t.setClickable(true);
         return t;
@@ -229,12 +243,12 @@ public class LauncherActivity extends Activity {
     LinearLayout optionRow(LinearLayout parent, String name, String hint) {
         LinearLayout r = new LinearLayout(this);
         r.setGravity(Gravity.CENTER_VERTICAL);
-        r.setPadding(0, dp(9), 0, dp(9));
+        r.setPadding(0, dp(6), 0, dp(6));
         LinearLayout txt = new LinearLayout(this);
         txt.setOrientation(LinearLayout.VERTICAL);
-        txt.addView(label(name, 15, TEXT, true, 0.12f));
-        TextView h = label(hint, 11, TEXT_DIM, false, 0f);
-        h.setPadding(0, dp(3), dp(8), 0);
+        txt.addView(label(name, 12, TEXT, true, 0.1f));
+        TextView h = label(hint, 9.5f, TEXT_DIM, false, 0f);
+        h.setPadding(0, dp(2), dp(8), 0);
         txt.addView(h);
         r.addView(txt, new LinearLayout.LayoutParams(0, -2, 1f));
         parent.addView(r);
@@ -246,10 +260,10 @@ public class LauncherActivity extends Activity {
 
     void toggleRow(LinearLayout parent, String name, String hint, final String key, boolean def) {
         LinearLayout r = optionRow(parent, name, hint);
-        final TextView sw = label("", 14, TEXT, true, 0.2f);
+        final TextView sw = label("", 11, TEXT, true, 0.15f);
         sw.setGravity(Gravity.CENTER);
-        sw.setMinWidth(dp(74));
-        sw.setPadding(dp(8), dp(7), dp(8), dp(7));
+        sw.setMinWidth(dp(54));
+        sw.setPadding(dp(6), dp(5), dp(6), dp(5));
         final Runnable paint = () -> {
             boolean on = prefs.getBoolean(key, def);
             sw.setText(on ? "ON" : "OFF");
@@ -267,18 +281,36 @@ public class LauncherActivity extends Activity {
     // ---------------------------------------------------------------- game folder and languages
     void refreshGame() {
         if (!hasStorage()) {
-            gameText.setText("STORAGE ACCESS NEEDED  •  tap PLAY to grant it");
+            gameText.setText("STORAGE ACCESS NEEDED  \u2022  tap PLAY to grant it");
             gameText.setTextColor(YELLOW);
             languages = new ArrayList<>(Collections.singletonList(prefs.getString("language", "russian")));
             showLanguage();
             return;
         }
-        if (gamePath.isEmpty() || !new File(gamePath).exists()) {
-            String found = findGame();
-            if (found != null) { gamePath = found; prefs.edit().putString("gamepath", gamePath).apply(); }
+        if ((gamePath.isEmpty() || !new File(gamePath).exists()) && !busy) {
+            // search in the background, the stripe bar runs meanwhile
+            busy = true;
+            backdrop.setIndeterminate(true);
+            status("SEARCHING FOR THE GAME...", YELLOW);
+            new Thread(() -> {
+                final String found = findGame();
+                runOnUiThread(() -> {
+                    busy = false;
+                    backdrop.setIndeterminate(false);
+                    backdrop.setProgress(0f);
+                    if (found != null) { gamePath = found; prefs.edit().putString("gamepath", gamePath).apply(); status("", YELLOW); }
+                    else { gamePath = ""; status("", YELLOW); }
+                    showGame();
+                });
+            }).start();
+            return;
         }
+        showGame();
+    }
+
+    void showGame() {
         if (gamePath.isEmpty()) {
-            gameText.setText("GAME NOT FOUND  •  choose GAME FOLDER");
+            gameText.setText("GAME NOT FOUND  \u2022  choose GAME FOLDER");
             gameText.setTextColor(YELLOW);
         } else {
             gameText.setText("GAME: " + gameRoot());
@@ -356,8 +388,8 @@ public class LauncherActivity extends Activity {
         Collections.sort(dirs, (a, c) -> a.getName().compareToIgnoreCase(c.getName()));
         final boolean canUp = dir.getParentFile() != null && !dir.equals(Environment.getExternalStorageDirectory());
         List<String> names = new ArrayList<>();
-        if (canUp) names.add("↑  ..");
-        for (File f : dirs) names.add("■  " + f.getName());
+        if (canUp) names.add("\u2191  ..");
+        for (File f : dirs) names.add("\u25A0  " + f.getName());
         final File game = findIn(dir);
         AlertDialog.Builder bld = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
                 .setTitle(dir.getAbsolutePath())
@@ -394,6 +426,75 @@ public class LauncherActivity extends Activity {
     // ---------------------------------------------------------------- launch
     void play() {
         if (!hasStorage()) { requestStorage(); return; }
+        if (busy) return;
+        if (gamePath.isEmpty()) { status("GAME NOT FOUND - CHOOSE THE GAME FOLDER", RED_GLOW); return; }
+        if (missingAck) { launch(); return; }
+        busy = true;
+        final String lang = prefs.getString("language", "russian");
+        new Thread(() -> {
+            // the files the language configuration asks for (RA3_<lang>_1.12.SkuDef and the configs it chains to)
+            File root = new File(gameRoot());
+            List<String> files = new ArrayList<>();
+            ArrayDeque<String> configs = new ArrayDeque<>();
+            configs.add("RA3_" + lang + "_1.12.SkuDef");
+            List<String> seen = new ArrayList<>();
+            while (!configs.isEmpty()) {
+                String c = configs.poll();
+                if (seen.contains(c.toLowerCase(Locale.ROOT))) continue;
+                seen.add(c.toLowerCase(Locale.ROOT));
+                File cf = resolve(root, c);
+                files.add(c);
+                if (cf == null) continue;
+                for (String line : readText(cf).split("\n")) {
+                    String[] w = line.trim().split("\\s+", 2);
+                    if (w.length < 2) continue;
+                    if (w[0].equalsIgnoreCase("add-big")) files.add(w[1].trim());
+                    else if (w[0].equalsIgnoreCase("add-config")) configs.add(w[1].trim());
+                }
+            }
+            files.add("Data/ra3_1.12.game");
+            List<String> missing = new ArrayList<>();
+            long start = System.currentTimeMillis();
+            for (int i = 0; i < files.size(); i++) {
+                String f = files.get(i);
+                File h = resolve(root, f);
+                if (h == null || !h.canRead() || h.length() == 0) missing.add(f.replace('\\', '/'));
+                status("CHECKING GAME FILES  " + (i + 1) + " / " + files.size(), YELLOW);
+                final float pr = (i + 1) / (float) files.size();
+                runOnUiThread(() -> backdrop.setProgress(pr));
+                // keep the bar readable even when the check is instant
+                long due = start + (long) (700 * pr);
+                long now = System.currentTimeMillis();
+                if (due > now) try { Thread.sleep(due - now); } catch (InterruptedException ignored) {}
+            }
+            runOnUiThread(() -> {
+                busy = false;
+                if (missing.isEmpty()) { status("STARTING...", YELLOW); launch(); }
+                else {
+                    missingAck = true;
+                    status("MISSING: " + missing.get(0) + (missing.size() > 1 ? "  (+" + (missing.size() - 1) + " MORE)" : "") + "  -  PLAY AGAIN TO START ANYWAY", RED_GLOW);
+                }
+            });
+        }).start();
+    }
+
+    // a path from the game's configs (backslashes, any letter case) inside the game folder
+    static File resolve(File root, String rel) {
+        File cur = root;
+        for (String part : rel.replace('\\', '/').split("/")) {
+            if (part.isEmpty()) continue;
+            File exact = new File(cur, part);
+            if (exact.exists()) { cur = exact; continue; }
+            File[] l = cur.listFiles();
+            File hit = null;
+            if (l != null) for (File f : l) if (f.getName().equalsIgnoreCase(part)) { hit = f; break; }
+            if (hit == null) return null;
+            cur = hit;
+        }
+        return cur;
+    }
+
+    void launch() {
         StringBuilder cfg = new StringBuilder();
         cfg.append("language=").append(prefs.getString("language", "russian")).append('\n');
         cfg.append("cutscenes=").append(prefs.getBoolean("cutscenes", true) ? 1 : 0).append('\n');
@@ -420,7 +521,11 @@ public class LauncherActivity extends Activity {
     // dark battlefield backdrop: red glow, scan lines, hazard stripes along the bottom edge
     class Backdrop extends View {
         final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        float target = 0f, shown = 0f;
+        boolean indeterminate;
         Backdrop(Context c) { super(c); }
+        void setProgress(float v) { target = v; if (v < shown) shown = v; invalidate(); }
+        void setIndeterminate(boolean on) { indeterminate = on; invalidate(); }
 
         @Override
         protected void onDraw(Canvas c) {
@@ -438,13 +543,21 @@ public class LauncherActivity extends Activity {
             c.drawRect(0, h - bh - dp(3), w, h - bh, p);
             p.setColor(0xff111111);
             c.drawRect(0, h - bh, w, h, p);
-            p.setColor(YELLOW);
+            // hazard stripes double as the progress bar: dim track, bright filled part (or a moving block while searching)
+            long t = System.currentTimeMillis();
+            float off = indeterminate ? (t / 12f) % (bh * 2) : 0f;
+            float fillFrom = 0, fillTo = w * Math.max(0f, Math.min(1f, shown));
+            if (indeterminate) { float span = w * 0.25f, pos = (t / 4f) % (w + span); fillFrom = pos - span; fillTo = pos; }
             Path s = new Path();
-            for (int x = -bh; x < w + bh; x += bh * 2) {
+            for (float x = -bh * 2 + off; x < w + bh; x += bh * 2) {
                 s.reset();
                 s.moveTo(x, h); s.lineTo(x + bh, h - bh); s.lineTo(x + bh * 2, h - bh); s.lineTo(x + bh, h); s.close();
+                boolean lit = x + bh >= fillFrom && x <= fillTo;
+                p.setColor(lit ? YELLOW : 0x40ffc21a);
                 c.drawPath(s, p);
             }
+            if (!indeterminate && shown < target) { shown = Math.min(target, shown + 0.04f); postInvalidateOnAnimation(); }
+            if (indeterminate) postInvalidateOnAnimation();
             // thin top rule
             p.setColor(0x55d0161a);
             c.drawRect(0, dp(6), w, dp(7), p);

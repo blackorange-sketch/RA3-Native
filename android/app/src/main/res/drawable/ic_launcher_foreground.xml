@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- original emblem: red star over a hazard stripe -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#FFECEAE4" android:pathData="M54.00,26.00 L59.64,42.23 L76.83,42.58 L63.13,52.97 L68.11,69.42 L54.00,59.60 L39.89,69.42 L44.87,52.97 L31.17,42.58 L48.36,42.23 Z" />
+    <path android:fillColor="#FFD0161A" android:pathData="M54.00,30.50 L58.58,43.69 L72.55,43.97 L61.42,52.41 L65.46,65.78 L54.00,57.80 L42.54,65.78 L46.58,52.41 L35.45,43.97 L49.42,43.69 Z" />
+    <path android:fillColor="#FF111111" android:pathData="M30,72 L78,72 L78,80 L30,80 Z" />
+    <group>
+        <clip-path android:pathData="M30,72 L78,72 L78,80 L30,80 Z" />
+        <path android:fillColor="#FFFFC21A" android:pathData="M24,80 L28,72 L32,72 L28,80 Z M32,80 L36,72 L40,72 L36,80 Z M40,80 L44,72 L48,72 L44,80 Z M48,80 L52,72 L56,72 L52,80 Z M56,80 L60,72 L64,72 L60,80 Z M64,80 L68,72 L72,72 L68,80 Z M72,80 L76,72 L80,72 L76,80 Z M80,80 L84,72 L88,72 L84,80 Z" />
+    </group>
+</vector>
