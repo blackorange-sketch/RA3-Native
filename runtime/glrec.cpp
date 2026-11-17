@@ -1,0 +1,193 @@
+// GL command recorder: queue and render thread (see glrec.h).
+#ifdef __ANDROID__
+#include "glrec.h"
+#include "rt.h"
+#include <chrono>
+#include <cstdlib>
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+namespace d3d
+{
+namespace rec
+{
+bool gOn = false;
+thread_local bool tlRender = false;
+GLint gUnpackAlign = 4;
+
+namespace
+{
+struct Chunk { uint8_t* buf; size_t cap, used; };
+const size_t kChunk = 64u << 10;
+std::recursive_mutex pm;                       // producers (game threads)
+std::mutex qm;                                 // queue
+std::condition_variable qcv, doneCv;
+std::deque<Chunk*> ready, freeList;
+Chunk* cur = nullptr;
+uint64_t submitted = 0, executed = 0;          // chunks (guarded by qm)
+uint64_t framesSub = 0, framesDone = 0;        // frame markers (guarded by qm)
+std::atomic<uint64_t> busyUs{0};
+
+inline uint64_t nowUs() { return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+
+Chunk* getChunk(size_t min)
+{
+	{
+		std::lock_guard<std::mutex> l(qm);
+		if (min <= kChunk && !freeList.empty()) { Chunk* c = freeList.front(); freeList.pop_front(); c->used = 0; return c; }
+	}
+	Chunk* c = new Chunk;
+	c->cap = std::max(min, kChunk);
+	c->buf = (uint8_t*)aligned_alloc(16, (c->cap + 15) & ~(size_t)15);
+	c->used = 0;
+	return c;
+}
+
+void publishLocked()   // producer lock held
+{
+	if (!cur) return;
+	if (!cur->used) return;
+	{
+		std::lock_guard<std::mutex> l(qm);
+		ready.push_back(cur);
+		submitted++;
+	}
+	qcv.notify_one();
+	cur = nullptr;
+}
+
+void renderLoop()
+{
+	for (;;)
+	{
+		Chunk* c;
+		{
+			std::unique_lock<std::mutex> l(qm);
+			qcv.wait(l, [] { return !ready.empty(); });
+			c = ready.front(); ready.pop_front();
+		}
+		uint64_t t0 = nowUs();
+		size_t off = 0;
+		while (off < c->used)
+		{
+			Cmd* cmd = (Cmd*)(c->buf + off);
+			off += cmd->total;
+			cmd->run(cmd + 1);
+		}
+		busyUs += nowUs() - t0;
+		{
+			std::lock_guard<std::mutex> l(qm);
+			executed++;
+			if (c->cap <= kChunk && freeList.size() < 64) freeList.push_back(c);
+			else { free(c->buf); delete c; }
+		}
+		doneCv.notify_all();
+	}
+}
+}   // namespace
+
+std::recursive_mutex& producerLock() { return pm; }
+
+void* reserve(size_t payload, void (*run)(void*))
+{
+	size_t need = (sizeof(Cmd) + payload + 15) & ~(size_t)15;
+	if (!cur || cur->used + need > cur->cap)
+	{
+		publishLocked();
+		cur = getChunk(need);
+	}
+	Cmd* c = (Cmd*)(cur->buf + cur->used);
+	c->run = run;
+	c->total = (uint32_t)need;
+	cur->used += need;
+	// publish small batches early so the render thread starts on a frame before the game finishes it
+	return c + 1;
+}
+
+void publish()
+{
+	std::lock_guard<std::recursive_mutex> l(pm);
+	publishLocked();
+}
+
+void waitIdle()
+{
+	if (!active()) return;
+	uint64_t target;
+	{
+		std::lock_guard<std::recursive_mutex> l(pm);
+		publishLocked();
+		std::lock_guard<std::mutex> q2(qm);
+		target = submitted;
+	}
+	std::unique_lock<std::mutex> l(qm);
+	doneCv.wait(l, [&] { return executed >= target; });
+}
+
+void endFrame()
+{
+	if (!active()) return;
+	q([] { std::lock_guard<std::mutex> l(qm); framesDone++; });
+	uint64_t mine;
+	{
+		std::lock_guard<std::recursive_mutex> l(pm);
+		publishLocked();
+		std::lock_guard<std::mutex> q2(qm);
+		mine = ++framesSub;
+	}
+	// at most one frame queued behind the one being rendered
+	std::unique_lock<std::mutex> l(qm);
+	doneCv.wait(l, [&] { return framesDone + 1 >= mine; });
+}
+
+void start(void (*threadInit)())
+{
+	std::thread([threadInit] {
+		tlRender = true;
+		setpriority(PRIO_PROCESS, 0, -10);
+		rt::log("GL: render thread tid %d", (int)syscall(SYS_gettid));
+		threadInit();
+		renderLoop();
+	}).detach();
+}
+
+uint64_t renderBusyUs() { return busyUs.exchange(0); }
+
+size_t texBytes(GLenum format, GLenum type, GLsizei w, GLsizei h, GLsizei d)
+{
+	size_t px;   // bytes per pixel
+	switch (type)
+	{
+	case GL_UNSIGNED_SHORT_5_6_5: case GL_UNSIGNED_SHORT_4_4_4_4: case GL_UNSIGNED_SHORT_5_5_5_1: px = 2; break;
+	case GL_UNSIGNED_INT_2_10_10_10_REV: case GL_UNSIGNED_INT_10F_11F_11F_REV: case GL_UNSIGNED_INT_5_9_9_9_REV: case GL_UNSIGNED_INT_24_8: px = 4; break;
+	case GL_FLOAT_32_UNSIGNED_INT_24_8_REV: px = 8; break;
+	default:
+	{
+		size_t comp = 4;
+		switch (format)
+		{
+		case GL_RED: case GL_RED_INTEGER: case GL_LUMINANCE: case GL_ALPHA: case GL_DEPTH_COMPONENT: comp = 1; break;
+		case GL_RG: case GL_RG_INTEGER: case GL_LUMINANCE_ALPHA: comp = 2; break;
+		case GL_RGB: case GL_RGB_INTEGER: comp = 3; break;
+		default: comp = 4; break;
+		}
+		size_t ts = 1;
+		switch (type)
+		{
+		case GL_UNSIGNED_SHORT: case GL_SHORT: case GL_HALF_FLOAT: ts = 2; break;
+		case GL_UNSIGNED_INT: case GL_INT: case GL_FLOAT: ts = 4; break;
+		default: ts = 1; break;
+		}
+		px = comp * ts;
+	}
+	}
+	size_t a = gUnpackAlign > 0 ? (size_t)gUnpackAlign : 4;
+	size_t row = ((size_t)w * px + a - 1) / a * a;
+	size_t slice = row * (h > 0 ? (size_t)h - 1 : 0) + (size_t)w * px;   // the last row needs no padding
+	size_t sliceFull = row * (size_t)h;
+	return d > 1 ? sliceFull * ((size_t)d - 1) + slice : slice;
+}
+}   // namespace rec
+}   // namespace d3d
+#endif

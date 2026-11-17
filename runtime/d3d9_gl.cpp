@@ -28,6 +28,7 @@
 #include <unordered_map>
 
 #include "gfx.h"
+#include "glrec.h"
 
 using namespace rt;
 
@@ -60,11 +61,13 @@ static inline uint64_t nowUs();
 static inline uint64_t profNow() { static const bool v = verbose(); return v ? nowUs() : 0; }
 static inline uint64_t nowUs() { return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 // frame-time breakdown (logged once a minute)
-static uint64_t gTDraw = 0, gTUpload = 0, gTSwap = 0, gTPresent = 0, gNDraws = 0, gNUploads = 0;
+static uint64_t gTDraw = 0, gTUpload = 0, gTPresent = 0, gNDraws = 0, gNUploads = 0, gTWaitRender = 0;
+static std::atomic<uint64_t> gTSwap{0};
 int gErrLogs = 0;
 
 void glErr(const char* where)
 {
+	if (rec::active()) { rec::q([where] { glErr(where); }); return; }   // checked on the render thread, in order
 	GLenum e;
 	while ((e = glGetError()) != GL_NO_ERROR)
 		if (gErrLogs++ < 40) log("GL error 0x%x at %s", e, where);
@@ -396,9 +399,11 @@ void bindTargets()
 		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, tf.depth ? dt : 0, 0);
 	}
 	else glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
-	static int logged = 0;
-	if (logged < 6)
+	static int logged = 0, checks = 0;
+	if (logged < 6 && checks < 200)
 	{
+		// the status query is synchronous with the render thread: only check the first binds
+		checks++;
 		GLenum st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
 		if (st != GL_FRAMEBUFFER_COMPLETE) { log("GL: render target framebuffer incomplete (0x%x): fmt %u %ux%u ds %u", st, rt->fmt, rt->w, rt->h, ds ? ds->fmt : 0); logged++; }
 	}
@@ -782,15 +787,29 @@ bool init()
 }
 
 // The GL context is bound lazily to the first thread that actually renders (the game creates the device on one thread and draws on another).
+static std::atomic<int> gRenderAcq{-1};
 bool ensureGl()
 {
 	if (!gInit)
 	{
-		bool a = gfx::acquire();
-		log("GL: first rendering call on tid %d (acquire %d)", (int)gettid(), (int)a);
-		init();
+		rec::gOn = access("/sdcard/ra3_st", F_OK) != 0;
+		if (rec::gOn)
+		{
+			// a dedicated render thread owns the context; game threads only record commands
+			rec::start([] { gRenderAcq = gfx::acquire() ? 1 : 0; });
+			while (gRenderAcq.load() < 0) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			log("GL: first rendering call on tid %d, render thread acquire %d", (int)gettid(), gRenderAcq.load());
+			if (gRenderAcq.load() != 1) { gInit = true; gOk = false; return false; }
+			rec::s([] { init(); });
+		}
+		else
+		{
+			bool a = gfx::acquire();
+			log("GL: first rendering call on tid %d (acquire %d), single-threaded", (int)gettid(), (int)a);
+			init();
+		}
 	}
-	else if (gOk && !gfx::isOwner()) gfx::acquire();   // the game moved rendering to another thread (e.g. fullscreen video)
+	else if (!rec::gOn && gOk && !gfx::isOwner()) gfx::acquire();   // the game moved rendering to another thread (e.g. fullscreen video)
 	return gOk;
 }
 bool ready() { return gOk; }
@@ -890,7 +909,7 @@ static int64_t ringPut(GLenum target, GLuint& buf, uint32_t& pos, uint32_t cap, 
 				{
 					const GLbitfield fl = 0x0002 | 0x0040 | 0x0080;
 					GLuint nb; glGenBuffers(1, &nb); glBindBuffer(target, nb);
-					pBufStorage(target, cap, nullptr, fl);
+					rec::scall(pBufStorage, target, (GLsizeiptr)cap, (const void*)nullptr, fl);
 					uint8_t* p = (uint8_t*)glMapBufferRange(target, 0, cap, fl);
 					if (p && glGetError() == GL_NO_ERROR) { glDeleteBuffers(1, &buf); invalidateAttribCache(); buf = nb; pr.ptr = p; pr.ok = true; log("GL: persistent ring %u KB target %x", cap >> 10, target); }
 					else { glDeleteBuffers(1, &nb); log("GL: persistent mapping failed"); }
@@ -909,20 +928,46 @@ static int64_t ringPut(GLenum target, GLuint& buf, uint32_t& pos, uint32_t cap, 
 		if (pos + total > cap) pos = 0;
 		// entering a new segment: fence the one we left, wait for the one we enter
 		int segNow = (int)((pos + total - 1) / segSz);
-		if (segNow != pr.seg)
-		{
-			if (pr.fence[pr.seg]) glDeleteSync(pr.fence[pr.seg]);
-			pr.fence[pr.seg] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-			if (pr.fence[segNow])
-			{
-				glClientWaitSync(pr.fence[segNow], GL_SYNC_FLUSH_COMMANDS_BIT, 200000000ull);
-				glDeleteSync(pr.fence[segNow]);
-				pr.fence[segNow] = nullptr;
-			}
-			pr.seg = segNow;
-		}
+		int left = pr.seg;
+		bool change = segNow != pr.seg;
+		pr.seg = segNow;
 		uint32_t at = pos + headBytes;
-		if (bytes) memcpy(pr.ptr + at, data, bytes);
+		// entering a new segment: fence the one we left, wait for the GPU to finish the one we enter. With the render
+		// thread the copy and the fences run there, in order (the fences and the mapping belong to that thread).
+		auto put = [&pr, left, segNow, change, at](const uint8_t* src, uint32_t n)
+		{
+			if (change)
+			{
+				if (pr.fence[left]) glDeleteSync(pr.fence[left]);
+				pr.fence[left] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+				if (pr.fence[segNow])
+				{
+					glClientWaitSync(pr.fence[segNow], GL_SYNC_FLUSH_COMMANDS_BIT, 200000000ull);
+					glDeleteSync(pr.fence[segNow]);
+					pr.fence[segNow] = nullptr;
+				}
+			}
+			if (n) memcpy(pr.ptr + at, src, n);
+		};
+		if (rec::active())
+		{
+			PRing* prp = &pr;
+			rec::qd(data, bytes, [prp, left, segNow, change, at, bytes](const uint8_t* cp)
+			{
+				return [prp, left, segNow, change, at, bytes, cp]
+				{
+					PRing& r = *prp;
+					if (change)
+					{
+						if (r.fence[left]) glDeleteSync(r.fence[left]);
+						r.fence[left] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+						if (r.fence[segNow]) { glClientWaitSync(r.fence[segNow], GL_SYNC_FLUSH_COMMANDS_BIT, 200000000ull); glDeleteSync(r.fence[segNow]); r.fence[segNow] = nullptr; }
+					}
+					if (bytes) memcpy(r.ptr + at, cp, bytes);
+				};
+			});
+		}
+		else put((const uint8_t*)data, bytes);
 		pos += total;
 		gRingUs += ringNow() - rt0;
 		return at;
@@ -1545,16 +1590,17 @@ void present()
 		double n = gFrameNo - f0, wall = (t - start) / 1000.0;
 		uint64_t lim = rt::limiterWaitUs();
 		double other = wall - (gTDraw + gTUpload + gTPresent + lim) / 1000.0;
-		log("perf: %.1f fps; per frame ms: total %.2f = game/other %.2f + draws %.2f (%.0f calls) + texture uploads %.2f (%.1f) + present %.2f (swap %.2f) + limiter wait %.2f",
-			n / (wall / 1000.0), wall / n, other / n, gTDraw / 1000.0 / n, gNDraws / n, gTUpload / 1000.0 / n, gNUploads / n, gTPresent / 1000.0 / n, gTSwap / 1000.0 / n, lim / 1000.0 / n);
-		start = t; f0 = gFrameNo; gTDraw = gTUpload = gTSwap = gTPresent = gNDraws = gNUploads = 0;
+		log("perf: %.1f fps; per frame ms: total %.2f = game/other %.2f + draws %.2f (%.0f calls) + texture uploads %.2f (%.1f) + present %.2f (swap %.2f, waiting for render thread %.2f) + limiter wait %.2f; render thread busy %.2f",
+			n / (wall / 1000.0), wall / n, other / n, gTDraw / 1000.0 / n, gNDraws / n, gTUpload / 1000.0 / n, gNUploads / n, gTPresent / 1000.0 / n, gTSwap.load() / 1000.0 / n, gTWaitRender / 1000.0 / n, lim / 1000.0 / n,
+			rec::renderBusyUs() / 1000.0 / n);
+		start = t; f0 = gFrameNo; gTDraw = gTUpload = gTPresent = gNDraws = gNUploads = gTWaitRender = 0; gTSwap = 0;
 	}
 }
 static void presentImpl()
 {
 	{ static int n = 0; if (n++ < 5) log("GL: present on tid %d ctx %p", (int)gettid(), (void*)eglGetCurrentContext()); }
 	if (!ensureGl()) { std::this_thread::sleep_for(std::chrono::milliseconds(16)); return; }
-	gfx::beginFrame();
+	if (rec::active()) rec::q([] { gfx::beginFrame(); }); else gfx::beginFrame();
 	resizeBackBufferImpl();
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 	int sw = gfx::width(), sh = gfx::height();
@@ -1576,13 +1622,14 @@ static void presentImpl()
 	glActiveTexture(GL_TEXTURE0);
 	glBindSampler(0, 0);
 	glBindTexture(GL_TEXTURE_2D, gBackTex);
-	glUniform1i(glGetUniformLocation(gBlitProg, "t"), 0);
+	static GLint blitLoc = glGetUniformLocation(gBlitProg, "t");   // once: a query waits for the render thread
+	glUniform1i(blitLoc, 0);
 	glDrawArrays(GL_TRIANGLES, 0, 3);
 	// the status/log overlay is only for the very start (nothing rendered yet); once the game has drawn anything, empty frames
 	// (loading screens) must not flash it
 	static bool everDrew = false;
 	if (gDrawsThisFrame > 0) everDrew = true;
-	if (gDrawsThisFrame == 0 && !everDrew) { glViewport(0, 0, sw, sh); gfx::drawOverlay(); }
+	if (gDrawsThisFrame == 0 && !everDrew) { glViewport(0, 0, sw, sh); if (rec::active()) rec::q([] { gfx::drawOverlay(); }); else gfx::drawOverlay(); }
 	{
 		// on-screen keyboard button: drawn with scissored clears (no shader needed)
 		input::setScreen(sw, sh);
@@ -1600,7 +1647,14 @@ static void presentImpl()
 		hud::draw(rect);
 		glDisable(GL_SCISSOR_TEST);
 	}
-	{ uint64_t ts = nowUs(); gfx::swap(); gTSwap += nowUs() - ts; }
+	if (rec::active())
+	{
+		rec::q([] { uint64_t ts = nowUs(); gfx::swap(); gTSwap += nowUs() - ts; });
+		uint64_t tw0 = nowUs();
+		rec::endFrame();   // keeps at most one frame queued behind the one on the GPU thread
+		gTWaitRender += nowUs() - tw0;
+	}
+	else { uint64_t ts = nowUs(); gfx::swap(); gTSwap += nowUs() - ts; }
 	glErr("present");
 	gFrameNo++;
 	if (gFrameNo == 1)
@@ -1694,7 +1748,7 @@ static void presentImpl()
 	if (gFrameNo == 1800 || gFrameNo == 3600) { log("DIAG: call rings of all threads at frame %u", gFrameNo); rt::traceDump(); }
 	if (gFrameNo == 1 || gFrameNo % 3600 == 0) log("d3d9: frame %u presented, %u draws in the last frame, screen %dx%d", gFrameNo, gDrawsThisFrame.load(), sw, sh);
 	gDrawsThisFrame = 0;
-	gfx::release();   // hand the context over: a different game thread may render next
+	if (!rec::gOn) gfx::release();   // hand the context over: a different game thread may render next
 }
 
 // Reclaim objects the game released: GL names and the guest-side copy of the data.
