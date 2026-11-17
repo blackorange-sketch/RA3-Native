@@ -37,8 +37,38 @@ int vx = 0, vy = 0, vw = 1, vh = 1, bw = 1280, bh = 720;
 
 int64_t nowMs() { return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 
+// set-1 scan code (bits 0-7) and extended-key flag (bit 8) of a virtual key, as Windows puts them into lParam
+uint32_t scanOf(uint32_t vk)
+{
+	static const uint8_t letters[26] = {0x1e, 0x30, 0x2e, 0x20, 0x12, 0x21, 0x22, 0x23, 0x17, 0x24, 0x25, 0x26, 0x32, 0x31, 0x18, 0x19, 0x10, 0x13, 0x1f, 0x14, 0x16, 0x2f, 0x11, 0x2d, 0x15, 0x2c};
+	if (vk >= 'A' && vk <= 'Z') return letters[vk - 'A'];
+	if (vk >= '1' && vk <= '9') return 0x02 + (vk - '1');
+	if (vk == '0') return 0x0b;
+	if (vk >= 0x70 && vk <= 0x79) return 0x3b + (vk - 0x70);   // F1..F10
+	switch (vk)
+	{
+	case 0x7a: return 0x57; case 0x7b: return 0x58;          // F11, F12
+	case 0x1b: return 0x01; case 0x08: return 0x0e; case 0x09: return 0x0f; case 0x0d: return 0x1c;
+	case 0x10: return 0x2a; case 0x11: return 0x1d; case 0x12: return 0x38; case 0x20: return 0x39; case 0x14: return 0x3a;
+	case 0xbd: return 0x0c; case 0xbb: return 0x0d; case 0xdb: return 0x1a; case 0xdd: return 0x1b; case 0xba: return 0x27;
+	case 0xde: return 0x28; case 0xc0: return 0x29; case 0xdc: return 0x2b; case 0xbc: return 0x33; case 0xbe: return 0x34; case 0xbf: return 0x35;
+	case 0x13: return 0x45;
+	case 0x24: return 0x147; case 0x26: return 0x148; case 0x21: return 0x149; case 0x25: return 0x14b;   // Home, Up, PgUp, Left
+	case 0x27: return 0x14d; case 0x23: return 0x14f; case 0x28: return 0x150; case 0x22: return 0x151;   // Right, End, Down, PgDn
+	case 0x2d: return 0x152; case 0x2e: return 0x153;                                                     // Insert, Delete
+	}
+	return 0;
+}
+
 void push(uint32_t msg, uint32_t wp, uint32_t lp, int gapMs)
 {
+	// keyboard messages carry the scan code like on Windows: the game maps hotkeys by scan code
+	if ((msg == WM_KEYDOWN || msg == WM_KEYUP) && !(lp & 0x01ff0000u)) lp |= (scanOf(wp) & 0x1ff) << 16;
+	if (msg == WM_KEYDOWN || msg == WM_KEYUP || msg == WM_CHAR)
+	{
+		static int nk = 0;
+		if (nk++ < 40) log("input: %s vk/char 0x%x lParam 0x%08x", msg == WM_KEYDOWN ? "KEYDOWN" : msg == WM_KEYUP ? "KEYUP" : "CHAR", wp, lp);
+	}
 	int64_t t = std::max(nowMs(), lastReady + gapMs);
 	lastReady = t;
 	q.push_back({kHwnd, msg, wp, lp, t, curX, curY});
