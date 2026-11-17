@@ -99,9 +99,10 @@ struct Packer
 			break;
 		}
 		case 5:
+			// in constant registers every struct member starts a new register (the shader's constant table
+			// counts one register per scalar / short vector member, e.g. Draw.SpeedMultiplier, Draw.ColorScaleRange)
 			if (set != 0) alignReg();
-			for (auto& m : t.members) emit(m, false);
-			if (set != 0) alignReg();
+			for (auto& m : t.members) { emit(m, false); if (set != 0) alignReg(); }
 			break;
 		}
 	}
