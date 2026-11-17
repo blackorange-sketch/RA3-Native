@@ -1,0 +1,531 @@
+package org.ra3native;
+
+import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.Context;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.LinearGradient;
+import android.graphics.Paint;
+import android.graphics.Path;
+import android.graphics.RadialGradient;
+import android.graphics.Shader;
+import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.StateListDrawable;
+import android.net.Uri;
+import android.os.Build;
+import android.os.Bundle;
+import android.os.Environment;
+import android.provider.Settings;
+import android.util.TypedValue;
+import android.view.Gravity;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.Window;
+import android.view.WindowManager;
+import android.widget.FrameLayout;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
+import android.widget.TextView;
+
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.FileReader;
+import java.io.BufferedReader;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+import java.util.Locale;
+
+// Start screen: settings in the style of the game's menus, then launches the game (MainActivity).
+// Settings go to <app data>/launcher.cfg, which the native side reads at start.
+public class LauncherActivity extends Activity {
+    // palette
+    static final int RED = 0xffd0161a, RED_DARK = 0xff6e0a0c, RED_GLOW = 0xffff3b30;
+    static final int STEEL = 0xff2a2d31, STEEL_LIGHT = 0xff4a4f55, STEEL_EDGE = 0xff7b828a;
+    static final int TEXT = 0xffeceae4, TEXT_DIM = 0xff9da3a8, YELLOW = 0xffffc21a;
+
+    SharedPreferences prefs;
+    Typeface condensed, condensedBold;
+    TextView langValue, gameText, playButton, warnText;
+    List<String> languages = new ArrayList<>();
+    String gamePath = "";
+
+    @Override
+    protected void onCreate(Bundle b) {
+        super.onCreate(b);
+        if (MainActivity.running) {   // the game is already running in this process: go back to it
+            startActivity(new Intent(this, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT));
+            finish();
+            return;
+        }
+        requestWindowFeature(Window.FEATURE_NO_TITLE);
+        getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN);
+        prefs = getSharedPreferences("launcher", MODE_PRIVATE);
+        condensed = Typeface.create("sans-serif-condensed", Typeface.NORMAL);
+        condensedBold = Typeface.create("sans-serif-condensed", Typeface.BOLD);
+        gamePath = prefs.getString("gamepath", "");
+        if (gamePath.isEmpty()) gamePath = readText(new File(getFilesDir(), "gamepath.txt")).trim();
+        buildUi();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (prefs == null) return;
+        refreshGame();
+        hideSystemUi();
+    }
+
+    void hideSystemUi() {
+        getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
+    }
+
+    int dp(float v) { return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, getResources().getDisplayMetrics()); }
+
+    boolean hasStorage() {
+        return Build.VERSION.SDK_INT < 30 || Environment.isExternalStorageManager();
+    }
+
+    // ---------------------------------------------------------------- UI
+    void buildUi() {
+        FrameLayout root = new FrameLayout(this);
+        root.addView(new Backdrop(this), new FrameLayout.LayoutParams(-1, -1));
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setPadding(dp(36), dp(22), dp(36), dp(18));
+        root.addView(row, new FrameLayout.LayoutParams(-1, -1));
+
+        // left: title and main buttons
+        LinearLayout left = new LinearLayout(this);
+        left.setOrientation(LinearLayout.VERTICAL);
+        row.addView(left, new LinearLayout.LayoutParams(0, -1, 1f));
+
+        left.addView(label("COMMAND & CONQUER", 15, TEXT_DIM, true, 0.35f));
+        TextView title = label("RED ALERT 3", 52, RED, true, 0.06f);
+        title.setShadowLayer(dp(10), 0, dp(2), 0xcc000000);
+        left.addView(title);
+        TextView sub = label("NATIVE  •  ANDROID", 14, YELLOW, true, 0.4f);
+        sub.setPadding(dp(3), 0, 0, dp(18));
+        left.addView(sub);
+
+        playButton = menuButton("PLAY", true);
+        playButton.setOnClickListener(v -> play());
+        left.addView(playButton, buttonLp());
+        TextView folder = menuButton("GAME FOLDER", false);
+        folder.setOnClickListener(v -> chooseFolder());
+        left.addView(folder, buttonLp());
+        TextView exit = menuButton("EXIT", false);
+        exit.setOnClickListener(v -> finishAndRemoveTask());
+        left.addView(exit, buttonLp());
+
+        View spacer = new View(this);
+        left.addView(spacer, new LinearLayout.LayoutParams(1, 0, 1f));
+        gameText = label("", 12, TEXT_DIM, false, 0f);
+        left.addView(gameText);
+        TextView ver = label("BUILD " + BuildConfig.BUILD_ID.substring(0, Math.min(8, BuildConfig.BUILD_ID.length())).toUpperCase(Locale.ROOT), 11, 0xff6b7176, false, 0.2f);
+        left.addView(ver);
+
+        // right: settings panel
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setBackground(new PanelDrawable());
+        panel.setPadding(dp(22), dp(16), dp(22), dp(16));
+        LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(dp(400), -1);
+        plp.leftMargin = dp(24);
+        row.addView(panel, plp);
+
+        TextView ph = label("OPTIONS", 20, TEXT, true, 0.3f);
+        ph.setPadding(0, 0, 0, dp(4));
+        panel.addView(ph);
+        View rule = new View(this);
+        rule.setBackgroundColor(RED);
+        panel.addView(rule, new LinearLayout.LayoutParams(-1, dp(2)));
+
+        ScrollView sv = new ScrollView(this);
+        LinearLayout opts = new LinearLayout(this);
+        opts.setOrientation(LinearLayout.VERTICAL);
+        opts.setPadding(0, dp(8), 0, 0);
+        sv.addView(opts);
+        panel.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1f));
+
+        // language
+        LinearLayout lr = optionRow(opts, "INTERFACE LANGUAGE", "Language files found in the game folder");
+        LinearLayout sel = new LinearLayout(this);
+        sel.setGravity(Gravity.CENTER_VERTICAL);
+        TextView prev = arrow("◀"), next = arrow("▶");
+        langValue = label("", 15, TEXT, true, 0.15f);
+        langValue.setGravity(Gravity.CENTER);
+        langValue.setMinWidth(dp(110));
+        prev.setOnClickListener(v -> stepLanguage(-1));
+        next.setOnClickListener(v -> stepLanguage(1));
+        sel.addView(prev); sel.addView(langValue); sel.addView(next);
+        lr.addView(sel);
+
+        toggleRow(opts, "CUTSCENES", "Intro, briefings and campaign videos", "cutscenes", true);
+        toggleRow(opts, "LOG FILE", "Writes /sdcard/ra3_native.log for bug reports", "log", true);
+        toggleRow(opts, "60 FPS  (EXPERIMENTAL)", "Smoother picture; may break build animations and cause white flashes", "fps60", false);
+
+        warnText = label("", 12, YELLOW, false, 0f);
+        warnText.setPadding(0, dp(10), 0, 0);
+        opts.addView(warnText);
+
+        setContentView(root);
+    }
+
+    LinearLayout.LayoutParams buttonLp() {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(300), dp(54));
+        lp.bottomMargin = dp(12);
+        return lp;
+    }
+
+    TextView label(String s, float sp, int color, boolean bold, float spacing) {
+        TextView t = new TextView(this);
+        t.setText(s);
+        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
+        t.setTextColor(color);
+        t.setTypeface(bold ? condensedBold : condensed);
+        t.setLetterSpacing(spacing);
+        t.setIncludeFontPadding(false);
+        return t;
+    }
+
+    TextView arrow(String s) {
+        TextView t = label(s, 16, YELLOW, true, 0f);
+        t.setGravity(Gravity.CENTER);
+        t.setPadding(dp(10), dp(6), dp(10), dp(6));
+        t.setBackground(bevel(STEEL_LIGHT, STEEL, STEEL_EDGE, 0xff5a6066, 0xff33373b));
+        return t;
+    }
+
+    // angled red/steel button, as in the game's menus
+    TextView menuButton(String s, boolean primary) {
+        TextView t = label(s, 20, TEXT, true, 0.25f);
+        t.setGravity(Gravity.CENTER_VERTICAL);
+        t.setPadding(dp(22), 0, dp(16), 0);
+        t.setBackground(new ButtonDrawable(primary));
+        t.setClickable(true);
+        return t;
+    }
+
+    StateListDrawable bevel(int top, int bottom, int edge, int topP, int bottomP) {
+        GradientDrawable n = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, new int[]{top, bottom});
+        n.setStroke(dp(1), edge);
+        GradientDrawable p = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, new int[]{topP, bottomP});
+        p.setStroke(dp(1), RED_GLOW);
+        StateListDrawable d = new StateListDrawable();
+        d.addState(new int[]{android.R.attr.state_pressed}, p);
+        d.addState(new int[]{}, n);
+        return d;
+    }
+
+    LinearLayout optionRow(LinearLayout parent, String name, String hint) {
+        LinearLayout r = new LinearLayout(this);
+        r.setGravity(Gravity.CENTER_VERTICAL);
+        r.setPadding(0, dp(9), 0, dp(9));
+        LinearLayout txt = new LinearLayout(this);
+        txt.setOrientation(LinearLayout.VERTICAL);
+        txt.addView(label(name, 15, TEXT, true, 0.12f));
+        TextView h = label(hint, 11, TEXT_DIM, false, 0f);
+        h.setPadding(0, dp(3), dp(8), 0);
+        txt.addView(h);
+        r.addView(txt, new LinearLayout.LayoutParams(0, -2, 1f));
+        parent.addView(r);
+        View sep = new View(this);
+        sep.setBackgroundColor(0x33ffffff);
+        parent.addView(sep, new LinearLayout.LayoutParams(-1, 1));
+        return r;
+    }
+
+    void toggleRow(LinearLayout parent, String name, String hint, final String key, boolean def) {
+        LinearLayout r = optionRow(parent, name, hint);
+        final TextView sw = label("", 14, TEXT, true, 0.2f);
+        sw.setGravity(Gravity.CENTER);
+        sw.setMinWidth(dp(74));
+        sw.setPadding(dp(8), dp(7), dp(8), dp(7));
+        final Runnable paint = () -> {
+            boolean on = prefs.getBoolean(key, def);
+            sw.setText(on ? "ON" : "OFF");
+            sw.setTextColor(on ? TEXT : TEXT_DIM);
+            sw.setBackground(on ? bevel(RED, RED_DARK, 0xffff6a5e, 0xffff4a3e, RED) : bevel(STEEL_LIGHT, STEEL, STEEL_EDGE, 0xff5a6066, 0xff33373b));
+        };
+        paint.run();
+        sw.setOnClickListener(v -> {
+            prefs.edit().putBoolean(key, !prefs.getBoolean(key, def)).apply();
+            paint.run();
+        });
+        r.addView(sw);
+    }
+
+    // ---------------------------------------------------------------- game folder and languages
+    void refreshGame() {
+        if (!hasStorage()) {
+            gameText.setText("STORAGE ACCESS NEEDED  •  tap PLAY to grant it");
+            gameText.setTextColor(YELLOW);
+            languages = new ArrayList<>(Collections.singletonList(prefs.getString("language", "russian")));
+            showLanguage();
+            return;
+        }
+        if (gamePath.isEmpty() || !new File(gamePath).exists()) {
+            String found = findGame();
+            if (found != null) { gamePath = found; prefs.edit().putString("gamepath", gamePath).apply(); }
+        }
+        if (gamePath.isEmpty()) {
+            gameText.setText("GAME NOT FOUND  •  choose GAME FOLDER");
+            gameText.setTextColor(YELLOW);
+        } else {
+            gameText.setText("GAME: " + gameRoot());
+            gameText.setTextColor(TEXT_DIM);
+        }
+        scanLanguages();
+    }
+
+    String gameRoot() {
+        File dir = new File(gamePath).getParentFile();
+        if (dir != null && dir.getName().equalsIgnoreCase("data") && dir.getParentFile() != null) dir = dir.getParentFile();
+        return dir == null ? "" : dir.getAbsolutePath();
+    }
+
+    void scanLanguages() {
+        languages.clear();
+        File[] files = gamePath.isEmpty() ? null : new File(gameRoot()).listFiles();
+        if (files != null)
+            for (File f : files) {
+                String n = f.getName().toLowerCase(Locale.ROOT);
+                // RA3_<language>_1.12.SkuDef: the language config of the current patch
+                if (n.startsWith("ra3_") && n.endsWith("_1.12.skudef")) {
+                    String l = n.substring(4, n.length() - "_1.12.skudef".length());
+                    if (!l.isEmpty() && !languages.contains(l)) languages.add(l);
+                }
+            }
+        Collections.sort(languages);
+        if (languages.isEmpty()) languages.add(prefs.getString("language", "russian"));
+        String cur = prefs.getString("language", "");
+        if (!languages.contains(cur)) prefs.edit().putString("language", languages.contains("english") ? "english" : languages.get(0)).apply();
+        showLanguage();
+    }
+
+    void stepLanguage(int d) {
+        if (languages.isEmpty()) return;
+        int i = languages.indexOf(prefs.getString("language", languages.get(0)));
+        i = ((i < 0 ? 0 : i) + d + languages.size()) % languages.size();
+        prefs.edit().putString("language", languages.get(i)).apply();
+        showLanguage();
+    }
+
+    void showLanguage() {
+        String l = prefs.getString("language", languages.isEmpty() ? "russian" : languages.get(0));
+        langValue.setText(l.toUpperCase(Locale.ROOT).replace('_', ' '));
+        warnText.setText(languages.size() <= 1 ? "Only one language is installed in this copy of the game." : "");
+    }
+
+    // ra3_1.12.game up to three levels below /sdcard (same rule as the native side)
+    String findGame() {
+        ArrayDeque<File> q = new ArrayDeque<>();
+        ArrayDeque<Integer> depth = new ArrayDeque<>();
+        q.add(Environment.getExternalStorageDirectory()); depth.add(0);
+        int visited = 0;
+        while (!q.isEmpty() && visited++ < 20000) {
+            File d = q.poll(); int dd = depth.poll();
+            File[] list = d.listFiles();
+            if (list == null) continue;
+            for (File f : list) {
+                if (f.getName().equalsIgnoreCase("ra3_1.12.game")) return f.getAbsolutePath();
+                if (f.isDirectory() && dd < 3 && !f.getName().startsWith(".") && !f.getName().equalsIgnoreCase("android")) { q.add(f); depth.add(dd + 1); }
+            }
+        }
+        return null;
+    }
+
+    void chooseFolder() {
+        if (!hasStorage()) { requestStorage(); return; }
+        browse(gamePath.isEmpty() ? Environment.getExternalStorageDirectory() : new File(gameRoot()));
+    }
+
+    void browse(final File dir) {
+        File[] list = dir.listFiles();
+        final List<File> dirs = new ArrayList<>();
+        if (list != null) for (File f : list) if (f.isDirectory() && !f.getName().startsWith(".")) dirs.add(f);
+        Collections.sort(dirs, (a, c) -> a.getName().compareToIgnoreCase(c.getName()));
+        final boolean canUp = dir.getParentFile() != null && !dir.equals(Environment.getExternalStorageDirectory());
+        List<String> names = new ArrayList<>();
+        if (canUp) names.add("↑  ..");
+        for (File f : dirs) names.add("■  " + f.getName());
+        final File game = findIn(dir);
+        AlertDialog.Builder bld = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle(dir.getAbsolutePath())
+                .setItems(names.toArray(new String[0]), (dlg, which) -> {
+                    if (canUp && which == 0) browse(dir.getParentFile());
+                    else browse(dirs.get(which - (canUp ? 1 : 0)));
+                })
+                .setNegativeButton("CANCEL", null);
+        if (game != null) bld.setPositiveButton("USE THIS FOLDER", (dlg, w) -> {
+            gamePath = game.getAbsolutePath();
+            prefs.edit().putString("gamepath", gamePath).apply();
+            refreshGame();
+        });
+        bld.show();
+    }
+
+    // the game file in this folder or in its Data subfolder
+    File findIn(File dir) {
+        for (File base : new File[]{dir, new File(dir, "Data"), new File(dir, "data")}) {
+            File[] l = base.listFiles();
+            if (l != null) for (File f : l) if (f.getName().equalsIgnoreCase("ra3_1.12.game")) return f;
+        }
+        return null;
+    }
+
+    void requestStorage() {
+        try {
+            startActivity(new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:" + getPackageName())));
+        } catch (Exception e) {
+            startActivity(new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
+        }
+    }
+
+    // ---------------------------------------------------------------- launch
+    void play() {
+        if (!hasStorage()) { requestStorage(); return; }
+        StringBuilder cfg = new StringBuilder();
+        cfg.append("language=").append(prefs.getString("language", "russian")).append('\n');
+        cfg.append("cutscenes=").append(prefs.getBoolean("cutscenes", true) ? 1 : 0).append('\n');
+        cfg.append("log=").append(prefs.getBoolean("log", true) ? 1 : 0).append('\n');
+        cfg.append("fps60=").append(prefs.getBoolean("fps60", false) ? 1 : 0).append('\n');
+        if (!gamePath.isEmpty()) cfg.append("gamepath=").append(gamePath).append('\n');
+        try (FileOutputStream o = new FileOutputStream(new File(getFilesDir(), "launcher.cfg"))) {
+            o.write(cfg.toString().getBytes("UTF-8"));
+        } catch (Exception ignored) {}
+        startActivity(new Intent(this, MainActivity.class));
+        finish();
+    }
+
+    static String readText(File f) {
+        StringBuilder sb = new StringBuilder();
+        try (BufferedReader r = new BufferedReader(new FileReader(f))) {
+            String l;
+            while ((l = r.readLine()) != null) sb.append(l).append('\n');
+        } catch (Exception ignored) {}
+        return sb.toString();
+    }
+
+    // ---------------------------------------------------------------- drawing
+    // dark battlefield backdrop: red glow, scan lines, hazard stripes along the bottom edge
+    class Backdrop extends View {
+        final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        Backdrop(Context c) { super(c); }
+
+        @Override
+        protected void onDraw(Canvas c) {
+            int w = getWidth(), h = getHeight();
+            p.setShader(new LinearGradient(0, 0, 0, h, 0xff0c0d0f, 0xff050505, Shader.TileMode.CLAMP));
+            c.drawRect(0, 0, w, h, p);
+            p.setShader(new RadialGradient(w * 0.28f, h * 0.35f, Math.max(w, h) * 0.6f, 0x66a00d10, 0x00000000, Shader.TileMode.CLAMP));
+            c.drawRect(0, 0, w, h, p);
+            p.setShader(null);
+            p.setColor(0x0cffffff);
+            for (int y = 0; y < h; y += dp(3)) c.drawRect(0, y, w, y + 1, p);
+            // red bar + hazard stripes at the bottom
+            int bh = dp(8);
+            p.setColor(RED_DARK);
+            c.drawRect(0, h - bh - dp(3), w, h - bh, p);
+            p.setColor(0xff111111);
+            c.drawRect(0, h - bh, w, h, p);
+            p.setColor(YELLOW);
+            Path s = new Path();
+            for (int x = -bh; x < w + bh; x += bh * 2) {
+                s.reset();
+                s.moveTo(x, h); s.lineTo(x + bh, h - bh); s.lineTo(x + bh * 2, h - bh); s.lineTo(x + bh, h); s.close();
+                c.drawPath(s, p);
+            }
+            // thin top rule
+            p.setColor(0x55d0161a);
+            c.drawRect(0, dp(6), w, dp(7), p);
+        }
+    }
+
+    // steel panel with bevelled edge and a red corner notch
+    class PanelDrawable extends android.graphics.drawable.Drawable {
+        final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+        @Override
+        public void draw(Canvas c) {
+            android.graphics.Rect b = getBounds();
+            float cut = dp(18);
+            Path path = new Path();
+            path.moveTo(b.left + cut, b.top); path.lineTo(b.right, b.top); path.lineTo(b.right, b.bottom - cut);
+            path.lineTo(b.right - cut, b.bottom); path.lineTo(b.left, b.bottom); path.lineTo(b.left, b.top + cut); path.close();
+            p.setStyle(Paint.Style.FILL);
+            p.setShader(new LinearGradient(0, b.top, 0, b.bottom, 0xe0202327, 0xe0121416, Shader.TileMode.CLAMP));
+            c.drawPath(path, p);
+            p.setShader(null);
+            p.setStyle(Paint.Style.STROKE);
+            p.setStrokeWidth(dp(1.5f));
+            p.setColor(STEEL_EDGE);
+            c.drawPath(path, p);
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(RED);
+            Path notch = new Path();
+            notch.moveTo(b.left, b.top + cut); notch.lineTo(b.left + cut, b.top); notch.lineTo(b.left + cut + dp(6), b.top);
+            notch.lineTo(b.left, b.top + cut + dp(6)); notch.close();
+            c.drawPath(notch, p);
+        }
+
+        @Override public void setAlpha(int a) {}
+        @Override public void setColorFilter(android.graphics.ColorFilter f) {}
+        @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
+    }
+
+    // slanted menu button; brighter while pressed
+    class ButtonDrawable extends android.graphics.drawable.Drawable {
+        final boolean primary;
+        boolean pressed;
+        final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        ButtonDrawable(boolean primary) { this.primary = primary; }
+
+        @Override public boolean isStateful() { return true; }
+
+        @Override
+        protected boolean onStateChange(int[] state) {
+            boolean pr = false;
+            for (int s : state) if (s == android.R.attr.state_pressed) pr = true;
+            if (pr != pressed) { pressed = pr; invalidateSelf(); return true; }
+            return false;
+        }
+
+        @Override
+        public void draw(Canvas c) {
+            android.graphics.Rect b = getBounds();
+            float sl = dp(14);
+            Path path = new Path();
+            path.moveTo(b.left, b.top); path.lineTo(b.right - sl, b.top); path.lineTo(b.right, b.top + (b.height() / 2f));
+            path.lineTo(b.right - sl, b.bottom); path.lineTo(b.left, b.bottom); path.close();
+            int top, bot, edge;
+            if (primary) { top = pressed ? 0xffff4a3e : RED; bot = pressed ? RED : RED_DARK; edge = 0xffff7a6e; }
+            else { top = pressed ? 0xff5e646a : STEEL_LIGHT; bot = pressed ? STEEL_LIGHT : STEEL; edge = pressed ? RED_GLOW : STEEL_EDGE; }
+            p.setStyle(Paint.Style.FILL);
+            p.setShader(new LinearGradient(0, b.top, 0, b.bottom, top, bot, Shader.TileMode.CLAMP));
+            c.drawPath(path, p);
+            p.setShader(null);
+            p.setStyle(Paint.Style.STROKE);
+            p.setStrokeWidth(dp(1.5f));
+            p.setColor(edge);
+            c.drawPath(path, p);
+            // accent bar on the left
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(primary ? YELLOW : RED);
+            c.drawRect(b.left, b.top, b.left + dp(5), b.bottom, p);
+        }
+
+        @Override public void setAlpha(int a) {}
+        @Override public void setColorFilter(android.graphics.ColorFilter f) {}
+        @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
+    }
+}

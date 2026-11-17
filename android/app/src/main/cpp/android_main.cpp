@@ -244,6 +244,7 @@ void startGame(const std::string& game)
 	rt::config.gameRoot = leaf == "data" ? dir.substr(0, dir.rfind('/')) : dir;
 	pushLine("game: " + game);
 	pushLine("game root: " + rt::config.gameRoot);
+	rt::log("launcher: language %s, cutscenes %d, 60 fps %d, log %d", rt::config.language.c_str(), (int)rt::config.playMovies, (int)rt::config.fps60, (int)!rt::config.logFile.empty());
 	status = "running";
 	started = true;
 	rt::spawnHostThread([game] {
@@ -345,6 +346,29 @@ void android_main(android_app* app)
 	rt::logHook = logSink;
 	rt::config.dataRoot = app->activity->internalDataPath ? app->activity->internalDataPath : "/data/local/tmp";
 	rt::config.logFile = "/sdcard/ra3_native.log";
+	// settings chosen in the launcher (LauncherActivity writes <app data>/launcher.cfg as key=value lines)
+	if (FILE* f = fopen((rt::config.dataRoot + "/launcher.cfg").c_str(), "r"))
+	{
+		char ln[512];
+		while (fgets(ln, sizeof ln, f))
+		{
+			std::string l = ln;
+			while (!l.empty() && (l.back() == '\n' || l.back() == '\r' || l.back() == ' ')) l.pop_back();
+			size_t eq = l.find('=');
+			if (eq == std::string::npos) continue;
+			std::string k = l.substr(0, eq), v = l.substr(eq + 1);
+			if (k == "language" && !v.empty() && v.find_first_of("/\\ \"") == std::string::npos) rt::config.language = v;
+			else if (k == "cutscenes") rt::config.playMovies = v == "1";
+			else if (k == "log") { if (v != "1") rt::config.logFile.clear(); }
+			else if (k == "fps60") rt::config.fps60 = v == "1";
+			else if (k == "gamepath" && !v.empty())
+			{
+				// the launcher found or was given the game: remember it like the in-app picker does
+				if (FILE* g = fopen(savedFile.c_str(), "w")) { fputs(v.c_str(), g); fclose(g); }
+			}
+		}
+		fclose(f);
+	}
 	bool asked = false;
 	int tick = 0;
 

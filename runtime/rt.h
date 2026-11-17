@@ -22,7 +22,12 @@ struct Config
 	std::string gameRoot = "/sdcard/RA3";   // host directory holding the game (what the guest sees as C:\RA3)
 	std::string dataRoot = "/tmp/ra3-data";  // writable area for everything else (saves, options, logs)
 	std::string logFile;
+	// launcher settings (<app data>/launcher.cfg); the /sdcard flag files still override them
+	std::string language = "russian";   // RA3_<language>_1.12.SkuDef
+	bool playMovies = true;              // cutscenes and videos
+	bool fps60 = false;                  // experimental 60 fps cap
 };
+std::string commandLine();               // the game's command line (language config)
 extern Config config;
 
 extern void (*logHook)(const char*);   // optional extra sink (on-screen console, logcat)

@@ -10,6 +10,7 @@ android {
         versionCode 1
         versionName '0.1'
         ndk { abiFilters 'arm64-v8a' }
+        buildConfigField "String", "BUILD_ID", "\"${project.findProperty('buildId') ?: 'local'}\""
         externalNativeBuild {
             cmake {
                 arguments "-DCMAKE_BUILD_TYPE=Release", "-DLIFTED_DIR=" + (project.findProperty('liftedDir') ?: ''),
@@ -20,6 +21,11 @@ android {
     }
     externalNativeBuild {
         cmake { path 'src/main/cpp/CMakeLists.txt' }
+    }
+    buildFeatures { buildConfig true }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
     }
     signingConfigs {
         // fixed key (private repo, test app) so every CI build is signed identically and installs over the previous one

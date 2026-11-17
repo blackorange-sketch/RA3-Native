@@ -16,7 +16,14 @@ import android.widget.FrameLayout;
 // NativeActivity cannot show a soft keyboard on its own (its view is not a text editor), so a tiny invisible EditText provides the
 // input connection and forwards every typed character / key to the native side.
 public class MainActivity extends NativeActivity {
+    static volatile boolean running;   // the game runs in this process (the launcher then just brings it back)
     private EditText edit;
+
+    @Override
+    protected void onCreate(android.os.Bundle b) {
+        running = true;
+        super.onCreate(b);
+    }
     private boolean shown;
 
     // registered from native code (RegisterNatives)

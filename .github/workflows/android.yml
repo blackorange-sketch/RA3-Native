@@ -69,7 +69,7 @@ jobs:
         run: |
           export CCACHE_DIR=$HOME/.ccache
           CC_OPT=""; command -v ccache >/dev/null && CC_OPT="-PuseCcache=1"
-          gradle assembleDebug -PliftedDir=${{ github.workspace }}/lifted $CC_OPT --no-daemon
+          gradle assembleDebug -PbuildId=${{ github.sha }} -PliftedDir=${{ github.workspace }}/lifted $CC_OPT --no-daemon
           command -v ccache >/dev/null && ccache -s | head -8 || echo "built without ccache"
 
       # The APK is published as a release asset (does not count against the Actions artifact quota).

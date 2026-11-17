@@ -442,6 +442,7 @@ void unsupported(CPU* c, uint32_t va, const char* what)
 uint32_t g_eflags_hi = 0;
 uint32_t ra3_stub_tolower = 0xffffffffu;
 
+namespace rt { std::string commandLine() { return "\"C:\\RA3\\Data\\ra3_1.12.game\" -config RA3_" + config.language + "_1.12.SkuDef -win"; } }
 namespace rt { bool verbose() { static bool v = access("/sdcard/ra3_verbose", F_OK) == 0; return v; } }
 void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t ecx)
 {

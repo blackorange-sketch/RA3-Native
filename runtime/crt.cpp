@@ -33,7 +33,7 @@ FILE* hostFile(uint32_t g)
 
 uint32_t iobInit() { iobBase = gmalloc(96); memset(guest::host(iobBase), 0, 96); return iobBase; }
 
-std::string cmdline() { return "\"C:\\RA3\\Data\\ra3_1.12.game\" -config RA3_russian_1.12.SkuDef -win"; }
+std::string cmdline() { return rt::commandLine(); }
 
 uint32_t acmdlnInit() { return newStr(cmdline()); }
 

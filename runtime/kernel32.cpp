@@ -565,8 +565,8 @@ IMP_STD(K, GetSystemInfo, 1)
 IMP_STD(K, GetModuleHandleA, 1) { SET(ARG(0) ? 0x7ff00000 : imageBase); }
 IMP_STD(K, GetModuleFileNameA, 3) { std::string s = "C:\\RA3\\Data\\ra3_1.12.game"; uint32_t n = std::min<uint32_t>(s.size(), ARG(2) - 1); guest::store<uint8_t>(ARG(1) + n, 0); memcpy(guest::host(ARG(1)), s.data(), n); SET(n); }
 IMP_STD(K, GetModuleFileNameW, 3) { auto s = utf8to16("C:\\RA3\\Data\\ra3_1.12.game"); uint32_t n = std::min<uint32_t>(s.size(), ARG(2) - 1); guest::store<char16_t>(ARG(1) + 2 * n, 0); memcpy(guest::host(ARG(1)), s.data(), 2 * n); SET(n); }
-IMP_STD(K, GetCommandLineA, 0) { static uint32_t a = newStr("\"C:\\RA3\\Data\\ra3_1.12.game\" -config RA3_russian_1.12.SkuDef -win"); SET(a); }
-IMP_STD(K, GetCommandLineW, 0) { static uint32_t a = [] { auto s = utf8to16("\"C:\\RA3\\Data\\ra3_1.12.game\" -config RA3_russian_1.12.SkuDef -win"); uint32_t p = gmalloc(2 * s.size() + 2); putWStr(p, s); return p; }(); SET(a); }
+IMP_STD(K, GetCommandLineA, 0) { static uint32_t a = newStr(rt::commandLine()); SET(a); }
+IMP_STD(K, GetCommandLineW, 0) { static uint32_t a = [] { auto s = utf8to16(rt::commandLine()); uint32_t p = gmalloc(2 * s.size() + 2); putWStr(p, s); return p; }(); SET(a); }
 IMP_STD(K, GetStartupInfoA, 1) { memset(guest::host(ARG(0)), 0, 68); guest::store<uint32_t>(ARG(0), 68); }
 IMP_STD(K, GetEnvironmentVariableA, 3) { SET(0); setLastError(203); }
 IMP_STD(K, SetEnvironmentVariableA, 2) { SET(1); }
@@ -720,7 +720,7 @@ static bool isMovieFile(const std::string& p)
 {
 	std::string l;
 	for (char ch : p) l += ch == '\\' ? '/' : (char)tolower((unsigned char)ch);
-	if (getenv("RA3_PLAY_MOVIES") || access("/sdcard/ra3_play_movies", F_OK) == 0) return false;   // create that empty file on the phone to try the (unfinished) video playback
+	if (getenv("RA3_PLAY_MOVIES") || access("/sdcard/ra3_play_movies", F_OK) == 0 || rt::config.playMovies) return false;   // launcher setting (or the flag file)
 	return l.find("/movies/") != std::string::npos && (l.size() > 4 && (l.compare(l.size() - 4, 4, ".vp6") == 0 || l.compare(l.size() - 4, 4, ".snd") == 0));
 }
 static FileObj* fileOf(uint32_t h) { return (FileObj*)getHandle(h, KFile); }
