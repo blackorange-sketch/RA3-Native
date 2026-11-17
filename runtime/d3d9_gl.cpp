@@ -46,6 +46,7 @@ namespace glr
 namespace
 {
 bool gInit = false, gOk = false;
+bool gAttrDirty = true;   // vertex attribute state of gVao changed outside setAttrib (present disables all arrays)
 bool gFboDirty = true;   // framebuffer bindings/attachments changed outside bindTargets
 bool gTexBindDirty = true;   // a texture was bound outside bindSamplers: its binding cache is stale
 GLuint gVao = 0, gBackFbo = 0, gBackTex = 0, gBackDepth = 0, gDrawFbo = 0, gReadFbo = 0, gUpVbo = 0, gUpIbo = 0;
@@ -527,7 +528,7 @@ GLenum wrapMode(uint32_t a)
 static uint32_t gStKey[44];
 static bool gStValid = false;
 static GLuint gCurProg = 0; static bool gVaoBound = false;
-void invalidateGlState() { gStValid = false; gCurProg = 0; gVaoBound = false; gTexBindDirty = true; gFboDirty = true; }
+void invalidateGlState() { gStValid = false; gCurProg = 0; gVaoBound = false; gTexBindDirty = true; gFboDirty = true; gAttrDirty = true; }
 void applyState(uint32_t tw, uint32_t th)
 {
 	const uint32_t* rs = dev.rs;
@@ -609,6 +610,10 @@ GLuint dummyTex(GLenum target)
 static int activeUnit = -1;
 void bindSamplers(Prog* p, ShaderObj* ps)
 {
+	// make every sampled texture current first: an upload binds on the active unit, which would otherwise
+	// replace a texture bound for an earlier sampler of this same draw
+	for (int i = 0; i < 16; i++)
+		if (ps->info.samplerType[i] && p->s[i] >= 0 && dev.tex[i]) ensureTexture(dev.tex[i]);
 	for (int i = 0; i < 16; i++)
 	{
 		int st = ps->info.samplerType[i];
@@ -972,9 +977,10 @@ static void dumpBmp(const char* path, uint32_t w, uint32_t h, uint32_t sc = 2)
 struct AttrState { GLuint buf; GLint size; GLenum type; GLboolean norm; GLsizei stride; uintptr_t off; GLuint div; bool on; };
 static AttrState gAttr[16];
 static bool gAttrValid = false;
-void invalidateAttribCache() { gAttrValid = false; }
+void invalidateAttribCache() { gAttrDirty = true; }
 static void setAttrib(int loc, GLuint buf, GLint size, GLenum type, bool norm, GLsizei stride, uintptr_t off, GLuint div)
 {
+	if (gAttrDirty) { gAttrValid = false; gAttrDirty = false; }
 	if (!gAttrValid) { for (auto& a : gAttr) a = AttrState{~0u, 0, 0, 0, -1, ~(uintptr_t)0, ~0u, false}; gAttrValid = true; for (int l = 0; l < 16; l++) gAttr[l].on = true; }
 	AttrState& a = gAttr[loc];
 	if (!a.on) { glEnableVertexAttribArray(loc); a.on = true; }
@@ -988,6 +994,7 @@ static void setAttrib(int loc, GLuint buf, GLint size, GLenum type, bool norm, G
 }
 static void disableAttribsExcept(uint32_t enabled)
 {
+	if (gAttrDirty) { gAttrValid = false; gAttrDirty = false; }
 	if (!gAttrValid) { for (auto& a : gAttr) a = AttrState{~0u, 0, 0, 0, -1, ~(uintptr_t)0, ~0u, true}; gAttrValid = true; }
 	for (int loc = 0; loc < 16; loc++)
 		if (!(enabled >> loc & 1) && gAttr[loc].on)
