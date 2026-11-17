@@ -974,16 +974,16 @@ static void dumpBmp(const char* path, uint32_t w, uint32_t h, uint32_t sc = 2)
 }
 
 // Vertex attribute state of gVao, cached so unchanged attributes cost no GL calls.
-struct AttrState { GLuint buf; GLint size; GLenum type; GLboolean norm; GLsizei stride; uintptr_t off; GLuint div; bool on; };
+struct AttrState { GLuint buf; GLint size; GLenum type; GLboolean norm; GLsizei stride; uintptr_t off; GLuint div; int8_t on; };   // on: 1 enabled, 0 disabled, -1 unknown
 static AttrState gAttr[16];
 static bool gAttrValid = false;
 void invalidateAttribCache() { gAttrDirty = true; }
 static void setAttrib(int loc, GLuint buf, GLint size, GLenum type, bool norm, GLsizei stride, uintptr_t off, GLuint div)
 {
 	if (gAttrDirty) { gAttrValid = false; gAttrDirty = false; }
-	if (!gAttrValid) { for (auto& a : gAttr) a = AttrState{~0u, 0, 0, 0, -1, ~(uintptr_t)0, ~0u, false}; gAttrValid = true; for (int l = 0; l < 16; l++) gAttr[l].on = true; }
+	if (!gAttrValid) { for (auto& a : gAttr) a = AttrState{~0u, 0, 0, 0, -1, ~(uintptr_t)0, ~0u, -1}; gAttrValid = true; }
 	AttrState& a = gAttr[loc];
-	if (!a.on) { glEnableVertexAttribArray(loc); a.on = true; }
+	if (a.on != 1) { glEnableVertexAttribArray(loc); a.on = 1; }
 	if (a.buf != buf || a.size != size || a.type != type || a.norm != (GLboolean)norm || a.stride != stride || a.off != off)
 	{
 		glBindBuffer(GL_ARRAY_BUFFER, buf);
@@ -995,12 +995,12 @@ static void setAttrib(int loc, GLuint buf, GLint size, GLenum type, bool norm, G
 static void disableAttribsExcept(uint32_t enabled)
 {
 	if (gAttrDirty) { gAttrValid = false; gAttrDirty = false; }
-	if (!gAttrValid) { for (auto& a : gAttr) a = AttrState{~0u, 0, 0, 0, -1, ~(uintptr_t)0, ~0u, true}; gAttrValid = true; }
+	if (!gAttrValid) { for (auto& a : gAttr) a = AttrState{~0u, 0, 0, 0, -1, ~(uintptr_t)0, ~0u, -1}; gAttrValid = true; }
 	for (int loc = 0; loc < 16; loc++)
-		if (!(enabled >> loc & 1) && gAttr[loc].on)
+		if (!(enabled >> loc & 1) && gAttr[loc].on != 0)
 		{
 			glDisableVertexAttribArray(loc); glVertexAttrib4f(loc, 0.f, 0.f, 0.f, 1.f);
-			gAttr[loc].on = false;
+			gAttr[loc].on = 0;
 		}
 }
 
@@ -1297,6 +1297,11 @@ static void drawImpl(const DrawCall& dc)
 		}
 		log("DD #%d prim %u cnt %u vs %p ps %p%s | z %u zw %u blend %u src %u dst %u cull %u at %u | rt %p", dn++, dc.prim, dc.primCount, (void*)vs, (void*)ps, tx.c_str(),
 			dev.rs[7], dev.rs[14], dev.rs[27], dev.rs[19], dev.rs[20], dev.rs[22], dev.rs[15], (void*)dev.rt0);
+	}
+	{
+		// /sdcard/ra3_nocache: re-send all GL state every draw (to rule the state caches in or out)
+		static const bool noCache = access("/sdcard/ra3_nocache", F_OK) == 0;
+		if (noCache) invalidateGlState();
 	}
 	bindTargets();
 	uint32_t tw, th;
