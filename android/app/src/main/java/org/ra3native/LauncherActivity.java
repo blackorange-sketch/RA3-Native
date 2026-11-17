@@ -469,7 +469,11 @@ public class LauncherActivity extends Activity {
             }
             runOnUiThread(() -> {
                 busy = false;
-                if (missing.isEmpty()) { status("STARTING...", YELLOW); launch(); }
+                // the game skips archives that are not there (e.g. MapsExtra.big is absent from many copies):
+                // only the executable and the language configuration itself are required
+                boolean critical = false;
+                for (String m : missing) { String l = m.toLowerCase(Locale.ROOT); if (l.endsWith(".game") || l.endsWith(".skudef")) critical = true; }
+                if (!critical) { status("STARTING...", YELLOW); launch(); }
                 else {
                     missingAck = true;
                     status("MISSING: " + missing.get(0) + (missing.size() > 1 ? "  (+" + (missing.size() - 1) + " MORE)" : "") + "  -  PLAY AGAIN TO START ANYWAY", RED_GLOW);
