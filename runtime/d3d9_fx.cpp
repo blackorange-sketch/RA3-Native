@@ -721,9 +721,6 @@ static void applyShaderState(FxInfo& fx, const FxPass& ps, uint32_t tech, uint32
 	}
 }
 
-int gFxDiagCur = -1;
-bool fxStatOn() { static const bool on = access("/sdcard/ra3_fxstat", F_OK) == 0; return on; }
-uint32_t gFxDiagTech = 0;
 void fxApplyPass(Obj* o)
 {
 	FxInfo* fx = F(o);
@@ -958,3 +955,10 @@ H("ID3DXEffect::IsParameterUsed") { SET(1); } END;
 
 }   // anonymous
 }   // namespace d3d
+
+namespace d3d
+{
+int gFxDiagCur = -1;
+uint32_t gFxDiagTech = 0;
+bool fxStatOn() { static const bool on = access("/sdcard/ra3_fxstat", F_OK) == 0; return on; }
+}
