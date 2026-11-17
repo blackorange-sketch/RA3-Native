@@ -39,7 +39,7 @@ Chunk* getChunk(size_t min)
 	}
 	Chunk* c = new Chunk;
 	c->cap = std::max(min, kChunk);
-	c->buf = (uint8_t*)aligned_alloc(16, (c->cap + 15) & ~(size_t)15);
+	c->buf = (uint8_t*)malloc((c->cap + 15) & ~(size_t)15);   // 16-byte aligned on arm64 (aligned_alloc needs API 28)
 	c->used = 0;
 	return c;
 }
