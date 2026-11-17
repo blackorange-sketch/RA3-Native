@@ -1621,6 +1621,9 @@ void stretchRect(Obj* src, const int32_t* sr, Obj* dst, const int32_t* dr, uint3
 		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gDrawFbo);
 		GLuint t = ensureTexture(dst);
 		glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t, dst->iface == ISurface ? dst->level : 0);
+		// gDrawFbo may still carry the depth buffer of the last pass (e.g. the 1024x1024 shadow-map depth): a framebuffer is
+		// only as large as its smallest attachment, so the blit would be clipped to that size - detach it
+		glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
 	}
 	glDisable(GL_SCISSOR_TEST);
 	int32_t s[4] = {0, 0, (int32_t)sw, (int32_t)sh}, d[4] = {0, 0, (int32_t)dw, (int32_t)dh};
