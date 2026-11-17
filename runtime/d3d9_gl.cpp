@@ -1578,6 +1578,7 @@ void draw(const DrawCall&) {}
 void present() {}
 void resizeBackBuffer() {}
 void stretchRect(Obj*, const int32_t*, Obj*, const int32_t*, uint32_t) {}
+void targetSize(Obj*, uint32_t& w, uint32_t& h) { w = h = 0; }
 void destroy(Obj*) {}
 }
 }
