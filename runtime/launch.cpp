@@ -215,8 +215,10 @@ int launch(const std::string& gameFile)
 		if (gFps60b) log("fps60b: keeping the 30 fps cap, frame wait shortened to 60 fps");
 		if (gFps60 && guest::load<uint32_t>(0xcaf9d4) == 30 && guest::load<uint32_t>(0xcaf9d0) == 15)
 		{
-			guest::store<uint32_t>(0xcaf9d4, 60);
-			log("fps60: client frame-rate cap raised to 60 (logic stays at 15 Hz)");
+			// experiment: /sdcard/ra3_fps45 -> 45 (3 frames per logic frame instead of 4)
+			uint32_t cap = access("/sdcard/ra3_fps45", F_OK) == 0 ? 45 : 60;
+			guest::store<uint32_t>(0xcaf9d4, cap);
+			log("fps60: client frame-rate cap raised to %u (logic stays at 15 Hz)%s", cap, access("/sdcard/ra3_fpsnopin", F_OK) == 0 ? ", frames per logic frame not pinned" : "");
 		}
 	}
 	callGuest(&cpu, imageEntry, {});

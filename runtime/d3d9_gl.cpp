@@ -1429,7 +1429,7 @@ static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, 
 	auto addRect = [&](float a0, float b0, float a1, float b1, float cx, float cy, float s) { if (gUiCur.size() < 4000) gUiCur.push_back({cx + (a0 - cx) * s, cy + (b0 - cy) * s, cx + (a1 - cx) * s, cy + (b1 - cy) * s, cx, cy, s}); };
 	int c = corner(x0, y0, x1, y1);
 	// a tooltip or popup that ends at the left edge of the right column belongs to it (it is anchored there)
-	bool attached = !c && gUiColLeft < 1e8f && x1 >= gUiColLeft - 0.04f * W && x1 <= gUiColLeft + 0.06f * W && y1 <= vy + 0.75f * H;
+	bool attached = !c && gUiColLeft < 1e8f && x1 >= gUiColLeft - 0.04f * W && x0 < gUiColLeft && x1 <= gUiColLeft + 0.20f * W && y1 <= vy + 0.75f * H;
 	if (attached) c = 2;
 	if (c == 2 && !attached) gUiCurColLeft = std::min(gUiCurColLeft, x0);
 	// unit markers, health bars and names come first in a frame: only what follows the first big corner panel is HUD
@@ -1452,7 +1452,7 @@ static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, 
 		float s = scaleOf(c);
 		addRect(x0, y0, x1, y1, ax, ay, s);
 		// a tooltip's text can start left of its box: texts get a wider catch area to the left of attached popups
-		if (gUiPieces.size() < 2000) gUiPieces.push_back({attached ? x0 - 0.12f * W : x0, y0, x1, y1, ax, ay, s});
+		if (gUiPieces.size() < 2000) gUiPieces.push_back({attached ? x0 - 0.15f * W : x0, y0, x1, y1, ax, ay, s});
 		axN = (c - 1) & 1 ? 1.f : -1.f; ayN = (c - 1) & 2 ? -1.f : 1.f;
 		return s - 1.f;
 	}

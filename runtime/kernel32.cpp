@@ -280,6 +280,8 @@ namespace rt
 void fpsPinTick()
 {
 	if (!(gFps60 || gFps60b) || !gLimObj) return;
+	static const bool noPin = access("/sdcard/ra3_fpsnopin", F_OK) == 0;   // experiment: let the game lower it on slow frames
+	if (noPin) return;
 	// variant B keeps the game's 30 fps cap (everything it derives stays as on PC) and only shortens the wait
 	uint32_t want = gFps60b ? 4 : guest::load<uint32_t>(0xcaf9d4) / std::max(1u, guest::load<uint32_t>(0xcaf9d0));
 	uint32_t k = guest::load<uint32_t>(gLimObj + 0x17c);
