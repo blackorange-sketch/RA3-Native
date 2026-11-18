@@ -659,20 +659,23 @@ static void packConst(const FxInfo& fx, const CtabConst& c, ShaderObj* sh, bool 
 	int32_t* iregs = isVs ? dev.vsI : dev.psI;
 	int32_t* bregs = isVs ? dev.vsB : dev.psB;
 	uint32_t maxF = isVs ? 256 : 224;
+	// only the registers the shader's constant table assigns: the compiler drops unused rows (World float4x4 used
+	// as 2 registers), and the next constant (Shroud) lives right behind them
+	uint32_t n = std::max(1u, c.regCount);
 	if (c.regSet == 2)
 	{
 		if (c.regIndex >= maxF) return;
-		fxrt::packToRegs(p.ty, p.val.data(), p.val.size(), 2, c.regIndex, (uint32_t*)fregs, maxF);
+		fxrt::packToRegs(p.ty, p.val.data(), p.val.size(), 2, c.regIndex, (uint32_t*)fregs, std::min(maxF, c.regIndex + n));
 	}
 	else if (c.regSet == 1)
 	{
 		if (c.regIndex >= 16) return;
-		fxrt::packToRegs(p.ty, p.val.data(), p.val.size(), 1, c.regIndex, (uint32_t*)iregs, 16);
+		fxrt::packToRegs(p.ty, p.val.data(), p.val.size(), 1, c.regIndex, (uint32_t*)iregs, std::min(16u, c.regIndex + n));
 	}
 	else if (c.regSet == 0)
 	{
 		if (c.regIndex >= 16) return;
-		fxrt::packToRegs(p.ty, p.val.data(), p.val.size(), 0, c.regIndex, (uint32_t*)bregs, 16);
+		fxrt::packToRegs(p.ty, p.val.data(), p.val.size(), 0, c.regIndex, (uint32_t*)bregs, std::min(16u, c.regIndex + n));
 	}
 	(void)sh;
 }
@@ -756,36 +759,6 @@ void fxApplyPass(Obj* o)
 		}
 	}
 	gFxDiagCur = fx->diagId; gFxDiagTech = gPass.tech; gFxDiagBlob = (uint32_t)fx->blob.size();
-	// Terrain.Shroud left unset (zero scale) - e.g. lasers: the shader would sample one corner texel of the shroud map
-	// and fade the beam out completely. Use the value the game binds for every other effect.
-	if (fx->shroudIdx == -2)
-	{
-		fx->shroudIdx = -1;
-		for (size_t i = 0; i < fx->params.size(); i++) if (fx->params[i].name == "Shroud" && fx->params[i].val.size() >= 4) { fx->shroudIdx = (int)i; break; }
-	}
-	if (fx->shroudIdx >= 0 && gHaveShroud)
-	{
-		auto& q = fx->params[fx->shroudIdx];
-		float v[2]; memcpy(v, q.val.data(), 8);
-		if (v[0] == 0.f && v[1] == 0.f)
-		{
-			memcpy(q.val.data(), gLastShroud, 16);
-			static int nf = 0;
-			if (nf++ < 5) log("fx: effect (blob %zu) had no shroud scale, using %g %g %g %g", fx->blob.size(), gLastShroud[0], gLastShroud[1], gLastShroud[2], gLastShroud[3]);
-		}
-	}
-	if (fx->blob.size() == 11012)
-	{
-		static int nl = 0;
-		if (nl < 3)
-			for (auto& q : fx->params)
-				if (q.name == "Shroud" && q.val.size() >= 4)
-				{
-					nl++;
-					float v[4]; memcpy(v, q.val.data(), 16);
-					log("fx: laser applied, its Shroud = %g %g %g %g (shared %d)", v[0], v[1], v[2], v[3], q.shareGroup ? 1 : 0);
-				}
-	}
 	syncShared(*fx);
 	const FxPass& ps = fx->techs[gPass.tech].passes[gPass.pass];
 	for (uint32_t i = 0; i < ps.sts.size(); i++) applyShaderState(*fx, ps, gPass.tech, gPass.pass, i);
