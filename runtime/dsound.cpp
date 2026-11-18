@@ -51,6 +51,7 @@ std::vector<std::pair<Kind, std::string>> methodNames;
 int outRate = 48000;
 #ifdef __ANDROID__
 AAudioStream* stream = nullptr;
+AAudioStream* streamRef() { return stream; }
 #endif
 
 Obj* find(uint32_t a) { std::lock_guard<std::mutex> l(mu); auto it = objs.find(a); return it == objs.end() ? nullptr : it->second; }
@@ -128,11 +129,6 @@ void startAudio()
 void startAudio() {}
 #endif
 
-#ifdef __ANDROID__
-namespace rt { void audioPause(bool p) { if (stream) { aaudio_result_t r = p ? AAudioStream_requestPause(stream) : AAudioStream_requestStart(stream); log("dsound: stream %s: %s", p ? "paused" : "resumed", AAudio_convertResultToText(r)); } } }
-#else
-namespace rt { void audioPause(bool) {} }
-#endif
 
 void dispatch(CPU* c);
 
@@ -365,3 +361,9 @@ IMP_ID(D, "#9", GetDeviceID, 8)
 
 // XINPUT1_3.dll: the only import is ordinal 2 = XInputGetState(user, state*). No gamepads: ERROR_DEVICE_NOT_CONNECTED.
 IMP_ID("XINPUT1_3.dll", "#2", XInputGetState, 8) { SET(1167); }
+
+#ifdef __ANDROID__
+namespace rt { void audioPause(bool p) { if (AAudioStream* stream = streamRef()) { aaudio_result_t r = p ? AAudioStream_requestPause(stream) : AAudioStream_requestStart(stream); log("dsound: stream %s: %s", p ? "paused" : "resumed", AAudio_convertResultToText(r)); } } }
+#else
+namespace rt { void audioPause(bool) {} }
+#endif
