@@ -1,3 +1,4 @@
+#include <cmath>
 // KERNEL32 replacement: threads, synchronization, files, memory, time, misc.
 #include <atomic>
 #include <condition_variable>
@@ -335,6 +336,44 @@ void fpsPinTick()
 	if (noPin) return;
 	// variant B keeps the game's 30 fps cap (everything it derives stays as on PC) and only shortens the wait
 	uint32_t want = gFps60b ? 4 : guest::load<uint32_t>(0xcaf9d4) / std::max(1u, guest::load<uint32_t>(0xcaf9d0));
+	if (gFps60)
+	{
+		// Real-time speed: the game advances one logic step (1/15 s) every k drawn frames, so it runs at real speed only
+		// while it actually draws 15 * k frames per second. Measure how fast the phone can draw (frame time without the
+		// limiter's wait) and choose k so that 15 * k is reachable: 60, 45 or 30 fps. The frame cap follows k, so
+		// everything the game times by the cap (shader clock, particles, frame wait) stays consistent with it.
+		static uint32_t topCap = 0, curK = 0, pendK = 0, pendN = 0;
+		static uint64_t lastT = 0, lastW = 0;
+		static double workMs = 20.0;
+		if (!topCap) { topCap = guest::load<uint32_t>(0xcaf9d4); curK = topCap / 15; }
+		static const bool fixedCap = access("/sdcard/ra3_fpsfixedcap", F_OK) == 0;
+		uint64_t t = (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+		uint64_t w = gLimWaitTotal.load();
+		if (lastT && t > lastT)
+		{
+			double frame = (t - lastT) / 1000.0, wait = (w - lastW) / 1000.0;
+			double work = std::max(1.0, frame - wait);
+			if (work < 200.0) workMs += (work - workMs) * 0.05;   // ~1 s average
+		}
+		lastT = t; lastW = w;
+		double canFps = 1000.0 / workMs;
+		uint32_t maxK = topCap / 15, k2 = (uint32_t)std::floor(canFps * 0.95 / 15.0);
+		k2 = std::max(2u, std::min(maxK, k2));
+		if (k2 != curK)
+		{
+			// change only when it holds for a while (going up needs longer, to avoid see-sawing)
+			if (k2 == pendK) pendN++; else { pendK = k2; pendN = 0; }
+			if (pendN > (k2 > curK ? 90u : 30u))
+			{
+				curK = k2; pendN = 0;
+				if (!fixedCap) guest::store<uint32_t>(0xcaf9d4, 15 * curK);
+				static int nl = 0;
+				if (nl++ < 40) log("fps60: drawing about %.0f fps -> %u frames per logic step (%u fps target)", canFps, curK, 15 * curK);
+			}
+		}
+		else pendN = 0;
+		want = curK;
+	}
 	uint32_t k = guest::load<uint32_t>(gLimObj + 0x17c);
 	if (k == want || k == 0 || k > 16) return;
 	static int n = 0;
