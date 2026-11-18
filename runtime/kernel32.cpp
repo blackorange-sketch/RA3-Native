@@ -280,6 +280,39 @@ namespace rt
 void fpsPinTick()
 {
 	if (!(gFps60 || gFps60b) || !gLimObj) return;
+	{
+		// diagnostics: which methods of TheFXParticleSystemManager (0xce3f04) run every frame
+		extern uint32_t gWatch[64]; extern std::atomic<uint32_t> gWatchCalls[64]; extern int gWatchN; extern uint32_t gWatchLo, gWatchHi;
+		static uint32_t frames = 0, f0 = 0;
+		frames++;
+		uint32_t mgr = guest::load<uint32_t>(0xce3f04);
+		if (!gWatchN && mgr > 0x400000 && mgr < 0x70000000)
+		{
+			uint32_t lo = 0xffffffffu, hi = 0;
+			for (int base = 0; base < 2; base++)
+			{
+				uint32_t vt = guest::load<uint32_t>(mgr + 4 * base);
+				if (vt < 0xbc7000 || vt >= 0xcab000) continue;
+				for (int k = 0; k < 30 && gWatchN < 64; k++)
+				{
+					uint32_t f = guest::load<uint32_t>(vt + 4 * k);
+					if (f < 0x401000 || f >= 0xbc7000) continue;
+					gWatch[gWatchN] = f; gWatchCalls[gWatchN] = 0; gWatchN++;
+					lo = std::min(lo, f); hi = std::max(hi, f);
+				}
+				log("fpsdiag: particle manager %08x vtable[%d] %08x", mgr, base, vt);
+			}
+			gWatchLo = lo; gWatchHi = hi; f0 = frames;
+		}
+		if (gWatchN && frames - f0 >= 600)
+		{
+			std::string o;
+			for (int i = 0; i < gWatchN; i++) { uint32_t n = gWatchCalls[i].exchange(0); if (n) { char b[48]; snprintf(b, sizeof b, " %08x:%.2f", gWatch[i], n / 600.0); o += b; } }
+			static int nl = 0;
+			if (nl++ < 6) log("fpsdiag: calls per frame of manager methods:%s", o.c_str());
+			f0 = frames;
+		}
+	}
 	static const bool noPin = access("/sdcard/ra3_fpsnopin", F_OK) == 0;   // experiment: let the game lower it on slow frames
 	if (noPin) return;
 	// variant B keeps the game's 30 fps cap (everything it derives stays as on PC) and only shortens the wait
