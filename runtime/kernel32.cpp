@@ -522,12 +522,46 @@ static uint64_t winFileTime()
 	timespec t; clock_gettime(CLOCK_REALTIME, &t);
 	return ((uint64_t)t.tv_sec + 11644473600ull) * 10000000ull + t.tv_nsec / 100;
 }
-IMP_STD(K, GetTickCount, 0) { noteWait(c, "GetTickCount", 0); timespec t; clock_gettime(CLOCK_MONOTONIC, &t); SET((uint32_t)(t.tv_sec * 1000 + t.tv_nsec / 1000000)); }
-IMP_ID("WINMM.dll", "timeGetTime", timeGetTime, 0) { noteWait(c, "timeGetTime", 0); timespec t; clock_gettime(CLOCK_MONOTONIC, &t); SET((uint32_t)(t.tv_sec * 1000 + t.tv_nsec / 1000000)); }
+// ---- background pause: the game thread is held in Present while the app is in the background; the game's clocks
+// skip the paused time so that it does not try to catch up afterwards
+namespace
+{
+std::mutex gBgMu;
+std::condition_variable gBgCv;
+bool gBg = false;
+std::atomic<uint64_t> gPausedNs{0};
+uint64_t gameNs() { return rdtsc_host() - gPausedNs.load(); }
+}
+namespace rt
+{
+void setBackground(bool bg)
+{
+	{
+		std::lock_guard<std::mutex> l(gBgMu);
+		if (gBg == bg) return;
+		gBg = bg;
+	}
+	log("app %s", bg ? "in the background: game paused" : "back in the foreground: game resumed");
+	audioPause(bg);
+	gBgCv.notify_all();
+}
+bool background() { std::lock_guard<std::mutex> l(gBgMu); return gBg; }
+uint64_t pausedNs() { return gPausedNs.load(); }
+void waitWhileBackground()
+{
+	std::unique_lock<std::mutex> l(gBgMu);
+	if (!gBg) return;
+	uint64_t t0 = rdtsc_host();
+	gBgCv.wait(l, [] { return !gBg; });
+	gPausedNs += rdtsc_host() - t0;
+}
+}
+IMP_STD(K, GetTickCount, 0) { noteWait(c, "GetTickCount", 0); SET((uint32_t)(gameNs() / 1000000)); }
+IMP_ID("WINMM.dll", "timeGetTime", timeGetTime, 0) { noteWait(c, "timeGetTime", 0); SET((uint32_t)(gameNs() / 1000000)); }
 IMP_ID("WINMM.dll", "timeBeginPeriod", timeBeginPeriod, 4) { SET(0); }
 IMP_ID("WINMM.dll", "timeEndPeriod", timeEndPeriod, 4) { SET(0); }
 IMP_STD(K, QueryPerformanceFrequency, 1) { guest::store<uint64_t>(ARG(0), 1000000000ull); SET(1); }
-IMP_STD(K, QueryPerformanceCounter, 1) { noteWait(c, "QPC", 0); guest::store<uint64_t>(ARG(0), rdtsc_host()); SET(1); }
+IMP_STD(K, QueryPerformanceCounter, 1) { noteWait(c, "QPC", 0); guest::store<uint64_t>(ARG(0), gameNs()); SET(1); }
 IMP_STD(K, GetSystemTimeAsFileTime, 1) { guest::store<uint64_t>(ARG(0), winFileTime()); }
 IMP_STD(K, GetLocalTime, 1)
 {

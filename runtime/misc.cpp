@@ -89,7 +89,7 @@ IMP_ID(U, "GetFocus", GetFocus, 0) { SET(0x30001); }
 IMP_ID(U, "GetForegroundWindow", GetForegroundWindow, 0) { SET(0x30001); }
 IMP_ID(U, "GetDesktopWindow", GetDesktopWindow, 0) { SET(0x10010); }
 IMP_ID(U, "FindWindowW", FindWindowW, 8) { SET(0); }
-IMP_ID(U, "IsIconic", IsIconic, 4) { SET(0); }
+IMP_ID(U, "IsIconic", IsIconic, 4) { SET(rt::background() ? 1 : 0); }
 IMP_ID(U, "IsWindowUnicode", IsWindowUnicode, 4) { SET(1); }
 IMP_ID(U, "GetWindowLongA", GetWindowLongA, 8) { SET(0); }
 IMP_ID(U, "DefWindowProcA", DefWindowProcA, 16) { SET(0); }

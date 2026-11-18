@@ -36,6 +36,12 @@ bool verbose();                 // extra diagnostics: enabled by creating /sdcar
 uint64_t heapLiveBytes();
 uint64_t limiterWaitUs();
 uint64_t limiterWaitTotalUs();   // monotonic
+// app in the background (another app opened, screen off): the game thread waits in Present and the game clock stops
+void setBackground(bool bg);
+bool background();
+void waitWhileBackground();      // game thread, from Present
+uint64_t pausedNs();             // total time spent paused (subtracted from the game's clocks)
+void audioPause(bool pause);
 void perfHintFrame(uint64_t workNs, int renderTid);   // Android performance hint session (ADPF)
 void fpsPinTick();          // time the game spent in its frame limiter since the last call
 void ioStats(uint64_t& bytes, uint64_t& us, uint64_t& calls);   // cumulative ReadFile totals

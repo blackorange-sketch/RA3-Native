@@ -363,6 +363,9 @@ void onCmd(android_app* app, int32_t cmd)
 {
 	if (cmd == APP_CMD_INIT_WINDOW) { window = app->window; gfx::setWindow(window); dirty = true; }
 	if (cmd == APP_CMD_TERM_WINDOW) { gfx::setWindow(nullptr); window = nullptr; }
+	// another app in front / home / screen off: pause the game until it is visible again
+	if (cmd == APP_CMD_PAUSE && started) rt::setBackground(true);
+	if (cmd == APP_CMD_RESUME) rt::setBackground(false);
 }
 }
 

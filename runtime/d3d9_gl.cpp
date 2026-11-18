@@ -1818,6 +1818,7 @@ static void reapReleased(uint32_t frame);
 static void presentImpl();
 void present()
 {
+	rt::waitWhileBackground();   // app in the background: hold the game here (game logic, timers and audio stop)
 	uint64_t t0 = nowUs();
 	rt::fpsPinTick();
 	presentImpl();

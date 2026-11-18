@@ -109,11 +109,18 @@ void clickWithMods(bool right)
 	if (c) { keys[0x11] = true; push(WM_KEYDOWN, 0x11, 1, 0); }
 	if (a) { keys[0x12] = true; push(WM_KEYDOWN, 0x12, 1, 0); }
 	if (right) { rDown = true; push(WM_RBUTTONDOWN, mouseFlags(), xy(), 40); rDown = false; push(WM_RBUTTONUP, mouseFlags(), xy(), 40); }
-	else
+	else if (onRadar)
 	{
-		// on the minimap the button is held a little longer: the game moves the camera while it sees the button down
-		lDown = true; push(WM_LBUTTONDOWN, mouseFlags(), xy(), 40); lDown = false; push(WM_LBUTTONUP, mouseFlags(), xy(), onRadar ? 120 : 40);
+		// minimap: a plain click there is an order for the selected units; a drag always moves the camera. So the tap
+		// becomes a short drag that leaves the cursor where the finger was (the camera jumps to that point)
+		int ox = curX, oy = curY, dx = curX + 24 < bw ? 24 : -24;
+		lDown = true; push(WM_LBUTTONDOWN, mouseFlags(), xy(), 40);
+		curX = ox + dx; push(WM_MOUSEMOVE, mouseFlags(), xy(), 40);
+		curX = ox + dx / 2; push(WM_MOUSEMOVE, mouseFlags(), xy(), 30);
+		curX = ox; curY = oy; push(WM_MOUSEMOVE, mouseFlags(), xy(), 30);
+		lDown = false; push(WM_LBUTTONUP, mouseFlags(), xy(), 60);
 	}
+	else { lDown = true; push(WM_LBUTTONDOWN, mouseFlags(), xy(), 40); lDown = false; push(WM_LBUTTONUP, mouseFlags(), xy(), 40); }
 	if (c) { keys[0x11] = false; push(WM_KEYUP, 0x11, 1u | 0xc0000000u, 0); ctrlSticky = false; }
 	if (a) { keys[0x12] = false; push(WM_KEYUP, 0x12, 1u | 0xc0000000u, 0); altSticky = false; }
 }

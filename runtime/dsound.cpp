@@ -128,6 +128,12 @@ void startAudio()
 void startAudio() {}
 #endif
 
+#ifdef __ANDROID__
+namespace rt { void audioPause(bool p) { if (stream) { aaudio_result_t r = p ? AAudioStream_requestPause(stream) : AAudioStream_requestStart(stream); log("dsound: stream %s: %s", p ? "paused" : "resumed", AAudio_convertResultToText(r)); } } }
+#else
+namespace rt { void audioPause(bool) {} }
+#endif
+
 void dispatch(CPU* c);
 
 uint32_t vtableFor(Kind k)
