@@ -41,6 +41,7 @@ void waitIdle();                         // until everything queued so far has e
 void endFrame();                         // frame boundary: publish, and keep at most one frame in flight
 void start(void (*threadInit)());       // start the render thread (runs threadInit on it first)
 uint64_t renderBusyUs();                 // render thread time spent executing commands (resets)
+int renderTid();                         // host tid of the render thread (0 before it starts)
 
 template <class T> static void runAndDestroy(void* p) { T* t = (T*)p; (*t)(); t->~T(); }
 

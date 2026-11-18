@@ -28,6 +28,7 @@ Chunk* cur = nullptr;
 uint64_t submitted = 0, executed = 0;          // chunks (guarded by qm)
 uint64_t framesSub = 0, framesDone = 0;        // frame markers (guarded by qm)
 std::atomic<uint64_t> busyUs{0};
+std::atomic<int> gRenderTid{0};
 
 inline uint64_t nowUs() { return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 
@@ -146,13 +147,15 @@ void start(void (*threadInit)())
 	std::thread([threadInit] {
 		tlRender = true;
 		setpriority(PRIO_PROCESS, 0, -10);
-		rt::log("GL: render thread tid %d", (int)syscall(SYS_gettid));
+		gRenderTid = (int)syscall(SYS_gettid);
+		rt::log("GL: render thread tid %d", gRenderTid.load());
 		threadInit();
 		renderLoop();
 	}).detach();
 }
 
 uint64_t renderBusyUs() { return busyUs.exchange(0); }
+int renderTid() { return gRenderTid.load(); }
 
 size_t texBytes(GLenum format, GLenum type, GLsizei w, GLsizei h, GLsizei d)
 {

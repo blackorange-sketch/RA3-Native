@@ -35,6 +35,8 @@ void log(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 bool verbose();                 // extra diagnostics: enabled by creating /sdcard/ra3_verbose
 uint64_t heapLiveBytes();
 uint64_t limiterWaitUs();
+uint64_t limiterWaitTotalUs();   // monotonic
+void perfHintFrame(uint64_t workNs, int renderTid);   // Android performance hint session (ADPF)
 void fpsPinTick();          // time the game spent in its frame limiter since the last call
 void ioStats(uint64_t& bytes, uint64_t& us, uint64_t& calls);   // cumulative ReadFile totals
 [[noreturn]] void fatal(const char* fmt, ...) __attribute__((format(printf, 1, 2)));

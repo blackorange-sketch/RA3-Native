@@ -1793,6 +1793,13 @@ static void presentImpl()
 		uint64_t tw0 = nowUs();
 		rec::endFrame();   // keeps at most one frame queued behind the one on the GPU thread
 		gTWaitRender += nowUs() - tw0;
+		{
+			// work this frame = wall time since the last present minus the time the game's frame limiter slept
+			static uint64_t lastT = 0, lastLim = 0;
+			uint64_t t = nowUs(), lim = rt::limiterWaitTotalUs();
+			if (lastT && t > lastT) { uint64_t wall = t - lastT, sl = lim - lastLim; rt::perfHintFrame((wall > sl ? wall - sl : 0) * 1000, rec::renderTid()); }
+			lastT = t; lastLim = lim;
+		}
 	}
 	else { uint64_t ts = nowUs(); gfx::swap(); gTSwap += nowUs() - ts; }
 	glErr("present");
