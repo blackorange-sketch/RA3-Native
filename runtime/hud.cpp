@@ -25,6 +25,11 @@ int addSide = 0;
 int page = 0;
 int pressed = -1, pressedPtr = -1;   // index of the held custom button, and the pointer index that holds it
 int flash = 0;                       // frames of "added" feedback
+// Shift / Ctrl / Alt buttons latch: a tap holds the key down (button lit) until the next tap on it, so it can be
+// combined with taps on the map (Shift = queue waypoints, Ctrl = force fire, Alt = formation / reverse move)
+bool latched[3];
+int modIdx(int vk) { return vk == 0x10 ? 0 : vk == 0x11 ? 1 : vk == 0x12 ? 2 : -1; }
+void releaseLatched(std::vector<hud::KeyEv>& out) { for (int i = 0; i < 3; i++) if (latched[i]) { latched[i] = false; out.push_back({0x10 + i, false, false}); } }
 
 struct Key { const char* label; int vk; bool ctrl; };
 std::vector<std::vector<Key>> pages;
@@ -40,6 +45,7 @@ void buildPages()
 	static char fl[12][4];
 	for (int f = 1; f <= 12; f++) { snprintf(fl[f - 1], 4, "F%d", f); p1.push_back({fl[f - 1], 0x6f + f, false}); }
 	p1.push_back({"ESC", 0x1b, false}); p1.push_back({"TAB", 0x09, false}); p1.push_back({"SPC", 0x20, false}); p1.push_back({"DEL", 0x2e, false}); p1.push_back({"ENT", 0x0d, false});
+	p1.push_back({"SHIFT", 0x10, false}); p1.push_back({"CTRL", 0x11, false}); p1.push_back({"ALT", 0x12, false});
 	static char lt[26][2];
 	for (int c = 0; c < 26; c++) { lt[c][0] = 'A' + c; lt[c][1] = 0; p2.push_back({lt[c], 'A' + c, false}); }
 	p2.push_back({"^", 0x26, false}); p2.push_back({"v", 0x28, false}); p2.push_back({"<", 0x25, false}); p2.push_back({">", 0x27, false});
@@ -184,10 +190,12 @@ bool onTouch(int action, int idx, int count, const float* xs, const float* ys, s
 	}
 	if (isDown)
 	{
-		if (inside(editRect(), x, y)) { editing = true; page = 0; return true; }
+		if (inside(editRect(), x, y)) { releaseLatched(out); editing = true; page = 0; return true; }
 		for (auto& e : layout())
 			if (inside(e.second, x, y))
 			{
+				int m = modIdx(btns[e.first].vk);
+				if (m >= 0) { latched[m] = !latched[m]; out.push_back({btns[e.first].vk, latched[m], false}); return true; }
 				pressed = e.first; pressedPtr = idx;
 				const Btn& b = btns[pressed];
 				out.push_back({b.vk, true, b.ctrl});
@@ -220,6 +228,8 @@ void draw(const DrawRect& rect)
 	{
 		const Btn& b = btns[en.first]; const R& r = en.second;
 		bool on = en.first == pressed;
+		int m = modIdx(b.vk);
+		if (m >= 0 && latched[m]) { rect(r.x, r.y, r.w, r.h, 1.f, 0.78f, 0.1f); rect(r.x + 3, r.y + 3, r.w - 6, r.h - 6, 0.55f, 0.38f, 0.02f); text(rect, b.label, {r.x + 3, r.y + 3, r.w - 6, r.h - 6}, 1.f, 1.f, 1.f); continue; }
 		rect(r.x, r.y, r.w, r.h, 0.75f, 0.75f, 0.78f);
 		rect(r.x + 3, r.y + 3, r.w - 6, r.h - 6, on ? 0.55f : 0.12f, on ? 0.55f : 0.12f, on ? 0.6f : 0.14f);
 		text(rect, b.label, {r.x + 3, r.y + 3, r.w - 6, r.h - 6}, 0.95f, 0.95f, 0.97f);

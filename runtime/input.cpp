@@ -16,7 +16,7 @@ using namespace rt;
 namespace
 {
 constexpr uint32_t kHwnd = 0x30001;
-enum { WM_ACTIVATE = 0x6, WM_SETFOCUS = 0x7, WM_KEYDOWN = 0x100, WM_KEYUP = 0x101, WM_CHAR = 0x102, WM_MOUSEMOVE = 0x200, WM_LBUTTONDOWN = 0x201, WM_LBUTTONUP = 0x202,
+enum { WM_ACTIVATE = 0x6, WM_SETFOCUS = 0x7, WM_KEYDOWN = 0x100, WM_KEYUP = 0x101, WM_CHAR = 0x102, WM_SYSKEYDOWN = 0x104, WM_SYSKEYUP = 0x105, WM_MOUSEMOVE = 0x200, WM_LBUTTONDOWN = 0x201, WM_LBUTTONUP = 0x202,
        WM_RBUTTONDOWN = 0x204, WM_RBUTTONUP = 0x205, WM_MBUTTONDOWN = 0x207, WM_MBUTTONUP = 0x208, WM_MOUSEWHEEL = 0x20a, WM_ACTIVATEAPP = 0x1c };
 
 struct Msg { uint32_t hwnd, msg, wp, lp; int64_t readyAt; int32_t x, y; };
@@ -64,7 +64,7 @@ uint32_t scanOf(uint32_t vk)
 void push(uint32_t msg, uint32_t wp, uint32_t lp, int gapMs)
 {
 	// keyboard messages carry the scan code like on Windows: the game maps hotkeys by scan code
-	if ((msg == WM_KEYDOWN || msg == WM_KEYUP) && !(lp & 0x01ff0000u)) lp |= (scanOf(wp) & 0x1ff) << 16;
+	if ((msg == WM_KEYDOWN || msg == WM_KEYUP || msg == WM_SYSKEYDOWN || msg == WM_SYSKEYUP) && !(lp & 0x01ff0000u)) lp |= (scanOf(wp) & 0x1ff) << 16;
 	if (msg == WM_KEYDOWN || msg == WM_KEYUP || msg == WM_CHAR)
 	{
 		static int nk = 0;
@@ -166,8 +166,10 @@ void onTouch(int action, int idx, int count, const float* xs, const float* ys)
 		bool used = hud::onTouch(action, idx, count, xs, ys, kev);
 		for (auto& k : kev)
 		{
-			if (k.down) { if (k.ctrl) { keys[0x11] = true; push(WM_KEYDOWN, 0x11, 1, 0); } keys[k.vk] = true; push(WM_KEYDOWN, k.vk, 1, 0); }
-			else { keys[k.vk] = false; push(WM_KEYUP, k.vk, 1u | 0xc0000000u, 0); if (k.ctrl) { keys[0x11] = false; push(WM_KEYUP, 0x11, 1u | 0xc0000000u, 0); } }
+			// Alt arrives as WM_SYSKEYDOWN/UP with the context bit (29), as on Windows
+			uint32_t dn = k.vk == 0x12 ? WM_SYSKEYDOWN : WM_KEYDOWN, up = k.vk == 0x12 ? WM_SYSKEYUP : WM_KEYUP, ctx = k.vk == 0x12 ? 0x20000000u : 0;
+			if (k.down) { if (k.ctrl) { keys[0x11] = true; push(WM_KEYDOWN, 0x11, 1, 0); } keys[k.vk] = true; push(dn, k.vk, 1u | ctx, 0); }
+			else { keys[k.vk] = false; push(up, k.vk, 1u | ctx | 0xc0000000u, 0); if (k.ctrl) { keys[0x11] = false; push(WM_KEYUP, 0x11, 1u | 0xc0000000u, 0); } }
 		}
 		if (used) { swallow = (action == 0 || action == 5) ? true : swallow; if (action == 1 || action == 3) swallow = false; return; }
 	}
