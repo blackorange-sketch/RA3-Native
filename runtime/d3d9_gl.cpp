@@ -1323,6 +1323,7 @@ static bool uiDiagFrame() { return gUiDiag; }   // a few frames during play: eve
 static bool gUiAptSeen = false;   // an interface draw happened this frame (diagnostics)
 static bool gUiHud = false;       // the HUD panels have started this frame: earlier interface draws belong to the world
 static float gUiRightT = 0.f, gUiRightB = 1.f, gUiCurT = 0.f, gUiCurB = 1.f;   // right column: lowest top piece, highest bottom piece (fractions of the height)
+static std::vector<UiRect> gUiPieces;   // panel pieces scaled this frame, in the game's own (unscaled) coordinates
 static bool gUiNested = false;     // drawing a rebuilt interface draw (no second analysis)
 static uint32_t gUiWorldDraws = 0;   // depth-tested draws this frame: the HUD is scaled in a battle only, not in menus
 static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, float& axN, float& ayN, float& ax, float& ay, std::vector<uint8_t>& split)
@@ -1429,27 +1430,39 @@ static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, 
 		noteRight(c, y0, y1);
 		float s = scaleOf(c);
 		addRect(x0, y0, x1, y1, ax, ay, s);
+		if (gUiPieces.size() < 2000) gUiPieces.push_back({x0, y0, x1, y1, ax, ay, s});
 		axN = (c - 1) & 1 ? 1.f : -1.f; ayN = (c - 1) & 2 ? -1.f : 1.f;
 		return s - 1.f;
 	}
 	if (dc.prim != 4 || nIdx % 3) return fail("mixed corners, not a triangle list");
-	// mixed draw: per triangle
+	// mixed draw (the texts of the whole HUD in one batch): a triangle that lies on a panel scaled earlier in this frame
+	// moves with that panel; texts elsewhere (subtitles, unit names) stay
+	auto pieceOf = [&](float a0, float b0, float a1, float b1) -> const UiRect* {
+		float cxm = (a0 + a1) * 0.5f, cym = (b0 + b1) * 0.5f;
+		for (size_t q = gUiPieces.size(); q-- > 0;)
+		{
+			const UiRect& r = gUiPieces[q];
+			if (cxm >= r.x0 && cxm <= r.x1 && cym >= r.y0 && cym <= r.y1) return &r;
+		}
+		return nullptr;
+	};
 	bool any = false;
 	for (uint32_t t = 0; t < nIdx && !any; t += 3)
 	{
 		float a0 = std::min({sxy[2 * t], sxy[2 * t + 2], sxy[2 * t + 4]}), a1 = std::max({sxy[2 * t], sxy[2 * t + 2], sxy[2 * t + 4]});
 		float b0 = std::min({sxy[2 * t + 1], sxy[2 * t + 3], sxy[2 * t + 5]}), b1 = std::max({sxy[2 * t + 1], sxy[2 * t + 3], sxy[2 * t + 5]});
-		any = corner(a0, b0, a1, b1) != 0;
+		any = pieceOf(a0, b0, a1, b1) != nullptr;
 	}
-	if (!any) return 0.f;
+	if (!any) return fail("mixed draw, nothing on a panel");
 	split.resize((size_t)nIdx * stride);
 	for (uint32_t t = 0; t < nIdx; t += 3)
 	{
 		float a0 = std::min({sxy[2 * t], sxy[2 * t + 2], sxy[2 * t + 4]}), a1 = std::max({sxy[2 * t], sxy[2 * t + 2], sxy[2 * t + 4]});
 		float b0 = std::min({sxy[2 * t + 1], sxy[2 * t + 3], sxy[2 * t + 5]}), b1 = std::max({sxy[2 * t + 1], sxy[2 * t + 3], sxy[2 * t + 5]});
-		int tc = corner(a0, b0, a1, b1);
+		const UiRect* pr = pieceOf(a0, b0, a1, b1);
+		bool tc = pr != nullptr;
 		float cx = 0, cy = 0, s = 1.f;
-		if (tc) { anchorOf(tc, cx, cy); s = scaleOf(tc); addRect(a0, b0, a1, b1, cx, cy, s); }
+		if (tc) { cx = pr->ax; cy = pr->ay; s = pr->sc; }
 		for (uint32_t k = t; k < t + 3; k++)
 		{
 			uint8_t* d = split.data() + (size_t)k * stride;
@@ -2171,7 +2184,7 @@ static void presentImpl()
 		}
 		if (gUiHud) { gUiRightT = gUiCurT; gUiRightB = gUiCurB; }
 		gUiCurT = 0.f; gUiCurB = 1.f;
-		gUiWorldDraws = 0; gUiHud = false; gUiAptSeen = false;
+		gUiWorldDraws = 0; gUiHud = false; gUiAptSeen = false; gUiPieces.clear();
 		static int nl = 0;
 		if (gUiScale > 1.001f && !gUiPub.empty() && nl < 3 && gFrameNo > 600) { nl++; log("ui: interface scale %.2f, %zu panel pieces scaled this frame", gUiScale, gUiPub.size()); }
 	}
