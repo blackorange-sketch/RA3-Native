@@ -388,8 +388,6 @@ std::string hostPath(const std::string& win)
 
 namespace rt
 {
-uint32_t gWatch[64]; std::atomic<uint32_t> gWatchCalls[64]; int gWatchN = 0; uint32_t gWatchLo = 0xffffffffu, gWatchHi = 0;
-bool gParticleSkip = false;   // 60 fps: this frame the particle systems do not advance (they are made for 30 steps per second)
 }
 // ---- dispatcher: every guest call that is not a direct call to a lifted function comes through here
 void call_target(CPU* c, uint32_t addr)
@@ -409,9 +407,6 @@ void call_target(CPU* c, uint32_t addr)
 		c->r[ESP] += 4 + e->pop;
 		return;
 	}
-	// 60 fps diagnostics: count calls to the methods of the particle system manager (which one runs every frame)
-	if (addr >= gWatchLo && addr <= gWatchHi)
-		for (int i = 0; i < gWatchN; i++) if (gWatch[i] == addr) { gWatchCalls[i]++; break; }
 	// indirect calls (virtual methods, function pointers) are frequent: cache guest address -> table index
 	static std::atomic<uint64_t> cache[1u << 14];
 	uint32_t slot = (addr ^ (addr >> 14)) & ((1u << 14) - 1);
@@ -454,8 +449,9 @@ namespace rt { std::string commandLine() { return "\"C:\\RA3\\Data\\ra3_1.12.gam
 namespace rt { bool verbose() { static bool v = access("/sdcard/ra3_verbose", F_OK) == 0; return v; } }
 bool ra3_gate(CPU*, uint32_t fn)
 {
-	// 0x6d18f0: FX particle system update (one fixed step per call), called for every system once per frame
-	return fn == 0x6d18f0u && rt::gParticleSkip;
+	// no gated functions at the moment (RA3_GATES in the workflow)
+	(void)fn;
+	return false;
 }
 void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t ecx)
 {

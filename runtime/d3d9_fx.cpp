@@ -423,7 +423,7 @@ H("ID3DXEffect::GetParameterDesc")
 // 60 fps diagnostics: how the game's shader clock 'Time' advances against wall time and presented frames, and who sets it
 static void noteTime(CPU* c, const PRef& r, const void* v, const char* how)
 {
-	if (!r.valid() || r.p->name != "Time") return;
+	if (!verbose() || !r.valid() || r.p->name != "Time") return;   // only with ra3_verbose
 	static int n = 0;
 	static uint64_t lastUs = 0;
 	uint64_t us = (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();

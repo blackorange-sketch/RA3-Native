@@ -1880,38 +1880,6 @@ static void drawImpl(const DrawCall& dc)
 		if (ff++ < 3) log("d3d9: draw with FVF %x and no declaration - not supported yet", dev.fvf);
 		return;
 	}
-	if (::rt::gFps60 && !dc.upVerts && gFrameNo % 150 == 0)
-	{
-		// 60 fps diagnostics: GPU particles age = c38 (shader clock) - birth time (texcoord0.w), lifetime = position.w
-		bool gpuP = false;
-		for (auto& cc : vs->info.ctab) if (cc.name == "Physics") gpuP = true;
-		static int nl = 0;
-		if (gpuP && nl < 60)
-		{
-			const DeclElem *ep = nullptr, *et = nullptr;
-			for (uint32_t q = 0; q < nEls; q++) { if (elsBuf[q].usage == 0 && elsBuf[q].index == 0) ep = &elsBuf[q]; if (elsBuf[q].usage == 5 && elsBuf[q].index == 0) et = &elsBuf[q]; }
-			const Stream& st = dev.streams[et ? et->stream : 0];
-			if (ep && et && et->type == 3 && ep->type == 3 && st.vb && st.vb->data && st.stride)
-			{
-				float clk = dev.vsF[38 * 4];
-				uint32_t nv = dc.indexed ? dc.numVertices : (uint32_t)primVertices(dc.prim, dc.primCount);
-				uint32_t base = (uint32_t)std::max(0, dc.baseVertex) + (dc.indexed ? dc.minIndex : 0);
-				float bmin = 1e9f, bmax = -1e9f; uint32_t future = 0, dead = 0, n = 0;
-				for (uint32_t v = 0; v < nv && v < 4096; v++)
-				{
-					uint64_t off = (uint64_t)(base + v) * st.stride + st.offset;
-					if (off + std::max(et->offset, ep->offset) + 16 > st.vb->size) break;
-					const uint8_t* p = (const uint8_t*)guest::host(st.vb->data) + off;
-					float b, life; memcpy(&b, p + et->offset + 12, 4); memcpy(&life, p + ep->offset + 12, 4);
-					bmin = std::min(bmin, b); bmax = std::max(bmax, b); n++;
-					if (b > clk) future++;
-					if (clk - b > life) dead++;
-				}
-				nl++;
-				log("pdiag: frame %u vs %016llx clock c38 %.3f, %u verts birth %.3f..%.3f, born in the future %u, past lifetime %u", gFrameNo, (unsigned long long)vs->hash, clk, n, bmin, bmax, future, dead);
-			}
-		}
-	}
 	{
 		// interface scaling (HUD panels in the corners)
 		float axN = 0, ayN = 0, ax = 0, ay = 0;
@@ -2234,7 +2202,7 @@ static void presentImpl()
 		{
 			static int diagFrames = 0;
 			bool inGame = gUiWorldDraws >= 50;
-			gUiDiag = inGame && gUiScale > 1.001f && diagFrames < 3 && gFrameNo % 900 == 0;
+			gUiDiag = inGame && gUiScale > 1.001f && diagFrames < 3 && gFrameNo % 900 == 0 && verbose();   // ui-diag only with ra3_verbose
 			if (gUiDiag) { diagFrames++; log("ui-diag: frame %u", gFrameNo + 1); }
 		}
 		// the right column's extents only grow (the open build menu is the largest): its scale stays the same when menus open

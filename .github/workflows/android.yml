@@ -73,10 +73,9 @@ jobs:
           g++ -O2 -std=c++17 -Icapstone/include tools/lift.cpp tools/lift_pe.cpp capstone/b/libcapstone.a -o lift_pe
           ./analyze game/ra3_1.12.game game/ra3
           mkdir -p lifted
-          # RA3_GATES: calls the runtime may skip (6d18f0 = particle system update, throttled to 30 Hz in 60 fps mode;
-          #   it returns 1 = system still alive, 0 would destroy it)
+          # RA3_GATES=addr:pop[:eax]: calls the runtime may skip through ra3_gate (none at the moment)
           # RA3_HOOKS: debug hooks (log arguments/result of these functions): 9ff320 = archive (BIG) stream open by path
-          RA3_HOOKS=afa2a0 RA3_GATES=6d18f0:4:1 ./lift_pe game/ra3_1.12.game game/ra3.functions.txt --emit-dir lifted 96 | head -3
+          RA3_HOOKS=afa2a0 ./lift_pe game/ra3_1.12.game game/ra3.functions.txt --emit-dir lifted 96 | head -3
 
       # The generated code is identical between runs, so ccache makes rebuilds after runtime-only edits take minutes.
       - name: Set up ccache

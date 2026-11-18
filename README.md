@@ -49,7 +49,7 @@
 | 👆 **Touch controls** | Tap, long press, drag-select, pan, pinch zoom, camera rotation |
 | ⌨️ **Keyboard** | On-screen hotkey buttons and a full keyboard; physical keyboards work too |
 | 🌐 **Network** | Windows sockets on top of Android networking; the LAN menu opens — LAN play is being tested |
-| 🚀 **Launcher** | Start screen with language, cutscene, logging and 60 fps options, background file check |
+| 🚀 **Launcher** | Start screen with language, HUD size, cutscene and logging options, background file check |
 
 ## Requirements
 
@@ -94,9 +94,8 @@ The phone's volume keys keep working, and the screen stays on while the game run
 |---|---|---|
 | Interface language | detected | Every language installed in your game folder (`RA3_<language>_1.12.SkuDef`) |
 | Cutscenes | On | Intro, briefings and campaign videos |
-| Log file | On | Writes `/sdcard/ra3_native.log` — please attach it to bug reports |
+| Log file | Off in releases, on in nightly builds | Writes `/sdcard/ra3_native.log` — turn it on and attach the file to bug reports |
 | HUD size | 110% | Enlarges the minimap, build menu and other corner panels (100–200% in 10% steps) |
-| 60 FPS (experimental) | Off | Smoother picture, but construction animations break and white flashes can appear |
 
 ## Performance
 
@@ -114,7 +113,7 @@ The game logic itself is capped at 30 fps, like on PC. Rendering runs on its own
 - **Some laser weapons are invisible** (for example the King Oni's eye lasers). The effect is drawn but not visible; it is being investigated.
 - **Online play** — the original GameSpy servers were shut down in 2014. Support for the community C&C:Online servers is planned.
 - **LAN play** is new and largely untested.
-- **60 fps mode** breaks construction animations and can cause white flashes; it is experimental.
+- The game runs at **30 fps**, as on PC. An experimental 60 fps mode (`/sdcard/ra3_fps60`) exists but is not usable yet: the game's engine ties its logic and effects to the frame rate.
 - The game's interface is not scaled for small screens yet.
 
 Found something else? Please [open an issue](https://github.com/blackorange-sketch/RA3-Native/issues) with your device model and the `ra3_native.log` file.
@@ -152,7 +151,7 @@ Empty files with these names in `/sdcard` change the runtime's behaviour:
 | `ra3_prof` | CPU sampling profiler, report in the log every 30 s |
 | `ra3_fxstat` | Per-effect draw statistics |
 | `ra3_frame` | Full trace of two frames (and render-target dumps into `/sdcard/ra3_dump/` if that folder exists) |
-| `ra3_fps60` | 60 fps cap, same as the launcher option |
+| `ra3_fps60` | Experimental 60 fps cap (effects and game speed are still wrong) |
 | `ra3_fulltex` | Mali / PowerVR: load large textures at full resolution (uses about 4× more memory) |
 
 Remove them again for normal play — some of them slow the game down.

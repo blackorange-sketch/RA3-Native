@@ -190,8 +190,7 @@ public class LauncherActivity extends Activity {
         showUiScale();
 
         toggleRow(opts, "CUTSCENES", "Intro, briefings and campaign videos", "cutscenes", true);
-        toggleRow(opts, "LOG FILE", "Writes /sdcard/ra3_native.log for bug reports", "log", true);
-        toggleRow(opts, "60 FPS  (EXPERIMENTAL)", "Smoother picture; may break build animations and cause white flashes", "fps60", false);
+        toggleRow(opts, "LOG FILE", "Writes /sdcard/ra3_native.log for bug reports", "log", logDefault());
 
         warnText = label("", 10, YELLOW, false, 0f);
         warnText.setPadding(0, dp(8), 0, 0);
@@ -363,6 +362,9 @@ public class LauncherActivity extends Activity {
         showLanguage();
         checkFiles();
     }
+
+    // the log is on by default in test builds (nightly) and off in releases (it costs CPU time and storage)
+    static boolean logDefault() { return !Character.isDigit(BuildConfig.VERSION_NAME.isEmpty() ? 'x' : BuildConfig.VERSION_NAME.charAt(0)); }
 
     static final int[] UI_SCALES = {100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 200};
     TextView uiValue;
@@ -564,8 +566,7 @@ public class LauncherActivity extends Activity {
         StringBuilder cfg = new StringBuilder();
         cfg.append("language=").append(prefs.getString("language", "russian")).append('\n');
         cfg.append("cutscenes=").append(prefs.getBoolean("cutscenes", true) ? 1 : 0).append('\n');
-        cfg.append("log=").append(prefs.getBoolean("log", true) ? 1 : 0).append('\n');
-        cfg.append("fps60=").append(prefs.getBoolean("fps60", false) ? 1 : 0).append('\n');
+        cfg.append("log=").append(prefs.getBoolean("log", logDefault()) ? 1 : 0).append('\n');
         cfg.append("ui_scale=").append(prefs.getInt("ui_scale", 110)).append('\n');
         if (!gamePath.isEmpty()) cfg.append("gamepath=").append(gamePath).append('\n');
         try (FileOutputStream o = new FileOutputStream(new File(getFilesDir(), "launcher.cfg"))) {

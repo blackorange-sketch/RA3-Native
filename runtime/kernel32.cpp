@@ -281,99 +281,11 @@ namespace rt
 void fpsPinTick()
 {
 	if (!(gFps60 || gFps60b) || !gLimObj) return;
-	{
-		// diagnostics: which methods of TheFXParticleSystemManager (0xce3f04) run every frame
-		extern uint32_t gWatch[64]; extern std::atomic<uint32_t> gWatchCalls[64]; extern int gWatchN; extern uint32_t gWatchLo, gWatchHi;
-		static uint32_t frames = 0, f0 = 0;
-		frames++;
-		uint32_t mgr = guest::load<uint32_t>(0xce3f04);
-		if (!gWatchN && mgr > 0x400000 && mgr < 0x70000000)
-		{
-			uint32_t lo = 0xffffffffu, hi = 0;
-			for (int base = 0; base < 2; base++)
-			{
-				uint32_t vt = guest::load<uint32_t>(mgr + 4 * base);
-				if (vt < 0xbc7000 || vt >= 0xcab000) continue;
-				for (int k = 0; k < 30 && gWatchN < 64; k++)
-				{
-					uint32_t f = guest::load<uint32_t>(vt + 4 * k);
-					if (f < 0x401000 || f >= 0xbc7000) continue;
-					gWatch[gWatchN] = f; gWatchCalls[gWatchN] = 0; gWatchN++;
-					lo = std::min(lo, f); hi = std::max(hi, f);
-				}
-				log("fpsdiag: particle manager %08x vtable[%d] %08x", mgr, base, vt);
-			}
-			gWatchLo = lo; gWatchHi = hi; f0 = frames;
-
-		}
-		if (gWatchN && frames - f0 >= 600)
-		{
-			std::string o;
-			for (int i = 0; i < gWatchN; i++) { uint32_t n = gWatchCalls[i].exchange(0); if (n) { char b[48]; snprintf(b, sizeof b, " %08x:%.2f", gWatch[i], n / 600.0); o += b; } }
-			static int nl = 0;
-			if (nl++ < 6) log("fpsdiag: calls per frame of manager methods:%s", o.c_str());
-			f0 = frames;
-		}
-	}
-	{
-		// particle systems advance a fixed step per update, made for 30 updates per second: at a higher cap they
-		// update only on every (cap / 30)-th frame (0x6d18f0 is gated, see ra3_gate)
-		extern bool gParticleSkip;
-		static const bool off = access("/sdcard/ra3_pthrottle", F_OK) != 0;   // experiment, off by default (lights blinked)
-		uint32_t cap = guest::load<uint32_t>(0xcaf9d4);
-		static float acc = 0.f;
-		if (off || cap <= 30) gParticleSkip = false;
-		else
-		{
-			acc += 30.f / (float)cap;
-			gParticleSkip = acc < 1.f;
-			if (!gParticleSkip) acc -= 1.f;
-			static bool logged = false;
-			if (!logged) { logged = true; log("fps60: particle systems update at 30 Hz (every %.2f frames)", cap / 30.f); }
-		}
-	}
 	static const bool noPin = access("/sdcard/ra3_fpsnopin", F_OK) == 0;   // experiment: let the game lower it on slow frames
 	if (noPin) return;
 	// variant B keeps the game's 30 fps cap (everything it derives stays as on PC) and only shortens the wait
 	uint32_t want = gFps60b ? 4 : guest::load<uint32_t>(0xcaf9d4) / std::max(1u, guest::load<uint32_t>(0xcaf9d0));
-	if (gFps60)
-	{
-		// Real-time speed: the game advances one logic step (1/15 s) every k drawn frames, so it runs at real speed only
-		// while it actually draws 15 * k frames per second. Measure how fast the phone can draw (frame time without the
-		// limiter's wait) and choose k so that 15 * k is reachable: 60, 45 or 30 fps. The frame cap follows k, so
-		// everything the game times by the cap (shader clock, particles, frame wait) stays consistent with it.
-		static uint32_t topCap = 0, curK = 0, pendK = 0, pendN = 0;
-		static uint64_t lastT = 0, lastW = 0;
-		static double workMs = 20.0;
-		if (!topCap) { topCap = guest::load<uint32_t>(0xcaf9d4); curK = topCap / 15; }
-		static const bool fixedCap = access("/sdcard/ra3_fpsfixedcap", F_OK) == 0;
-		uint64_t t = (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-		uint64_t w = gLimWaitTotal.load();
-		if (lastT && t > lastT)
-		{
-			double frame = (t - lastT) / 1000.0, wait = (w - lastW) / 1000.0;
-			double work = std::max(1.0, frame - wait);
-			if (work < 200.0) workMs += (work - workMs) * 0.05;   // ~1 s average
-		}
-		lastT = t; lastW = w;
-		double canFps = 1000.0 / workMs;
-		uint32_t maxK = topCap / 15, k2 = (uint32_t)std::floor(canFps * 0.95 / 15.0);
-		k2 = std::max(2u, std::min(maxK, k2));
-		if (k2 != curK)
-		{
-			// change only when it holds for a while (going up needs longer, to avoid see-sawing)
-			if (k2 == pendK) pendN++; else { pendK = k2; pendN = 0; }
-			if (pendN > (k2 > curK ? 90u : 30u))
-			{
-				curK = k2; pendN = 0;
-				if (!fixedCap) guest::store<uint32_t>(0xcaf9d4, 15 * curK);
-				static int nl = 0;
-				if (nl++ < 40) log("fps60: drawing about %.0f fps -> %u frames per logic step (%u fps target)", canFps, curK, 15 * curK);
-			}
-		}
-		else pendN = 0;
-		want = curK;
-	}
+
 	uint32_t k = guest::load<uint32_t>(gLimObj + 0x17c);
 	if (k == want || k == 0 || k > 16) return;
 	static int n = 0;
