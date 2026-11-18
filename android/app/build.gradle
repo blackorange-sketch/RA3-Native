@@ -5,7 +5,7 @@ android {
     compileSdk 34
     defaultConfig {
         applicationId 'org.ra3native'
-        minSdk 26
+        minSdk 29
         targetSdk 34
         versionCode((project.findProperty('versionCode') ?: '1') as Integer)
         versionName(project.findProperty('versionName') ?: 'dev')

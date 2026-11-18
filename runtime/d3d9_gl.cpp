@@ -1429,8 +1429,9 @@ static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, 
 	auto anchorOf = [&](int c, float& cx, float& cy) { cx = (c - 1) & 1 ? (float)vx + W : (float)vx; cy = (c - 1) & 2 ? (float)vy + H : (float)vy; };
 	auto addRect = [&](float a0, float b0, float a1, float b1, float cx, float cy, float s) { if (gUiCur.size() < 4000) gUiCur.push_back({cx + (a0 - cx) * s, cy + (b0 - cy) * s, cx + (a1 - cx) * s, cy + (b1 - cy) * s, cx, cy, s}); };
 	int c = corner(x0, y0, x1, y1);
-	// a tooltip or popup that ends at the left edge of the right column belongs to it (it is anchored there)
-	bool attached = !c && gUiColLeft < 1e8f && x1 >= gUiColLeft - 0.04f * W && x0 < gUiColLeft && x1 <= gUiColLeft + 0.20f * W && y1 <= vy + 0.75f * H;
+	// a tooltip or popup that ends at the left edge of the right column belongs to it (it is anchored there);
+	// tooltips of the lower build rows reach well below the middle of the screen
+	bool attached = !c && gUiColLeft < 1e8f && x1 >= gUiColLeft - 0.04f * W && x0 < gUiColLeft && x1 <= gUiColLeft + 0.20f * W && y1 <= vy + 0.90f * H;
 	if (attached) c = 2;
 	if (c == 2 && !attached) gUiCurColLeft = std::min(gUiCurColLeft, x0);
 	// unit markers, health bars and names come first in a frame: only what follows the first big corner panel is HUD

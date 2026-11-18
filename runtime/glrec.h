@@ -19,7 +19,6 @@
 #include <deque>
 #include <mutex>
 #include <pthread.h>
-#include <sched.h>
 #include <thread>
 #include <tuple>
 #include <type_traits>
@@ -34,12 +33,29 @@ extern pthread_t gRenderThread;           // the render thread (0 before it star
 // pthread_self() is a plain TLS-register read on bionic; a thread_local bool went through emutls here
 inline bool active() { return gOn && !pthread_equal(pthread_self(), gRenderThread); }
 
-// recursive producer lock: uncontended lock/unlock are a few inline atomics (std::recursive_mutex cost a
-// pthread call + gettid per queued GL command). Contention (two game threads drawing at once) is rare: spin
-// briefly, then yield.
+// recursive producer lock: the owner check is an inline relaxed load (std::recursive_mutex cost a pthread
+// call + tid lookup per queued GL command). Other game threads do queue GL work too (the profile showed
+// them colliding), so the inner lock is a real mutex that sleeps instead of spinning.
 struct RecLock
 {
 	std::atomic<pthread_t> owner{0};
+	std::mutex m;
+	int depth = 0;
+	void lock()
+	{
+		pthread_t me = pthread_self();
+		if (owner.load(std::memory_order_relaxed) == me) { depth++; return; }
+		m.lock();
+		owner.store(me, std::memory_order_relaxed);
+		depth = 1;
+	}
+	void unlock()
+	{
+		if (--depth) return;
+		owner.store(0, std::memory_order_relaxed);
+		m.unlock();
+	}
+};
 	std::atomic<bool> held{false};
 	int depth = 0;
 	void lock()
