@@ -374,6 +374,12 @@ void bindTargets()
 	}
 	GLuint tex = ensureTexture(rt);
 	{
+		// D3DUSAGE_AUTOGENMIPMAP render target (the 128x128 environment cube): the lower levels must be rebuilt before it is
+		// sampled, otherwise they hold whatever the GPU memory contained (noisy blue reflections after loading a save)
+		Obj* ow = texOwner(rt);
+		if (ow->levels > 1 && (ow->usage & 0x400) && (rt->iface != ISurface || rt->level == 0)) ow->mipDirty = true;
+	}
+	{
 		// same colour/depth targets as the previous draw: attachments are still in place
 		Obj* ds0 = dev.ds && dev.ds->fmt != 0x4c4c554e ? dev.ds : nullptr;
 		GLuint dt0 = ds0 ? ensureTexture(ds0) : 0;
@@ -786,6 +792,12 @@ void bindSamplers(Prog* p, ShaderObj* ps)
 				glBindTexture(target, bindName);
 				if (gTexBindDirty) { memset(boundTex, 0xff, sizeof boundTex); memset(samplerBound, 0, sizeof samplerBound); gTexBindDirty = false; activeUnit = i; }
 				boundTex[i][ti] = bindName;
+			}
+			if (name && texOwner(t)->mipDirty)
+			{
+				if (activeUnit != i) { glActiveTexture(GL_TEXTURE0 + i); activeUnit = i; }
+				glGenerateMipmap(target);
+				texOwner(t)->mipDirty = false;
 			}
 			if (!gSamplers[i]) glGenSamplers(1, &gSamplers[i]);
 			if (!samplerBound[i]) { glBindSampler(i, gSamplers[i]); samplerBound[i] = true; }

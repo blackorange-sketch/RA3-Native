@@ -50,6 +50,7 @@ struct Obj
 	uint32_t ver = 1, glVer = 0;
 	uint32_t dirtyLo = 0xffffffffu, dirtyHi = 0, glSize = 0; // buffer: locked range since the last upload      // content version / uploaded version
 	bool rtTex = false;               // contents live on the GPU (render target)
+	bool mipDirty = false;            // auto-mipmapped render target drawn to since its mip chain was last generated
 	uint32_t lastUse = 0;             // frame of the last draw / attachment use
 	bool released = false;            // refcount reached zero: queued for reclamation
 };
