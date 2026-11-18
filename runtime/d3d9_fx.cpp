@@ -3,6 +3,7 @@ namespace rt { extern bool gFps60; }
 // ID3DXEffect: parameter storage and handles, technique/pass application onto the device state.
 #include <unistd.h>
 #include <set>
+#include <atomic>
 #include <mutex>
 #include <tuple>
 
@@ -18,7 +19,26 @@ namespace d3d
 namespace
 {
 struct HRec { FxInfo* fx; int kind; uint32_t a, b, c; };   // kind: 1 param, 2 tech, 3 pass, 4/5/6 annotation of param/tech/pass
-std::vector<HRec> hrecs;
+// append-only, stable addresses, lock-free reads: the effect setters resolve a handle on every call
+template <class T> struct StableVec
+{
+	static constexpr uint32_t kB = 1024, kN = 4096;
+	std::atomic<T*> blk[kN] = {};
+	std::atomic<uint32_t> n{0};
+	uint32_t push(const T& v)   // writers serialised by hMu
+	{
+		uint32_t i = n.load(std::memory_order_relaxed);
+		if (i >= kB * kN) fatal("fx: handle table full");
+		T* b = blk[i / kB].load(std::memory_order_relaxed);
+		if (!b) { b = new T[kB](); blk[i / kB].store(b, std::memory_order_relaxed); }
+		b[i % kB] = v;
+		n.store(i + 1, std::memory_order_release);
+		return i;
+	}
+	uint32_t size() const { return n.load(std::memory_order_acquire); }
+	const T* at(uint32_t i) const { return i < size() ? &blk[i / kB].load(std::memory_order_relaxed)[i % kB] : nullptr; }
+};
+StableVec<HRec> hrecs;
 std::map<std::tuple<FxInfo*, int, uint32_t, uint32_t, uint32_t>, uint32_t> hmap;
 std::mutex hMu;
 constexpr uint32_t HBase = 0x7e000000;
@@ -29,17 +49,14 @@ uint32_t mkHandle(FxInfo* fx, int kind, uint32_t a, uint32_t b = 0, uint32_t c =
 	auto k = std::make_tuple(fx, kind, a, b, c);
 	auto it = hmap.find(k);
 	if (it != hmap.end()) return it->second;
-	hrecs.push_back({fx, kind, a, b, c});
-	uint32_t h = HBase + 4 * (uint32_t)hrecs.size();
+	uint32_t h = HBase + 4 * (hrecs.push({fx, kind, a, b, c}) + 1);
 	hmap[k] = h;
 	return h;
 }
 const HRec* getRec(uint32_t h)
 {
 	if (h <= HBase || h > HBase + 0x01000000) return nullptr;
-	std::lock_guard<std::mutex> l(hMu);
-	uint32_t i = (h - HBase) / 4 - 1;
-	return i < hrecs.size() ? &hrecs[i] : nullptr;
+	return hrecs.at((h - HBase) / 4 - 1);
 }
 FxInfo* F(Obj* o) { return o->fx.get(); }
 // Resolves a technique handle (record or name string).
@@ -80,14 +97,15 @@ const std::vector<FxAnn>* annListOf(Obj* o, uint32_t h, int* kind, uint32_t* a, 
 
 // ---- sub-parameter references (members, elements): a handle carries the parameter index, scalar offset and a type id
 std::deque<FxType> gSynth;
-std::vector<const FxType*> gTypes{nullptr};
+StableVec<const FxType*> gTypes;   // index 0: none
 std::map<const FxType*, uint32_t> gTypeIds;
 uint32_t typeId(const FxType* t)
 {
+	std::lock_guard<std::mutex> l(hMu);
+	if (!gTypes.size()) gTypes.push(nullptr);
 	auto it = gTypeIds.find(t);
 	if (it != gTypeIds.end()) return it->second;
-	gTypes.push_back(t);
-	return gTypeIds[t] = (uint32_t)gTypes.size() - 1;
+	return gTypeIds[t] = gTypes.push(t);
 }
 const FxType* oneElement(const FxType& t)
 {
@@ -113,10 +131,8 @@ PRef refOf(Obj* o, uint32_t h)
 		if (rc->kind != 1 || rc->fx != fx || rc->a >= fx->params.size()) return r;
 		r.p = &fx->params[rc->a];
 		r.off = rc->b;
-		{
-			std::lock_guard<std::mutex> l(hMu);
-			r.ty = rc->c && rc->c < gTypes.size() ? gTypes[rc->c] : &r.p->ty;
-		}
+		const FxType* const* t = rc->c ? gTypes.at(rc->c) : nullptr;
+		r.ty = t ? *t : &r.p->ty;
 		return r;
 	}
 	if (h)   // plain name
@@ -485,7 +501,7 @@ static void noteBad(const char* m, uint32_t h, const PRef& r)
 	static int n = 0;
 	if (!r.valid() && n >= 25) return;
 	if (!r.valid()) { n++; const HRec* rc = getRec(h); log("fx: %s with invalid handle %x (rec %p kind %d)", m, h, (const void*)rc, rc ? (int)rc->kind : -1); }
-	else
+	else if (verbose())   // first write of each param (a set lookup per call: diagnostics only)
 	{
 		static std::set<const void*> seen;
 		static int m2 = 0;
@@ -502,7 +518,7 @@ H("ID3DXEffect::SetVector")
 	{
 		writeVals(r, (const uint32_t*)guest::host(ARG(2)), std::min(r.ty->scalars(), 4u), 3);
 		noteTime(c, r, guest::host(ARG(2)), "SetVector");
-		if (r.p->name == "EyePosition")
+		if (verbose() && r.p->name == "EyePosition")
 		{
 			static int n = 0; const float* v = (const float*)guest::host(ARG(2));
 			if ((v[0] != 0.f || v[1] != 0.f || v[2] != 0.f) && n++ < 6) log("fx: EyePosition %g %g %g", v[0], v[1], v[2]);
@@ -539,7 +555,7 @@ static void setMatrices(CPU* c, Obj* o, bool transpose, bool array, bool pointer
 			e.off += i * stride;
 			const float* m = pointers ? (const float*)guest::host(guest::load<uint32_t>(ARG(2) + 4 * i)) : (const float*)guest::host(ARG(2) + 64 * i);
 			putMatrix(e, m, transpose);
-			if (r.p->name == "ViewProjection")
+			if (verbose() && r.p->name == "ViewProjection")
 			{
 				static int total = 0, nonzero = 0, shown = 0;
 				bool nz = false;

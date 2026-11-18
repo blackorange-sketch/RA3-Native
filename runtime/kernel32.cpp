@@ -34,6 +34,8 @@ std::map<uint32_t, uint32_t> gWaitEsp, gWaitTop;   // tid -> (handle, timeout) o
 std::atomic<uint64_t> gReadCalls{0}, gReadBytes{0}, gWaitCalls{0}, gReadUs{0};
 std::mutex waitMu;               // one lock + condvar for all waitable objects: simple and correct
 std::condition_variable waitCv;
+int gWaiters = 0; // threads blocked in waitCv (guarded by waitMu)
+inline void wakeWaiters() { if (gWaiters) waitCv.notify_all(); }
 
 uint32_t bump(uint32_t size)
 {
@@ -131,7 +133,7 @@ void threadMain(ThreadObj* t)
 	t->exitCode = r;
 	t->signaled = true;
 	t->done = true;
-	waitCv.notify_all();
+	wakeWaiters();
 }
 
 std::string winTimeBase;
@@ -335,7 +337,7 @@ IMP_STD(K, CreateEventA, 4)
 	SET(newHandle(w, KEvent));
 }
 IMP_STD(K, OpenEventA, 3) { SET(0); setLastError(2); }
-IMP_STD(K, SetEvent, 1) { if (auto* w = asWaitable(ARG(0))) { std::lock_guard<std::mutex> l(waitMu); w->signaled = true; w->sets++; waitCv.notify_all(); } SET(1); }
+IMP_STD(K, SetEvent, 1) { if (auto* w = asWaitable(ARG(0))) { std::lock_guard<std::mutex> l(waitMu); w->signaled = true; w->sets++; wakeWaiters(); } SET(1); }
 IMP_STD(K, ResetEvent, 1) { if (auto* w = asWaitable(ARG(0))) { std::lock_guard<std::mutex> l(waitMu); w->signaled = false; } SET(1); }
 static void createMutex(CPU* c, int initialOwnerArg)
 {
@@ -351,7 +353,7 @@ IMP_STD(K, ReleaseMutex, 1)
 	if (auto* w = (Waitable*)getHandle(ARG(0), KMutex))
 	{
 		std::lock_guard<std::mutex> l(waitMu);
-		if (w->owner == thisThread().tid && --w->depth == 0) { w->owner = 0; waitCv.notify_all(); }
+		if (w->owner == thisThread().tid && --w->depth == 0) { w->owner = 0; wakeWaiters(); }
 	}
 	SET(1);
 }
@@ -370,7 +372,7 @@ IMP_STD(K, ReleaseSemaphore, 3)
 	if (ARG(2)) guest::store<int32_t>(ARG(2), w->count);
 	w->count += (int)ARG(1);
 	w->sets++;
-	waitCv.notify_all();
+	wakeWaiters();
 	SET(1);
 }
 IMP_STD(K, WaitForSingleObject, 2)
@@ -384,8 +386,9 @@ IMP_STD(K, WaitForSingleObject, 2)
 	gWaiting[tid] = {ARG(0), ms};
 	gWaitEsp[tid] = c->r[ESP];
 	gWaitTop[tid] = thisThread().stackTop;
-	if (ms == 0xffffffff) { waitCv.wait(l, [&] { return waitReady(w, tid); }); gWaiting.erase(tid); SET(0); }
-	else { bool r = waitCv.wait_for(l, std::chrono::milliseconds(ms), [&] { return waitReady(w, tid); }); gWaiting.erase(tid); SET(r ? 0 : 0x102); }
+	gWaiters++;
+	if (ms == 0xffffffff) { waitCv.wait(l, [&] { return waitReady(w, tid); }); gWaiters--; gWaiting.erase(tid); SET(0); }
+	else { bool r = waitCv.wait_for(l, std::chrono::milliseconds(ms), [&] { return waitReady(w, tid); }); gWaiters--; gWaiting.erase(tid); SET(r ? 0 : 0x102); }
 }
 void dumpWaiters()
 {
@@ -1029,7 +1032,7 @@ uint32_t eventCreate(bool manual, bool initial)
 	return newHandle(w, KEvent);
 }
 uint32_t getLastError() { return tctx.teb ? guest::load<uint32_t>(tctx.teb + 0x34) : 0; }
-void eventSet(uint32_t h) { if (auto* w = asWaitable(h)) { std::lock_guard<std::mutex> l(waitMu); w->signaled = true; w->sets++; waitCv.notify_all(); } }
+void eventSet(uint32_t h) { if (auto* w = asWaitable(h)) { std::lock_guard<std::mutex> l(waitMu); w->signaled = true; w->sets++; wakeWaiters(); } }
 void eventReset(uint32_t h) { if (auto* w = asWaitable(h)) { std::lock_guard<std::mutex> l(waitMu); w->signaled = false; } }
 // index of the signalled object (all: 0 once all are), -1 on timeout
 int waitHandles(const uint32_t* hs, int n, bool all, uint32_t ms)
@@ -1049,8 +1052,10 @@ int waitHandles(const uint32_t* hs, int n, bool all, uint32_t ms)
 		return false;
 	};
 	std::unique_lock<std::mutex> l(waitMu);
+	gWaiters++;
 	if (ms == 0xffffffffu) waitCv.wait(l, ready);
 	else waitCv.wait_for(l, std::chrono::milliseconds(ms), ready);
+	gWaiters--;
 	return hit;
 }
 }

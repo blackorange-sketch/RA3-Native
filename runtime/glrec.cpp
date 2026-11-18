@@ -13,20 +13,23 @@ namespace d3d
 namespace rec
 {
 bool gOn = false;
-thread_local bool tlRender = false;
+pthread_t gRenderThread = 0;
+RecLock gProducer;
 GLint gUnpackAlign = 4;
 
 namespace
 {
 struct Chunk { uint8_t* buf; size_t cap, used; };
 const size_t kChunk = 64u << 10;
-std::recursive_mutex pm;                       // producers (game threads)
+RecLock& pm = gProducer;                      // producers (game threads)
 std::mutex qm;                                 // queue
 std::condition_variable qcv, doneCv;
 std::deque<Chunk*> ready, freeList;
 Chunk* cur = nullptr;
 uint64_t submitted = 0, executed = 0;          // chunks (guarded by qm)
-uint64_t framesSub = 0, framesDone = 0;        // frame markers (guarded by qm)
+uint64_t framesSub = 0, framesDone = 0;
+bool renderWaiting = false;                    // render thread blocked on qcv (guarded by qm)
+int doneWaiters = 0;                           // producers blocked on doneCv (guarded by qm)        // frame markers (guarded by qm)
 std::atomic<uint64_t> busyUs{0};
 std::atomic<int> gRenderTid{0};
 
@@ -49,12 +52,14 @@ void publishLocked()   // producer lock held
 {
 	if (!cur) return;
 	if (!cur->used) return;
+	bool wake;
 	{
 		std::lock_guard<std::mutex> l(qm);
 		ready.push_back(cur);
 		submitted++;
+		wake = renderWaiting;
 	}
-	qcv.notify_one();
+	if (wake) qcv.notify_one();
 	cur = nullptr;
 }
 
@@ -65,7 +70,7 @@ void renderLoop()
 		Chunk* c;
 		{
 			std::unique_lock<std::mutex> l(qm);
-			qcv.wait(l, [] { return !ready.empty(); });
+			if (ready.empty()) { renderWaiting = true; qcv.wait(l, [] { return !ready.empty(); }); renderWaiting = false; }
 			c = ready.front(); ready.pop_front();
 		}
 		uint64_t t0 = nowUs();
@@ -77,18 +82,19 @@ void renderLoop()
 			cmd->run(cmd + 1);
 		}
 		busyUs += nowUs() - t0;
+		bool wake;
 		{
 			std::lock_guard<std::mutex> l(qm);
 			executed++;
 			if (c->cap <= kChunk && freeList.size() < 64) freeList.push_back(c);
 			else { free(c->buf); delete c; }
+			wake = doneWaiters > 0;
 		}
-		doneCv.notify_all();
+		if (wake) doneCv.notify_all();
 	}
 }
 }   // namespace
 
-std::recursive_mutex& producerLock() { return pm; }
 
 void* reserve(size_t payload, void (*run)(void*))
 {
@@ -108,7 +114,7 @@ void* reserve(size_t payload, void (*run)(void*))
 
 void publish()
 {
-	std::lock_guard<std::recursive_mutex> l(pm);
+	std::lock_guard<RecLock> l(pm);
 	publishLocked();
 }
 
@@ -117,13 +123,15 @@ void waitIdle()
 	if (!active()) return;
 	uint64_t target;
 	{
-		std::lock_guard<std::recursive_mutex> l(pm);
+		std::lock_guard<RecLock> l(pm);
 		publishLocked();
 		std::lock_guard<std::mutex> q2(qm);
 		target = submitted;
 	}
 	std::unique_lock<std::mutex> l(qm);
+	doneWaiters++;
 	doneCv.wait(l, [&] { return executed >= target; });
+	doneWaiters--;
 }
 
 void endFrame()
@@ -132,20 +140,22 @@ void endFrame()
 	q([] { std::lock_guard<std::mutex> l(qm); framesDone++; });
 	uint64_t mine;
 	{
-		std::lock_guard<std::recursive_mutex> l(pm);
+		std::lock_guard<RecLock> l(pm);
 		publishLocked();
 		std::lock_guard<std::mutex> q2(qm);
 		mine = ++framesSub;
 	}
 	// at most one frame queued behind the one being rendered
 	std::unique_lock<std::mutex> l(qm);
+	doneWaiters++;
 	doneCv.wait(l, [&] { return framesDone + 1 >= mine; });
+	doneWaiters--;
 }
 
 void start(void (*threadInit)())
 {
 	std::thread([threadInit] {
-		tlRender = true;
+		gRenderThread = pthread_self();
 		setpriority(PRIO_PROCESS, 0, -10);
 		gRenderTid = (int)syscall(SYS_gettid);
 		rt::log("GL: render thread tid %d", gRenderTid.load());

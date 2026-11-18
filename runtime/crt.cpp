@@ -491,6 +491,11 @@ IMP_C(DLL, _except_handler4_common) { fatal("_except_handler4_common invoked (SE
 IMP_C(DLL, longjmp)
 {
 	uint32_t buf = ARG(0), val = ARG(1);
+	// each longjmp is a C++ throw through the lifted frames (costly unwinding): count them, the profile showed
+	// libunwind time. Logged at powers of two so a hot path shows up without flooding the log.
+	static std::atomic<uint32_t> n{0};
+	uint32_t k = ++n;
+	if ((k & (k - 1)) == 0) log("longjmp #%u: to eip %08x from %08x", k, guest::load<uint32_t>(buf + 20), guest::load<uint32_t>(c->r[ESP]));
 	throw GuestLongjmp{buf, guest::load<uint32_t>(buf + 16), guest::load<uint32_t>(buf + 20), val ? val : 1};
 }
 IMP_C(DLL, _setjmp3)   // MSVC jmp_buf: Ebp, Ebx, Edi, Esi, Esp, Eip

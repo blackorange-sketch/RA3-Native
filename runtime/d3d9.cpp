@@ -167,6 +167,9 @@ Obj* objectAt(uint32_t addr)
 			if (o && o->addr == addr) return o;
 		}
 	}
+	// every object is in the table while it has room (entries are never removed), so a miss is final: the
+	// profile showed the mutex+map fallback being hit often for non-object pointers
+	if (objCount.load(std::memory_order_relaxed) < kMaxObjs) return nullptr;
 	std::lock_guard<std::mutex> l(objMu);
 	auto it = objs.find(addr);
 	return it == objs.end() ? nullptr : it->second;

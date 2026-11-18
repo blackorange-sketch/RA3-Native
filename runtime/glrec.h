@@ -18,6 +18,8 @@
 #include <cstring>
 #include <deque>
 #include <mutex>
+#include <pthread.h>
+#include <sched.h>
 #include <thread>
 #include <tuple>
 #include <type_traits>
@@ -28,14 +30,41 @@ namespace d3d
 namespace rec
 {
 extern bool gOn;                         // threaded mode (decided once, before the first command)
-extern thread_local bool tlRender;       // this thread is the render thread
-inline bool active() { return gOn && !tlRender; }
+extern pthread_t gRenderThread;           // the render thread (0 before it starts)
+// pthread_self() is a plain TLS-register read on bionic; a thread_local bool went through emutls here
+inline bool active() { return gOn && !pthread_equal(pthread_self(), gRenderThread); }
+
+// recursive producer lock: uncontended lock/unlock are a few inline atomics (std::recursive_mutex cost a
+// pthread call + gettid per queued GL command). Contention (two game threads drawing at once) is rare: spin
+// briefly, then yield.
+struct RecLock
+{
+	std::atomic<pthread_t> owner{0};
+	std::atomic<bool> held{false};
+	int depth = 0;
+	void lock()
+	{
+		pthread_t me = pthread_self();
+		if (owner.load(std::memory_order_relaxed) == me) { depth++; return; }
+		for (int i = 0; held.exchange(true, std::memory_order_acquire); i++)
+			if (i > 64) sched_yield();
+		owner.store(me, std::memory_order_relaxed);
+		depth = 1;
+	}
+	void unlock()
+	{
+		if (--depth) return;
+		owner.store(0, std::memory_order_relaxed);
+		held.store(false, std::memory_order_release);
+	}
+};
 
 struct Cmd { void (*run)(void*); uint32_t total; uint32_t pad; };
 
 // reserve one command of `payload` bytes (+ extra); returns the payload address. Caller holds the producer lock.
 void* reserve(size_t payload, void (*run)(void*));
-std::recursive_mutex& producerLock();
+extern RecLock gProducer;
+inline RecLock& producerLock() { return gProducer; }
 void publish();                          // hand the current chunk to the render thread
 void waitIdle();                         // until everything queued so far has executed
 void endFrame();                         // frame boundary: publish, and keep at most one frame in flight
@@ -48,7 +77,7 @@ template <class T> static void runAndDestroy(void* p) { T* t = (T*)p; (*t)(); t-
 template <class F> inline void q(F&& f)
 {
 	using T = typename std::decay<F>::type;
-	std::lock_guard<std::recursive_mutex> l(producerLock());
+	std::lock_guard<RecLock> l(producerLock());
 	void* p = reserve(sizeof(T), &runAndDestroy<T>);
 	new (p) T(std::forward<F>(f));
 }
@@ -57,7 +86,7 @@ template <class F> inline void q(F&& f)
 template <class Make> inline void qd(const void* src, size_t n, Make make)
 {
 	using T = decltype(make((const uint8_t*)nullptr));
-	std::lock_guard<std::recursive_mutex> l(producerLock());
+	std::lock_guard<RecLock> l(producerLock());
 	size_t tsz = (sizeof(T) + 15) & ~(size_t)15;
 	void* p = reserve(tsz + n, &runAndDestroy<T>);
 	uint8_t* data = (uint8_t*)p + tsz;

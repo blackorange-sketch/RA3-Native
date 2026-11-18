@@ -396,6 +396,12 @@ void call_target(CPU* c, uint32_t addr)
 	#ifdef RA3_TRACE
 	{ uint32_t i_ = ra3_ring_pos++ & 255; ra3_ring[i_] = 0xc0000000u ^ addr; ra3_ring_ra[i_] = 0; }   // marker: indirect call target
 	#endif
+	// indirect calls (virtual methods, function pointers) are frequent: cache guest address -> table index.
+	// Checked first: only lifted functions are cached, imports go through the stub lookup below.
+	static std::atomic<uint64_t> cache[1u << 16];
+	uint32_t slot = (addr ^ (addr >> 16)) & ((1u << 16) - 1);
+	uint64_t ce = cache[slot].load(std::memory_order_relaxed);
+	if ((uint32_t)ce == addr && addr) { lifted_table[ce >> 32].fn(c); return; }
 	if (auto* e = imports::lookup(addr))
 	{
 		if (!e->fn) fatal("unimplemented import %s!%s (called from guest %08x)", e->dll.c_str(), e->name.c_str(), guest::load<uint32_t>(c->r[ESP]));
@@ -407,11 +413,6 @@ void call_target(CPU* c, uint32_t addr)
 		c->r[ESP] += 4 + e->pop;
 		return;
 	}
-	// indirect calls (virtual methods, function pointers) are frequent: cache guest address -> table index
-	static std::atomic<uint64_t> cache[1u << 14];
-	uint32_t slot = (addr ^ (addr >> 14)) & ((1u << 14) - 1);
-	uint64_t ce = cache[slot].load(std::memory_order_relaxed);
-	if ((uint32_t)ce == addr && addr) { lifted_table[ce >> 32].fn(c); return; }
 	unsigned lo = 0, hi = lifted_count;
 	while (lo < hi)
 	{
