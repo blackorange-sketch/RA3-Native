@@ -430,8 +430,14 @@ static void noteTime(CPU* c, const PRef& r, const void* v, const char* how)
 	if (n >= 40 || us - lastUs < 1000000) return;
 	lastUs = us; n++;
 	float f; memcpy(&f, v, 4);
-	log("fxtime: %s Time=%.4f at %.3f s, frame %u, fps60 %d, caller %08x %08x", how, f, us / 1e6, glr::frameNo(), ::rt::gFps60 ? 1 : 0,
-	    guest::load<uint32_t>(c->r[ESP]), guest::load<uint32_t>(c->r[EBP] + 4));
+	// return addresses: the stack words that point into the game's code (EBP is not a frame pointer here)
+	std::string ra;
+	for (uint32_t k = 0, found = 0; k < 64 && found < 6; k++)
+	{
+		uint32_t w = guest::load<uint32_t>(c->r[ESP] + 4 * k);
+		if (w >= 0x401000 && w < 0xa80000) { char b[12]; snprintf(b, sizeof b, " %08x", w); ra += b; found++; }
+	}
+	log("fxtime: %s Time=%.4f at %.3f s, frame %u, fps60 %d, callers%s", how, f, us / 1e6, glr::frameNo(), ::rt::gFps60 ? 1 : 0, ra.c_str());
 }
 H("ID3DXEffect::SetValue")
 {
