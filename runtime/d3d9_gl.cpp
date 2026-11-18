@@ -135,9 +135,57 @@ TexFmt texFmtOf(uint32_t f)
 	return t;
 }
 
+// ---- software DXT1/3/5 decoder for GPUs without GL_EXT_texture_compression_s3tc (Mali, PowerVR)
+static void dxtColors(const uint8_t* b, uint8_t c[4][4], bool dxt1)
+{
+	uint16_t c0 = b[0] | (b[1] << 8), c1 = b[2] | (b[3] << 8);
+	auto rgb = [](uint16_t v, uint8_t* d) { d[0] = (uint8_t)(((v >> 11) & 31) * 255 / 31); d[1] = (uint8_t)(((v >> 5) & 63) * 255 / 63); d[2] = (uint8_t)((v & 31) * 255 / 31); d[3] = 255; };
+	rgb(c0, c[0]); rgb(c1, c[1]);
+	if (!dxt1 || c0 > c1)
+		for (int k = 0; k < 3; k++) { c[2][k] = (uint8_t)((2 * c[0][k] + c[1][k]) / 3); c[3][k] = (uint8_t)((c[0][k] + 2 * c[1][k]) / 3); }
+	else
+		for (int k = 0; k < 3; k++) { c[2][k] = (uint8_t)((c[0][k] + c[1][k]) / 2); c[3][k] = 0; }
+	c[2][3] = 255; c[3][3] = (dxt1 && c0 <= c1) ? 0 : 255;
+}
+static void decodeDxt(uint32_t fmt, const uint8_t* src, uint32_t w, uint32_t h, std::vector<uint8_t>& out)
+{
+	out.assign((size_t)w * h * 4, 0);
+	bool dxt1 = fmt == 0x31545844, dxt3 = fmt == 0x33545844;
+	uint32_t bwk = (w + 3) / 4, bhk = (h + 3) / 4, bs = dxt1 ? 8 : 16;
+	for (uint32_t by = 0; by < bhk; by++)
+		for (uint32_t bx = 0; bx < bwk; bx++)
+		{
+			const uint8_t* b = src + ((size_t)by * bwk + bx) * bs;
+			uint8_t a[16];
+			for (int i = 0; i < 16; i++) a[i] = 255;
+			if (dxt3) for (int i = 0; i < 16; i++) a[i] = (uint8_t)(((b[i / 2] >> ((i & 1) * 4)) & 15) * 17);
+			else if (!dxt1)
+			{
+				uint8_t a0 = b[0], a1 = b[1], t[8] = {a0, a1};
+				if (a0 > a1) for (int k = 1; k < 7; k++) t[k + 1] = (uint8_t)(((7 - k) * a0 + k * a1) / 7);
+				else { for (int k = 1; k < 5; k++) t[k + 1] = (uint8_t)(((5 - k) * a0 + k * a1) / 5); t[6] = 0; t[7] = 255; }
+				uint64_t bits = 0; for (int k = 0; k < 6; k++) bits |= (uint64_t)b[2 + k] << (8 * k);
+				for (int i = 0; i < 16; i++) a[i] = t[(bits >> (3 * i)) & 7];
+			}
+			const uint8_t* cb = dxt1 ? b : b + 8;
+			uint8_t c[4][4];
+			dxtColors(cb, c, dxt1);
+			uint32_t idx = cb[4] | (cb[5] << 8) | (cb[6] << 16) | ((uint32_t)cb[7] << 24);
+			for (int i = 0; i < 16; i++)
+			{
+				uint32_t x = bx * 4 + (i & 3), y = by * 4 + (i >> 2);
+				if (x >= w || y >= h) continue;
+				const uint8_t* cc = c[(idx >> (2 * i)) & 3];
+				uint8_t* d = &out[((size_t)y * w + x) * 4];
+				d[0] = cc[0]; d[1] = cc[1]; d[2] = cc[2]; d[3] = dxt1 ? cc[3] : a[i];
+			}
+		}
+}
+
 // expands a level of a "convert" format to RGBA8
 void expandLevel(uint32_t fmt, const uint8_t* src, uint32_t w, uint32_t h, std::vector<uint8_t>& out)
 {
+	if (fmt == 0x31545844 || fmt == 0x33545844 || fmt == 0x35545844) { decodeDxt(fmt, src, w, h, out); return; }
 	out.resize((size_t)w * h * 4);
 	uint32_t pitch = w * bpp(fmt);
 	for (uint32_t y = 0; y < h; y++)
@@ -182,7 +230,7 @@ static void uploadTextureImpl(Obj* o)
 	TexFmt tf = texFmtOf(o->fmt);
 	GLenum target = targetOf(o);
 	glBindTexture(target, o->glTex); gTexBindDirty = true;
-	if (tf.compressed && !gHasS3tc) { tf.compressed = false; tf.convert = true; }   // TODO: software DXT decode
+	if (tf.compressed && !gHasS3tc) { tf.compressed = false; tf.convert = true; }   // decoded to RGBA8 on the CPU (expandLevel)
 	if (!(o->rtTex && !o->data))
 	{
 		std::vector<uint8_t> tmp;
