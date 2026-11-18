@@ -1350,15 +1350,17 @@ Result liftFunction(Reader& r, uint32_t entry, const Options& opt)
 		if (const char* e = getenv("RA3_HOOKS")) for (const char* p = e; *p;) { h.insert((uint32_t)strtoul(p, (char**)&p, 16)); if (*p == ',') p++; }
 		return h;
 	}();
-	// RA3_GATES=addr:pop,...: the runtime may skip a call (ra3_gate returns true): eax = 0, return popping `pop` argument bytes
-	static const std::map<uint32_t, uint32_t> gates = [] {
-		std::map<uint32_t, uint32_t> g;
+	// RA3_GATES=addr:pop[:eax],...: the runtime may skip a call (ra3_gate returns true): eax = the given value (default 0),
+	// return popping `pop` argument bytes
+	static const std::map<uint32_t, std::pair<uint32_t, uint32_t>> gates = [] {
+		std::map<uint32_t, std::pair<uint32_t, uint32_t>> g;
 		if (const char* e = getenv("RA3_GATES"))
 			for (const char* p = e; *p;)
 			{
-				uint32_t a = (uint32_t)strtoul(p, (char**)&p, 16), pop = 0;
+				uint32_t a = (uint32_t)strtoul(p, (char**)&p, 16), pop = 0, ret = 0;
 				if (*p == ':') { p++; pop = (uint32_t)strtoul(p, (char**)&p, 10); }
-				g[a] = pop;
+				if (*p == ':') { p++; ret = (uint32_t)strtoul(p, (char**)&p, 16); }
+				g[a] = {pop, ret};
 				if (*p == ',') p++;
 			}
 		return g;
@@ -1388,7 +1390,7 @@ Result liftFunction(Reader& r, uint32_t entry, const Options& opt)
 	if (hooked)
 		res.code += fmt("void f_%08x(CPU* c)\n{\n\tuint32_t a0 = G32(c->r[4] + 4), a1 = G32(c->r[4] + 8), a2 = G32(c->r[4] + 12), ecx0 = c->r[1];\n\tf_%08x_real(c);\n\tra3_hook_after(c, 0x%08xu, a0, a1, a2, ecx0);\n}\n", entry, entry, entry);
 	if (gated)
-		res.code += fmt("void f_%08x(CPU* c)\n{\n\tif (ra3_gate(c, 0x%08xu)) { c->r[0] = 0; c->r[4] += %uu; return; }\n\tf_%08x_real(c);\n}\n", entry, entry, 4 + gate->second, entry);
+		res.code += fmt("void f_%08x(CPU* c)\n{\n\tif (ra3_gate(c, 0x%08xu)) { c->r[0] = 0x%xu; c->r[4] += %uu; return; }\n\tf_%08x_real(c);\n}\n", entry, entry, gate->second.second, 4 + gate->second.first, entry);
 	res.unsupported = g.unsup;
 	return res;
 }
