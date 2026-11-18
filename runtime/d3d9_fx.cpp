@@ -417,28 +417,10 @@ H("ID3DXEffect::GetParameterDesc")
 	SET(0);
 } END;
 
-static float gLastShroud[4];
-static bool gHaveShroud = false;
-static void noteShroud(const char* how, Obj* o, const PRef& r, uint32_t src)
-{
-	if (r.valid() && src && r.p->name == "Shroud" && r.off == 0)
-	{
-		const float* w = (const float*)guest::host(src);
-		if (w[0] != 0.f || w[1] != 0.f) { memcpy(gLastShroud, w, 16); gHaveShroud = true; }
-	}
-	// which values the game binds to Terrain.Shroud (lasers and tracers fade with it)
-	static int n = 0;
-	if (!r.valid() || n >= 30 || r.p->name != "Shroud" || !src) return;
-	n++;
-	const float* v = (const float*)guest::host(src);
-	FxInfo* fx = F(o);
-	log("fx: %s Shroud = %g %g %g %g (effect blob %zu, param off %u)", how, v[0], v[1], v[2], v[3], fx ? fx->blob.size() : (size_t)0, r.off);
-}
 // ---- setters
 H("ID3DXEffect::SetValue")
 {
 	PRef r = refOfSet(o, ARG(1));
-	noteShroud("SetValue", o, r, ARG(2));
 	if (r.valid() && ARG(2))
 	{
 		if (r.ty->cls == 4)
@@ -493,7 +475,6 @@ H("ID3DXEffect::SetVector")
 {
 	PRef r = refOfSet(o, ARG(1));
 	noteBad("SetVector", ARG(1), r);
-	noteShroud("SetVector", o, r, ARG(2));
 	if (r.valid() && ARG(2))
 	{
 		writeVals(r, (const uint32_t*)guest::host(ARG(2)), std::min(r.ty->scalars(), 4u), 3);
@@ -541,11 +522,6 @@ static void setMatrices(CPU* c, Obj* o, bool transpose, bool array, bool pointer
 				for (int k = 0; k < 16; k++) if (m[k] != 0.f) nz = true;
 				total++;
 				if (nz) nonzero++;
-				{
-					static uint32_t W = 0; static bool inited = false;
-					if (!inited && total >= 3000) { inited = true; W = ARG(2); log("fx: watching the ViewProjection buffer at %08x", W); }
-					if (W && ARG(2) == W) rt::watchArm(W);
-				}
 				if (total == 1 || total == 3000 || total == 20000 || total == 40000)
 				{
 					std::string st;
