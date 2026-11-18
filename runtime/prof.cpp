@@ -27,6 +27,9 @@ namespace
 {
 constexpr uint32_t N = 1u << 17;
 uintptr_t samples[N], callers[N];
+constexpr int Deep = 4;
+uintptr_t deep[N][Deep];          // return addresses from the frame-pointer chain (who called the libc caller)
+uintptr_t stackLo = 0, stackHi = 0;
 std::atomic<uint32_t> head{0};
 
 void onProf(int, siginfo_t*, void* uctx)
@@ -36,6 +39,20 @@ void onProf(int, siginfo_t*, void* uctx)
 	uint32_t i = head.fetch_add(1, std::memory_order_relaxed);
 	samples[i & (N - 1)] = (uintptr_t)uc->uc_mcontext.pc;
 	callers[i & (N - 1)] = (uintptr_t)uc->uc_mcontext.regs[30];
+	// frame records {prev fp, return address}; only followed while they stay inside this thread's stack
+	uintptr_t fp = (uintptr_t)uc->uc_mcontext.regs[29];
+	for (int k = 0; k < Deep; k++)
+	{
+		uintptr_t ra = 0;
+		if (fp >= stackLo && fp + 16 <= stackHi && !(fp & 7))
+		{
+			ra = ((uintptr_t*)fp)[1];
+			uintptr_t next = ((uintptr_t*)fp)[0];
+			fp = next > fp ? next : 0;
+		}
+		else fp = 0;
+		deep[i & (N - 1)][k] = ra;
+	}
 #else
 	(void)uctx;
 #endif
@@ -83,6 +100,31 @@ void reporter()
 			const std::string& nm = nameOf(samples[i & (N - 1)], cache);
 			if (nm.find('+') != std::string::npos || nm.find(':') != std::string::npos) perCaller[nm.substr(0, 40) + " <- " + nameOf(callers[i & (N - 1)], cache)]++;
 		}
+		// libc samples (locks, syscalls): the first frame in our own code up the chain, as an exact offset
+		std::unordered_map<std::string, uint32_t> perOwn;
+		{
+			Dl_info me{};
+			dladdr((void*)&reporter, &me);
+			uintptr_t lo = (uintptr_t)me.dli_fbase;
+			for (uint32_t i = tail; i != h; i++)
+			{
+				uint32_t j = i & (N - 1);
+				const std::string& nm = nameOf(samples[j], cache);
+				if (nm.compare(0, 8, "libc.so:") != 0) continue;
+				uintptr_t own = 0;
+				uintptr_t cand[1 + Deep] = {callers[j], deep[j][0], deep[j][1], deep[j][2], deep[j][3]};
+				for (uintptr_t a : cand)
+				{
+					if (!a) continue;
+					const std::string& an = nameOf(a, cache);
+					if (an.find(':') == std::string::npos && an != "?") { own = a; break; }
+				}
+				char b[160];
+				if (own) snprintf(b, sizeof b, "%s <= %s@%zx", nm.substr(8, 28).c_str(), nameOf(own, cache).substr(0, 40).c_str(), (size_t)(own - lo));
+				else snprintf(b, sizeof b, "%s <= ?", nm.substr(8, 28).c_str());
+				perOwn[b]++;
+			}
+		}
 		tail = h;
 		if (!n) continue;
 		std::unordered_map<std::string, uint32_t> perFn;
@@ -112,6 +154,17 @@ void reporter()
 			if ((i + 1) % 6 == 0) { rt::log("prof callers:%s", line.c_str()); line.clear(); }
 		}
 		if (!line.empty()) rt::log("prof callers:%s", line.c_str());
+		std::vector<std::pair<uint32_t, std::string>> vw;
+		for (auto& kv : perOwn) vw.push_back({kv.second, kv.first});
+		std::sort(vw.rbegin(), vw.rend());
+		line.clear();
+		for (size_t i = 0; i < vw.size() && i < 24; i++)
+		{
+			char b[240]; snprintf(b, sizeof b, " %s %.2f%% |", vw[i].second.c_str(), 100.0 * vw[i].first / n);
+			line += b;
+			if ((i + 1) % 4 == 0) { rt::log("prof libc from:%s", line.c_str()); line.clear(); }
+		}
+		if (!line.empty()) rt::log("prof libc from:%s", line.c_str());
 		// exact offsets of the hottest samples in libra3native.so code without a dynamic symbol (static functions):
 		// resolved offline with the symbol list published next to the APK (ra3native-symbols.txt)
 		std::unordered_map<uintptr_t, uint32_t> perOff;
@@ -140,6 +193,13 @@ void reporter()
 void startForThisThread()
 {
 	if (access("/sdcard/ra3_prof", F_OK) != 0) return;
+	pthread_attr_t at;
+	if (pthread_getattr_np(pthread_self(), &at) == 0)
+	{
+		void* a; size_t sz;
+		if (pthread_attr_getstack(&at, &a, &sz) == 0) { stackLo = (uintptr_t)a; stackHi = (uintptr_t)a + sz; }
+		pthread_attr_destroy(&at);
+	}
 	struct sigaction sa{};
 	sa.sa_sigaction = onProf;
 	sa.sa_flags = SA_SIGINFO | SA_RESTART;
