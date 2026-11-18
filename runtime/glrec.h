@@ -56,24 +56,6 @@ struct RecLock
 		m.unlock();
 	}
 };
-	std::atomic<bool> held{false};
-	int depth = 0;
-	void lock()
-	{
-		pthread_t me = pthread_self();
-		if (owner.load(std::memory_order_relaxed) == me) { depth++; return; }
-		for (int i = 0; held.exchange(true, std::memory_order_acquire); i++)
-			if (i > 64) sched_yield();
-		owner.store(me, std::memory_order_relaxed);
-		depth = 1;
-	}
-	void unlock()
-	{
-		if (--depth) return;
-		owner.store(0, std::memory_order_relaxed);
-		held.store(false, std::memory_order_release);
-	}
-};
 
 struct Cmd { void (*run)(void*); uint32_t total; uint32_t pad; };
 
