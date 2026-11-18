@@ -1326,6 +1326,7 @@ static bool gUiHud = false;       // the HUD panels have started this frame: ear
 static float gUiColLeft = 1e9f, gUiCurColLeft = 1e9f;   // left edge of the right column (back-buffer pixels)
 static float gUiRightT = 0.f, gUiRightB = 1.f, gUiCurT = 0.f, gUiCurB = 1.f;   // right column: lowest top piece, highest bottom piece (fractions of the height)
 static std::vector<UiRect> gUiPieces;   // panel pieces scaled this frame, in the game's own (unscaled) coordinates
+static bool gUiMenu = false;      // a big window covers the battle this frame
 static bool gUiNested = false;     // drawing a rebuilt interface draw (no second analysis)
 static uint32_t gUiWorldDraws = 0;   // depth-tested draws this frame: the HUD is scaled in a battle only, not in menus
 static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, float& axN, float& ayN, float& ax, float& ay, std::vector<uint8_t>& split)
@@ -1407,13 +1408,17 @@ static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, 
 		if ((c != 2 && c != 4) || gUiRightT <= 0.f || gUiRightB >= 1.f) return gUiScale;
 		return std::max(1.f, std::min(gUiScale, 1.f / (gUiRightT + 1.f - gUiRightB) * 0.99f));
 	};
-	auto noteRight = [&](int c, float b0, float b1) {
+	// only pieces of the column itself (not the command bar that opens to the left of the unit panel)
+	auto noteRight = [&](int c, float a0, float b0, float a1, float b1) {
+		if (a0 < vx + 0.75f * W) return;
 		if (c == 2) gUiCurT = std::max(gUiCurT, (b1 - vy) / H);
-		if (c == 4) gUiCurB = std::min(gUiCurB, (b0 - vy) / H);
+		if (c == 4 && a1 >= vx + 0.97f * W) gUiCurB = std::min(gUiCurB, (b0 - vy) / H);
 	};
 	// corner of a rectangle: 0 none, else 1 + (right) + 2 * (bottom)
 	// corner zones; on the right the minimap column with the open build menu reaches two thirds down the screen
 	auto corner = [&](float a0, float b0, float a1, float b1) -> int {
+		// the unit panel's command bar opens to the left along the bottom edge
+		if (a0 >= vx + 0.50f * W && b0 >= vy + 0.86f * H) return 4;
 		bool l = a1 <= vx + 0.40f * W, r = a0 >= vx + 0.75f * W;
 		if (!(l || r)) return 0;
 		bool t = b1 <= vy + (r ? 0.66f : 0.45f) * H, b = b0 >= vy + (r ? 0.70f : 0.55f) * H;
@@ -1430,11 +1435,20 @@ static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, 
 	// unit markers, health bars and names come first in a frame: only what follows the first big corner panel is HUD
 	if (!gUiHud && c && (x1 - x0) * (y1 - y0) >= 0.01f * W * H) gUiHud = true;
 	if (!gUiHud) { if (diag) log("ui-diag: vs %016llx box %.0f,%.0f-%.0f,%.0f before the HUD", (unsigned long long)dev.vs->hash, x0, y0, x1, y1); return 0.f; }
+	// a large window over the battle (pause / episode menu): nothing more is scaled this frame, and touches go to the
+	// game unchanged (the HUD under it is covered)
+	if (gUiMenu) return 0.f;
+	if (apt && (x1 - x0) * (y1 - y0) >= 0.35f * W * H && (x1 - x0) < 0.98f * W)
+	{
+		gUiMenu = true; gUiCur.clear(); gUiPieces.clear();
+		if (diag) log("ui-diag: big window %.0f,%.0f-%.0f,%.0f: scaling off for this frame", x0, y0, x1, y1);
+		return 0.f;
+	}
 	if (diag) log("ui-diag: vs %016llx%s prim %u n %u idx %u box %.0f,%.0f-%.0f,%.0f corner %d", (unsigned long long)dev.vs->hash, apt ? " (apt)" : " (pass)", dc.prim, dc.primCount, nIdx, x0, y0, x1, y1, c);
 	if (c)
 	{
 		anchorOf(c, ax, ay);
-		if (!attached) noteRight(c, y0, y1);
+		if (!attached) noteRight(c, x0, y0, x1, y1);
 		float s = scaleOf(c);
 		addRect(x0, y0, x1, y1, ax, ay, s);
 		if (gUiPieces.size() < 2000) gUiPieces.push_back({x0, y0, x1, y1, ax, ay, s});
@@ -2192,7 +2206,7 @@ static void presentImpl()
 		// the right column's extents only grow (the open build menu is the largest): its scale stays the same when menus open
 		if (gUiHud) { gUiRightT = std::max(gUiRightT, gUiCurT); gUiRightB = std::min(gUiRightB, gUiCurB); if (gUiCurColLeft < 1e8f) gUiColLeft = gUiCurColLeft; }
 		gUiCurT = 0.f; gUiCurB = 1.f; gUiCurColLeft = 1e9f;
-		gUiWorldDraws = 0; gUiHud = false; gUiAptSeen = false; gUiPieces.clear();
+		gUiWorldDraws = 0; gUiHud = false; gUiAptSeen = false; gUiPieces.clear(); gUiMenu = false;
 		static int nl = 0;
 		if (gUiScale > 1.001f && !gUiPub.empty() && nl < 3 && gFrameNo > 600) { nl++; log("ui: interface scale %.2f, %zu panel pieces scaled this frame", gUiScale, gUiPub.size()); }
 	}
