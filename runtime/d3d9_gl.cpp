@@ -707,6 +707,30 @@ GLuint dummyTex(GLenum target)
 	return t;
 }
 
+// ---- health report: things that make a draw differ from D3D9 without an error (logged once a minute when non-zero)
+static uint32_t gHNoTex = 0, gHTexFail = 0, gHNoProg = 0;
+static std::map<uint32_t, uint32_t> gHNoTexFmt;              // texture format -> draws where it could not be used
+static std::map<std::pair<uint32_t, uint32_t>, uint32_t> gHState;   // (render state, value) the renderer ignores -> draws
+static void healthStates()
+{
+	// render states we do not implement, compared with their D3D9 defaults
+	static const std::pair<uint8_t, uint32_t> watch[] = {{8, 3}, {9, 2}, {28, 0}, {29, 0}, {48, 1}, {152, 0}, {156, 0}, {176, 0},
+	                                                    {185, 0}, {186, 1}, {187, 1}, {188, 1}, {189, 8}, {190, 15}, {191, 15}, {192, 15}, {194, 0}};
+	for (auto& w : watch) if (dev.rs[w.first] != w.second) gHState[{w.first, dev.rs[w.first]}]++;
+}
+static void healthReport()
+{
+	static int reports = 0;
+	if (reports >= 20) return;
+	std::string o;
+	char b[96];
+	if (gHNoProg) { snprintf(b, sizeof b, " | draws without a program %u", gHNoProg); o += b; }
+	if (gHNoTex) { snprintf(b, sizeof b, " | sampler used with no texture bound %u", gHNoTex); o += b; }
+	if (gHTexFail) { o += " | texture not usable (format:draws)"; for (auto& kv : gHNoTexFmt) { snprintf(b, sizeof b, " %u:%u", kv.first, kv.second); o += b; } }
+	if (!gHState.empty()) { o += " | ignored render states (state=value:draws)"; for (auto& kv : gHState) { snprintf(b, sizeof b, " %u=%u:%u", kv.first.first, kv.first.second, kv.second); o += b; } }
+	if (!o.empty()) { reports++; log("health (last 1800 frames)%s", o.c_str()); }
+	gHNoTex = gHTexFail = gHNoProg = 0; gHNoTexFmt.clear(); gHState.clear();
+}
 static int activeUnit = -1;
 void bindSamplers(Prog* p, ShaderObj* ps)
 {
@@ -744,6 +768,11 @@ void bindSamplers(Prog* p, ShaderObj* ps)
 				}
 			}
 			noFilter = texFmtOf(texOwner(t)->fmt).floatNoFilter;
+		}
+		if (!name)
+		{
+			if (!t) gHNoTex++;
+			else { gHTexFail++; gHNoTexFmt[texOwner(t)->fmt]++; }
 		}
 		GLuint bindName = name ? name : dummyTex(target);
 		{
@@ -1174,7 +1203,8 @@ static void drawImpl(const DrawCall& dc)
 	}
 	uint64_t t0 = profNow();
 	Prog* p = getProgram(vs, ps);
-	if (!p) { static int nf = 0; if (nf++ < 10) log("d3d9: draw skipped: no program for vs %016llx ps %016llx", (unsigned long long)vs->hash, (unsigned long long)ps->hash); return; }
+	if (!p) { gHNoProg++; static int nf = 0; if (nf++ < 10) log("d3d9: draw skipped: no program for vs %016llx ps %016llx", (unsigned long long)vs->hash, (unsigned long long)ps->hash); return; }
+	healthStates();
 	if (fxStatOn() && gFxDiagCur >= 0 && gFxDiagCur < 512) { gFxDraws[gFxDiagCur * 8 + (gFxDiagTech & 7)]++; gFxPrims[gFxDiagCur * 8 + (gFxDiagTech & 7)] += dc.primCount; }
 	if (traceFrame())
 	{
@@ -1795,6 +1825,7 @@ static void presentImpl()
 		lastT = t; lastBytes = b; lastUs = u; lastCalls = n;
 	}
 	if (gFrameNo % 600 == 0) reapReleased(gFrameNo);
+	if (gFrameNo % 1800 == 0) healthReport();
 	if (fxStatOn() && gFrameNo % 1800 == 0)
 	{
 		// effect usage over the last minute: effect#.technique draws/primitives
