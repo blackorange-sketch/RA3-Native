@@ -127,5 +127,6 @@ void resizeBackBuffer();   // the device was reset to another back buffer size
 void stretchRect(Obj* src, const int32_t* srcRect, Obj* dst, const int32_t* dstRect, uint32_t filter);
 void destroy(Obj* o);
 void rtSize(Obj* rt, uint32_t& w, uint32_t& h);   // size of a render target (null: the back buffer)
+uint32_t frameNo();                              // presented frames so far
 }
 }

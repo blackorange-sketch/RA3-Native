@@ -2349,6 +2349,7 @@ void stretchRect(Obj* src, const int32_t* sr, Obj* dst, const int32_t* dr, uint3
 
 void destroy(Obj*) {}
 void rtSize(Obj* rt, uint32_t& w, uint32_t& h) { targetSize(rt, w, h); }
+uint32_t frameNo() { return gFrameNo; }
 }   // namespace glr
 }   // namespace d3d
 
@@ -2365,6 +2366,7 @@ void present() {}
 void resizeBackBuffer() {}
 void stretchRect(Obj*, const int32_t*, Obj*, const int32_t*, uint32_t) {}
 void rtSize(Obj*, uint32_t& w, uint32_t& h) { w = h = 0; }
+uint32_t frameNo() { return 0; }
 void uiUnmapImpl(int&, int&) {}
 void destroy(Obj*) {}
 }

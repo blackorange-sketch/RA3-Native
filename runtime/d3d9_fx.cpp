@@ -1,3 +1,4 @@
+#include <chrono>
 // ID3DXEffect: parameter storage and handles, technique/pass application onto the device state.
 #include <unistd.h>
 #include <set>
@@ -418,6 +419,20 @@ H("ID3DXEffect::GetParameterDesc")
 } END;
 
 // ---- setters
+// 60 fps diagnostics: how the game's shader clock 'Time' advances against wall time and presented frames, and who sets it
+namespace rt { extern bool gFps60; }
+static void noteTime(CPU* c, const PRef& r, const void* v, const char* how)
+{
+	if (!r.valid() || r.p->name != "Time") return;
+	static int n = 0;
+	static uint64_t lastUs = 0;
+	uint64_t us = (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+	if (n >= 40 || us - lastUs < 1000000) return;
+	lastUs = us; n++;
+	float f; memcpy(&f, v, 4);
+	log("fxtime: %s Time=%.4f at %.3f s, frame %u, fps60 %d, caller %08x %08x", how, f, us / 1e6, glr::frameNo(), rt::gFps60 ? 1 : 0,
+	    guest::load<uint32_t>(c->r[ESP]), guest::load<uint32_t>(c->r[EBP] + 4));
+}
 H("ID3DXEffect::SetValue")
 {
 	PRef r = refOfSet(o, ARG(1));
@@ -436,6 +451,7 @@ H("ID3DXEffect::SetValue")
 		}
 		uint32_t n = std::min(ARG(3) / 4, (uint32_t)r.p->val.size() - std::min<uint32_t>(r.off, (uint32_t)r.p->val.size()));
 		memcpy(r.p->val.data() + r.off, guest::host(ARG(2)), 4ull * n);
+		if (n) noteTime(c, r, guest::host(ARG(2)), "SetValue");
 	}
 	SET(0);
 } END;
@@ -448,6 +464,7 @@ H("ID3DXEffect::SetFloat")
 	{
 		uint32_t v = ARG(2);
 		writeVals(r, &v, 1, 3);
+		noteTime(c, r, &v, "SetFloat");
 		static bool diag = access("/sdcard/ra3_fxdiag", F_OK) == 0;
 		static int n = 0;
 		if (diag && n < 20 && r.p->name == "Time") { n++; float f; memcpy(&f, &v, 4); log("FXTIME SetFloat Time=%g", f); }
@@ -456,7 +473,7 @@ H("ID3DXEffect::SetFloat")
 } END;
 H("ID3DXEffect::SetBoolArray") { PRef r = refOfSet(o, ARG(1)); if (r.valid() && ARG(2)) { std::vector<uint32_t> v(ARG(3)); for (uint32_t i = 0; i < ARG(3); i++) v[i] = guest::load<uint32_t>(ARG(2) + 4 * i) ? 1 : 0; writeVals(r, v.data(), ARG(3), 1); } SET(0); } END;
 H("ID3DXEffect::SetIntArray") { PRef r = refOfSet(o, ARG(1)); if (r.valid() && ARG(2)) writeVals(r, (const uint32_t*)guest::host(ARG(2)), ARG(3), 2); SET(0); } END;
-H("ID3DXEffect::SetFloatArray") { PRef r = refOfSet(o, ARG(1)); if (r.valid() && ARG(2)) writeVals(r, (const uint32_t*)guest::host(ARG(2)), ARG(3), 3); SET(0); } END;
+H("ID3DXEffect::SetFloatArray") { PRef r = refOfSet(o, ARG(1)); if (r.valid() && ARG(2)) { writeVals(r, (const uint32_t*)guest::host(ARG(2)), ARG(3), 3); noteTime(c, r, guest::host(ARG(2)), "SetFloatArray"); } SET(0); } END;
 static void noteBad(const char* m, uint32_t h, const PRef& r)
 {
 	static int n = 0;
@@ -478,6 +495,7 @@ H("ID3DXEffect::SetVector")
 	if (r.valid() && ARG(2))
 	{
 		writeVals(r, (const uint32_t*)guest::host(ARG(2)), std::min(r.ty->scalars(), 4u), 3);
+		noteTime(c, r, guest::host(ARG(2)), "SetVector");
 		if (r.p->name == "EyePosition")
 		{
 			static int n = 0; const float* v = (const float*)guest::host(ARG(2));
