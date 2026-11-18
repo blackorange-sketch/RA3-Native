@@ -1296,7 +1296,7 @@ static void drawImpl(const DrawCall& dc);
 namespace
 {
 const uint64_t kAptVs = 0xe22700c621ded1fbull;   // interface vertex shader: pixel positions, transform in c11..c14
-struct UiRect { float x0, y0, x1, y1, ax, ay; };     // scaled rectangle and its anchor, back-buffer pixels
+struct UiRect { float x0, y0, x1, y1, ax, ay, sc; };     // scaled rectangle and its anchor, back-buffer pixels
 std::vector<UiRect> gUiCur, gUiPub;
 std::mutex gUiMu;
 float gUiScale = 1.f;
@@ -1309,8 +1309,8 @@ void uiUnmapImpl(int& x, int& y)
 	{
 		const UiRect& r = gUiPub[i];
 		if (x < r.x0 || x > r.x1 || y < r.y0 || y > r.y1) continue;
-		x = (int)lroundf(r.ax + (x - r.ax) / gUiScale);
-		y = (int)lroundf(r.ay + (y - r.ay) / gUiScale);
+		x = (int)lroundf(r.ax + (x - r.ax) / r.sc);
+		y = (int)lroundf(r.ay + (y - r.ay) / r.sc);
 		return;
 	}
 }
@@ -1322,6 +1322,7 @@ static bool gUiDiag = false;
 static bool uiDiagFrame() { return gUiDiag; }   // a few frames during play: every interface draw into the log
 static bool gUiAptSeen = false;   // an interface draw happened this frame (diagnostics)
 static bool gUiHud = false;       // the HUD panels have started this frame: earlier interface draws belong to the world
+static float gUiRightT = 0.f, gUiRightB = 1.f, gUiCurT = 0.f, gUiCurB = 1.f;   // right column: lowest top piece, highest bottom piece (fractions of the height)
 static bool gUiNested = false;     // drawing a rebuilt interface draw (no second analysis)
 static uint32_t gUiWorldDraws = 0;   // depth-tested draws this frame: the HUD is scaled in a battle only, not in menus
 static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, float& axN, float& ayN, float& ax, float& ay, std::vector<uint8_t>& split)
@@ -1394,7 +1395,16 @@ static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, 
 		vix[i] = v; sxy[2 * i] = sx; sxy[2 * i + 1] = sy; wv[i] = cw;
 		x0 = std::min(x0, sx); x1 = std::max(x1, sx); y0 = std::min(y0, sy); y1 = std::max(y1, sy);
 	}
-	const float s = gUiScale;
+	// the right column (minimap + build menu from the top, unit panel from the bottom) has to fit the screen height:
+	// its scale is limited so the two groups do not overlap (extents from the previous frame)
+	auto scaleOf = [&](int c) -> float {
+		if ((c != 2 && c != 4) || gUiRightT <= 0.f || gUiRightB >= 1.f) return gUiScale;
+		return std::max(1.f, std::min(gUiScale, 1.f / (gUiRightT + 1.f - gUiRightB) * 0.99f));
+	};
+	auto noteRight = [&](int c, float b0, float b1) {
+		if (c == 2) gUiCurT = std::max(gUiCurT, (b1 - vy) / H);
+		if (c == 4) gUiCurB = std::min(gUiCurB, (b0 - vy) / H);
+	};
 	// corner of a rectangle: 0 none, else 1 + (right) + 2 * (bottom)
 	// corner zones; on the right the minimap column with the open build menu reaches two thirds down the screen
 	auto corner = [&](float a0, float b0, float a1, float b1) -> int {
@@ -1405,7 +1415,7 @@ static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, 
 		return 1 + (r ? 1 : 0) + (b ? 2 : 0);
 	};
 	auto anchorOf = [&](int c, float& cx, float& cy) { cx = (c - 1) & 1 ? (float)vx + W : (float)vx; cy = (c - 1) & 2 ? (float)vy + H : (float)vy; };
-	auto addRect = [&](float a0, float b0, float a1, float b1, float cx, float cy) { if (gUiCur.size() < 4000) gUiCur.push_back({cx + (a0 - cx) * s, cy + (b0 - cy) * s, cx + (a1 - cx) * s, cy + (b1 - cy) * s, cx, cy}); };
+	auto addRect = [&](float a0, float b0, float a1, float b1, float cx, float cy, float s) { if (gUiCur.size() < 4000) gUiCur.push_back({cx + (a0 - cx) * s, cy + (b0 - cy) * s, cx + (a1 - cx) * s, cy + (b1 - cy) * s, cx, cy, s}); };
 	int c = corner(x0, y0, x1, y1);
 	// unit markers, health bars and names come first in a frame: only what follows the first big corner panel is HUD
 	if (!gUiHud && c && (x1 - x0) * (y1 - y0) >= 0.01f * W * H) gUiHud = true;
@@ -1414,7 +1424,9 @@ static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, 
 	if (c)
 	{
 		anchorOf(c, ax, ay);
-		addRect(x0, y0, x1, y1, ax, ay);
+		noteRight(c, y0, y1);
+		float s = scaleOf(c);
+		addRect(x0, y0, x1, y1, ax, ay, s);
 		axN = (c - 1) & 1 ? 1.f : -1.f; ayN = (c - 1) & 2 ? -1.f : 1.f;
 		return s - 1.f;
 	}
@@ -1434,8 +1446,8 @@ static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, 
 		float a0 = std::min({sxy[2 * t], sxy[2 * t + 2], sxy[2 * t + 4]}), a1 = std::max({sxy[2 * t], sxy[2 * t + 2], sxy[2 * t + 4]});
 		float b0 = std::min({sxy[2 * t + 1], sxy[2 * t + 3], sxy[2 * t + 5]}), b1 = std::max({sxy[2 * t + 1], sxy[2 * t + 3], sxy[2 * t + 5]});
 		int tc = corner(a0, b0, a1, b1);
-		float cx = 0, cy = 0;
-		if (tc) { anchorOf(tc, cx, cy); addRect(a0, b0, a1, b1, cx, cy); }
+		float cx = 0, cy = 0, s = 1.f;
+		if (tc) { anchorOf(tc, cx, cy); s = scaleOf(tc); addRect(a0, b0, a1, b1, cx, cy, s); }
 		for (uint32_t k = t; k < t + 3; k++)
 		{
 			uint8_t* d = split.data() + (size_t)k * stride;
@@ -1476,6 +1488,11 @@ static void drawImpl(const DrawCall& dc)
 	if (!p) { gHNoProg++; static int nf = 0; if (nf++ < 10) log("d3d9: draw skipped: no program for vs %016llx ps %016llx", (unsigned long long)vs->hash, (unsigned long long)ps->hash); return; }
 	healthStates();
 	if (dev.rs[7] && !gUiNested) gUiWorldDraws++;   // ZENABLE
+	if (gUiDiag && !gUiNested)
+	{
+		static int nd = 0;
+		if (nd++ < 1500) log("ui-diag: any vs %016llx ps %016llx rt %s z %u prim %u n %u up %d", (unsigned long long)vs->hash, (unsigned long long)ps->hash, isBack(dev.rt0) ? "back" : objTag(dev.rt0).c_str(), dev.rs[7], dc.prim, dc.primCount, dc.upVerts ? 1 : 0);
+	}
 	if (fxStatOn() && gFxDiagCur >= 0 && gFxDiagCur < 512) { gFxDraws[gFxDiagCur * 8 + (gFxDiagTech & 7)]++; gFxPrims[gFxDiagCur * 8 + (gFxDiagTech & 7)] += dc.primCount; }
 	if (traceFrame())
 	{
@@ -2150,6 +2167,8 @@ static void presentImpl()
 			gUiDiag = inGame && gUiScale > 1.001f && diagFrames < 3 && gFrameNo % 900 == 0;
 			if (gUiDiag) { diagFrames++; log("ui-diag: frame %u", gFrameNo + 1); }
 		}
+		if (gUiHud) { gUiRightT = gUiCurT; gUiRightB = gUiCurB; }
+		gUiCurT = 0.f; gUiCurB = 1.f;
 		gUiWorldDraws = 0; gUiHud = false; gUiAptSeen = false;
 		static int nl = 0;
 		if (gUiScale > 1.001f && !gUiPub.empty() && nl < 3 && gFrameNo > 600) { nl++; log("ui: interface scale %.2f, %zu panel pieces scaled this frame", gUiScale, gUiPub.size()); }
