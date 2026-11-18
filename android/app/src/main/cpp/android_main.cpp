@@ -396,6 +396,7 @@ void android_main(android_app* app)
 			else if (k == "cutscenes") rt::config.playMovies = v == "1";
 			else if (k == "log") { if (v != "1") rt::config.logFile.clear(); }
 			else if (k == "fps60") rt::config.fps60 = v == "1";
+			else if (k == "ui_scale") { int pc = atoi(v.c_str()); if (pc >= 100 && pc <= 200) rt::config.uiScale = pc / 100.f; }
 			else if (k == "gamepath" && !v.empty())
 			{
 				// the launcher found or was given the game: remember it like the in-app picker does

@@ -510,7 +510,7 @@ inline bool translate(const uint8_t* bytes, size_t n, ShaderInfo& si)
 	// uniforms
 	snprintf(buf, sizeof buf, "uniform vec4 %sc[%d];\nuniform ivec4 %sci[16];\nuniform bool %scb[16];\n", si.isVs ? "v" : "p", si.isVs ? 256 : 224, si.isVs ? "v" : "p", si.isVs ? "v" : "p");
 	decl += buf;
-	if (si.isVs) decl += "uniform float u_flip;\nuniform int u_bgra;\nuniform vec2 u_hp;\n";
+	if (si.isVs) decl += "uniform float u_flip;\nuniform int u_bgra;\nuniform vec2 u_hp;\nuniform vec4 u_ui;\n";
 	else decl += "uniform vec4 u_at;\n";
 	for (int i = 0; i < 16; i++)
 		if (si.samplerType[i])
@@ -585,6 +585,7 @@ inline bool translate(const uint8_t* bytes, size_t n, ShaderInfo& si)
 				if (kv.second.first == 4 && t.outsWritten.count(64 + kv.first)) post = "  oPts = o" + std::to_string(kv.first) + ";\n" + post;
 			}
 		}
+		post += "  oPos.xy += u_ui.z * (oPos.xy - u_ui.xy * oPos.w);\n";   // interface scaling (u_ui: anchor in clip space, scale - 1)
 		post += "  gl_Position = vec4(oPos.x + u_hp.x * oPos.w, (oPos.y - u_hp.y * oPos.w) * u_flip, 2.0 * oPos.z - oPos.w, oPos.w);\n  gl_PointSize = oPts.x;\n";
 		si.decls = decl + kHelpers;
 		si.body = pre + t.out + post;

@@ -82,6 +82,7 @@ void mapTo(float sx, float sy)
 	int x = (int)((sx - vx) * bw / std::max(1, vw)), y = (int)((sy - vy) * bh / std::max(1, vh));
 	curX = std::max(0, std::min(bw - 1, x));
 	curY = std::max(0, std::min(bh - 1, y));
+	rt::uiUnmap(curX, curY);   // enlarged HUD panels: back to where the game has them
 }
 
 // the minimap in the top right corner of the in-game HUD (the HUD scales with the back buffer height)

@@ -511,13 +511,13 @@ struct Prog
 {
 	GLuint id = 0;
 	bool failed = false;
-	GLint vc = -1, vci = -1, vcb = -1, pc = -1, pci = -1, pcb = -1, flip = -1, bgra = -1, at = -1, hp = -1, s[16];
+	GLint vc = -1, vci = -1, vcb = -1, pc = -1, pci = -1, pcb = -1, flip = -1, bgra = -1, at = -1, hp = -1, ui = -1, s[16];
 	// last values uploaded to this program (uniforms persist per program): only changed ranges are re-sent
 	bool samplersSet = false, shadowValid = false;
 	std::vector<float> vcShadow, pcShadow;
 	std::vector<GLint> vcLoc, pcLoc;   // location of each array element
 	int32_t vciShadow[64], psiShadow[64], vcbShadow[16], pcbShadow[16];
-	float flipShadow = 0.f, atShadow[4] = {-1, -1, -1, -1}, hpShadow[2] = {-1, -1};
+	float flipShadow = 0.f, atShadow[4] = {-1, -1, -1, -1}, hpShadow[2] = {-1, -1}, uiShadow[3] = {0, 0, 0};
 	GLint bgraShadow = -1;
 };
 // Uploads registers [0, n) of `src` to a vec4 uniform array, sending only the range that differs from `shadow`.
@@ -671,7 +671,7 @@ static Prog* finishProgram(Prog& p, ShaderObj* vs, ShaderObj* ps, bool cached)
 	p.failed = false;
 	p.vc = glGetUniformLocation(p.id, "vc"); p.vci = glGetUniformLocation(p.id, "vci"); p.vcb = glGetUniformLocation(p.id, "vcb");
 	p.pc = glGetUniformLocation(p.id, "pc"); p.pci = glGetUniformLocation(p.id, "pci"); p.pcb = glGetUniformLocation(p.id, "pcb");
-	p.flip = glGetUniformLocation(p.id, "u_flip"); p.bgra = glGetUniformLocation(p.id, "u_bgra"); p.at = glGetUniformLocation(p.id, "u_at"); p.hp = glGetUniformLocation(p.id, "u_hp");
+	p.flip = glGetUniformLocation(p.id, "u_flip"); p.bgra = glGetUniformLocation(p.id, "u_bgra"); p.at = glGetUniformLocation(p.id, "u_at"); p.hp = glGetUniformLocation(p.id, "u_hp"); p.ui = glGetUniformLocation(p.id, "u_ui");
 	for (int i = 0; i < 16; i++) { char n[8]; snprintf(n, sizeof n, "s%d", i); p.s[i] = glGetUniformLocation(p.id, n); }
 	static int linked = 0;
 	static int nCached = 0, nBuilt = 0;
@@ -1284,6 +1284,85 @@ static void disableAttribsExcept(uint32_t enabled)
 
 static uint32_t gFxDraws[512 * 8], gFxPrims[512 * 8];
 static void drawImpl(const DrawCall& dc);
+
+// ---- interface scaling
+// The game lays its HUD out in back-buffer pixels at a size proportional to the screen, which is small on a phone. HUD
+// pieces are drawn by the interface shader (APT); every such draw that lies entirely in one corner zone of the screen
+// (portrait, minimap, build menu, power bar) is scaled up around that screen corner. Touches on the enlarged panels are
+// mapped back to the game's own coordinates (rt::uiUnmap).
+namespace
+{
+const uint64_t kAptVs = 0xe22700c621ded1fbull;   // interface vertex shader: pixel positions, transform in c11..c14
+struct UiRect { float x0, y0, x1, y1, ax, ay; };     // scaled rectangle and its anchor, back-buffer pixels
+std::vector<UiRect> gUiCur, gUiPub;
+std::mutex gUiMu;
+float gUiScale = 1.f;
+}
+void uiUnmapImpl(int& x, int& y)
+{
+	std::lock_guard<std::mutex> l(gUiMu);
+	if (gUiScale <= 1.001f) return;
+	for (size_t i = gUiPub.size(); i-- > 0;)
+	{
+		const UiRect& r = gUiPub[i];
+		if (x < r.x0 || x > r.x1 || y < r.y0 || y > r.y1) continue;
+		x = (int)lroundf(r.ax + (x - r.ax) / gUiScale);
+		y = (int)lroundf(r.ay + (y - r.ay) / gUiScale);
+		return;
+	}
+}
+// anchor (clip space) and scale-1 for this draw, 0 when it is not scaled
+static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, float& axN, float& ayN, float& ax, float& ay)
+{
+	if (gUiScale <= 1.001f || !dev.vs || dev.vs->hash != kAptVs || !isBack(dev.rt0)) return 0.f;
+	const DeclElem* pe = nullptr;
+	for (uint32_t i = 0; i < nEls; i++) if (els[i].usage == 0 && els[i].index == 0 && (els[i].type == 2 || els[i].type == 3)) { pe = &els[i]; break; }
+	if (!pe) return 0.f;
+	const uint8_t* vb; uint32_t stride; uint64_t vbSize;
+	if (dc.upVerts) { vb = (const uint8_t*)dc.upVerts; stride = dc.upStride; vbSize = ~0ull; }
+	else
+	{
+		const Stream& st = dev.streams[pe->stream < 16 ? pe->stream : 0];
+		if (!st.vb || !st.vb->data || !st.stride) return 0.f;
+		vb = (const uint8_t*)guest::host(st.vb->data) + st.offset; stride = st.stride; vbSize = st.vb->size > st.offset ? st.vb->size - st.offset : 0;
+	}
+	uint32_t nIdx = (uint32_t)primVertices(dc.prim, dc.primCount);
+	if (!nIdx || nIdx > 6000) return 0.f;
+	const float* m = dev.vsF + 4 * 11;
+	uint32_t vx = dev.vp[0], vy = dev.vp[1], vw = dev.vp[2], vh = dev.vp[3];
+	if (!vw || !vh) { vx = vy = 0; targetSize(nullptr, vw, vh); }
+	float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+	const uint8_t* ip = nullptr; bool i32 = false;
+	if (dc.indexed)
+	{
+		if (dc.upIdx) { ip = (const uint8_t*)dc.upIdx; i32 = dc.upIdxFmt == 102; }
+		else if (dev.ib && dev.ib->data) { i32 = dev.ib->fmt == 102; if ((uint64_t)(dc.startIndex + nIdx) * (i32 ? 4 : 2) > dev.ib->size) return 0.f; ip = (const uint8_t*)guest::host(dev.ib->data) + (uint64_t)dc.startIndex * (i32 ? 4 : 2); }
+		else return 0.f;
+	}
+	for (uint32_t i = 0; i < nIdx; i++)
+	{
+		int64_t v;
+		if (ip) { uint32_t k; if (i32) memcpy(&k, ip + 4 * i, 4); else { uint16_t s; memcpy(&s, ip + 2 * i, 2); k = s; } v = (int64_t)dc.baseVertex + k; }
+		else v = (int64_t)dc.baseVertex + i;
+		if (v < 0 || (uint64_t)(v + 1) * stride > vbSize) return 0.f;
+		float p[3]; memcpy(p, vb + (uint64_t)v * stride + pe->offset, 12);
+		float cx = p[0] * m[0] + p[1] * m[1] + p[2] * m[2] + m[3];
+		float cy = p[0] * m[4] + p[1] * m[5] + p[2] * m[6] + m[7];
+		float cw = p[0] * m[12] + p[1] * m[13] + p[2] * m[14] + m[15];
+		if (fabsf(cw) < 1e-6f) return 0.f;
+		float sx = vx + (cx / cw + 1.f) * 0.5f * vw, sy = vy + (1.f - cy / cw) * 0.5f * vh;
+		x0 = std::min(x0, sx); x1 = std::max(x1, sx); y0 = std::min(y0, sy); y1 = std::max(y1, sy);
+	}
+	// corner zones: the piece must lie entirely in one of them
+	float W = (float)vw, H = (float)vh;
+	bool left = x1 <= vx + 0.40f * W, right = x0 >= vx + 0.60f * W, top = y1 <= vy + 0.45f * H, bottom = y0 >= vy + 0.55f * H;
+	if (!(left || right) || !(top || bottom)) return 0.f;
+	ax = left ? (float)vx : (float)vx + W; ay = top ? (float)vy : (float)vy + H;
+	float s = gUiScale;
+	gUiCur.push_back({ax + (x0 - ax) * s, ay + (y0 - ay) * s, ax + (x1 - ax) * s, ay + (y1 - ay) * s, ax, ay});
+	axN = left ? -1.f : 1.f; ayN = top ? 1.f : -1.f;
+	return s - 1.f;
+}
 void draw(const DrawCall& dc)
 {
 	// time one draw in 8 (clock reads are not free at ~1000 draws per frame)
@@ -1654,6 +1733,24 @@ static void drawImpl(const DrawCall& dc)
 		if (ff++ < 3) log("d3d9: draw with FVF %x and no declaration - not supported yet", dev.fvf);
 		return;
 	}
+	{
+		// interface scaling (HUD panels in the corners)
+		float axN = 0, ayN = 0, ax = 0, ay = 0;
+		float k = uiScaleFor(dc, elsBuf, nEls, axN, ayN, ax, ay);
+		if (p->ui >= 0 && (!p->shadowValid || p->uiShadow[0] != axN || p->uiShadow[1] != ayN || p->uiShadow[2] != k))
+		{
+			glUniform4f(p->ui, axN, ayN, k, 0.f);
+			p->uiShadow[0] = axN; p->uiShadow[1] = ayN; p->uiShadow[2] = k;
+		}
+		if (k != 0.f && dev.rs[174] && dev.scissor[2] > dev.scissor[0])
+		{
+			// the panel's clip rectangle grows with it
+			float s = k + 1.f;
+			float x0 = ax + (dev.scissor[0] - ax) * s, y0 = ay + (dev.scissor[1] - ay) * s, x1 = ax + (dev.scissor[2] - ax) * s, y1 = ay + (dev.scissor[3] - ay) * s;
+			glScissor((GLint)x0, (GLint)y0, (GLsizei)(x1 - x0 + 0.5f), (GLsizei)(y1 - y0 + 0.5f));
+			gStValid = false;   // the next draw sets the game's own scissor again
+		}
+	}
 	uint32_t enabled = 0, bgra = 0;
 	GLuint boundBuf = 0;
 	uint32_t upBytes = 0;
@@ -1933,6 +2030,14 @@ static void presentImpl()
 		lastT = t; lastBytes = b; lastUs = u; lastCalls = n;
 	}
 	if (gFrameNo % 600 == 0) reapReleased(gFrameNo);
+	{
+		// interface scaling: the panel rectangles of this frame become the touch mapping for the next one
+		std::lock_guard<std::mutex> l(gUiMu);
+		gUiScale = std::max(1.f, std::min(2.f, rt::config.uiScale));
+		gUiPub.swap(gUiCur); gUiCur.clear();
+		static int nl = 0;
+		if (gUiScale > 1.001f && !gUiPub.empty() && nl < 3 && gFrameNo > 600) { nl++; log("ui: interface scale %.2f, %zu panel pieces scaled this frame", gUiScale, gUiPub.size()); }
+	}
 	if (gFrameNo % 1800 == 0) healthReport();
 	if (fxStatOn() && gFrameNo % 1800 == 0)
 	{
@@ -2087,7 +2192,10 @@ void present() {}
 void resizeBackBuffer() {}
 void stretchRect(Obj*, const int32_t*, Obj*, const int32_t*, uint32_t) {}
 void rtSize(Obj*, uint32_t& w, uint32_t& h) { w = h = 0; }
+void uiUnmapImpl(int&, int&) {}
 void destroy(Obj*) {}
 }
 }
 #endif
+namespace rt { void uiUnmap(int& x, int& y) { d3d::glr::uiUnmapImpl(x, y); } }
+

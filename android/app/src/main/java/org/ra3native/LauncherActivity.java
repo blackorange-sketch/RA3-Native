@@ -175,6 +175,20 @@ public class LauncherActivity extends Activity {
         sel.addView(prev); sel.addView(langValue); sel.addView(next);
         lr.addView(sel);
 
+        // HUD size
+        LinearLayout ur = optionRow(opts, "HUD SIZE", "Enlarges the minimap, build menu and other corner panels");
+        LinearLayout usel = new LinearLayout(this);
+        usel.setGravity(Gravity.CENTER_VERTICAL);
+        TextView uprev = arrow("\u25C0"), unext = arrow("\u25B6");
+        uiValue = label("", 12, TEXT, true, 0.12f);
+        uiValue.setGravity(Gravity.CENTER);
+        uiValue.setMinWidth(dp(80));
+        uprev.setOnClickListener(v -> stepUiScale(-1));
+        unext.setOnClickListener(v -> stepUiScale(1));
+        usel.addView(uprev); usel.addView(uiValue); usel.addView(unext);
+        ur.addView(usel);
+        showUiScale();
+
         toggleRow(opts, "CUTSCENES", "Intro, briefings and campaign videos", "cutscenes", true);
         toggleRow(opts, "LOG FILE", "Writes /sdcard/ra3_native.log for bug reports", "log", true);
         toggleRow(opts, "60 FPS  (EXPERIMENTAL)", "Smoother picture; may break build animations and cause white flashes", "fps60", false);
@@ -349,6 +363,19 @@ public class LauncherActivity extends Activity {
         showLanguage();
         checkFiles();
     }
+
+    static final int[] UI_SCALES = {100, 125, 150, 175};
+    TextView uiValue;
+
+    void stepUiScale(int d) {
+        int cur = prefs.getInt("ui_scale", 125), i = 0;
+        for (int k = 0; k < UI_SCALES.length; k++) if (UI_SCALES[k] == cur) i = k;
+        i = Math.max(0, Math.min(UI_SCALES.length - 1, i + d));
+        prefs.edit().putInt("ui_scale", UI_SCALES[i]).apply();
+        showUiScale();
+    }
+
+    void showUiScale() { uiValue.setText(prefs.getInt("ui_scale", 125) + "%"); }
 
     void stepLanguage(int d) {
         if (languages.isEmpty()) return;
@@ -539,6 +566,7 @@ public class LauncherActivity extends Activity {
         cfg.append("cutscenes=").append(prefs.getBoolean("cutscenes", true) ? 1 : 0).append('\n');
         cfg.append("log=").append(prefs.getBoolean("log", true) ? 1 : 0).append('\n');
         cfg.append("fps60=").append(prefs.getBoolean("fps60", false) ? 1 : 0).append('\n');
+        cfg.append("ui_scale=").append(prefs.getInt("ui_scale", 125)).append('\n');
         if (!gamePath.isEmpty()) cfg.append("gamepath=").append(gamePath).append('\n');
         try (FileOutputStream o = new FileOutputStream(new File(getFilesDir(), "launcher.cfg"))) {
             o.write(cfg.toString().getBytes("UTF-8"));

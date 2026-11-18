@@ -26,6 +26,7 @@ struct Config
 	std::string language = "russian";   // RA3_<language>_1.12.SkuDef
 	bool playMovies = true;              // cutscenes and videos
 	bool fps60 = false;                  // experimental 60 fps cap
+	float uiScale = 1.f;                 // in-game interface size (HUD panels in the screen corners)
 };
 std::string commandLine();               // the game's command line (language config)
 extern Config config;
@@ -42,6 +43,8 @@ bool background();
 void waitWhileBackground();      // game thread, from Present
 uint64_t pausedNs();             // total time spent paused (subtracted from the game's clocks)
 void audioPause(bool pause);
+// interface scaling: a touch on an enlarged HUD panel is mapped back to where the game drew that panel (back buffer pixels)
+void uiUnmap(int& x, int& y);
 void perfHintFrame(uint64_t workNs, int renderTid);   // Android performance hint session (ADPF)
 void fpsPinTick();          // time the game spent in its frame limiter since the last call
 void ioStats(uint64_t& bytes, uint64_t& us, uint64_t& calls);   // cumulative ReadFile totals
