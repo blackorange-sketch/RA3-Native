@@ -128,6 +128,8 @@ jobs:
           {
             echo "**Test build** of \`${GITHUB_SHA::7}\` ($(date -u +%F\ %H:%M) UTC). It may be broken — stable versions are on the [releases page](https://github.com/$GITHUB_REPOSITORY/releases/latest)."
             echo
+            echo "Android 10+, arm64. \`ra3-native.apk\`: $(stat -c %s ra3-native.apk) bytes, SHA-256 \`$(sha256sum ra3-native.apk | cut -d' ' -f1)\` — if the installer says the file is invalid, the download was incomplete: download it again and compare."
+            echo
             echo "### Changes since ${PREV:-the first commit}"
             cat changes.md
           } > notes.md
@@ -142,7 +144,9 @@ jobs:
           APK="ra3-native-$TAG.apk"
           cp android/app/build/outputs/apk/debug/app-debug.apk "$APK"
           {
-            echo "Install **$APK** (Android 8.0+, arm64). You need your own copy of Red Alert 3 1.12 — see the [installation guide](https://github.com/$GITHUB_REPOSITORY#installation)."
+            echo "Install **$APK** (Android 10+, arm64). You need your own copy of Red Alert 3 1.12 — see the [installation guide](https://github.com/$GITHUB_REPOSITORY#installation)."
+            echo
+            echo "\`$APK\`: $(stat -c %s "$APK") bytes, SHA-256 \`$(sha256sum "$APK" | cut -d' ' -f1)\` — if the installer says the file is invalid, the download was incomplete: download it again and compare."
             echo
             # hand-written notes in docs/releases/<tag>.md when present, the commit list below them
             if [ -f "docs/releases/$TAG.md" ]; then
