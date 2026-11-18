@@ -96,7 +96,7 @@ float lastDist = 0;
 bool ctrlSticky = false, altSticky = false;
 bool moved = false, twoMoved = false, threeSeen = false, pending = false;
 bool onRadar = false;   // the gesture started on the minimap
-int dragMode = 0;   // 0 none, 1 left button (selection / UI drag), 2 right button (camera pan)
+int dragMode = 0;   // 0 none, 1 left button (selection / UI drag), 2 right button (camera pan), 3 right button held on the minimap
 int startCX = 0, startCY = 0;
 }
 
@@ -109,17 +109,6 @@ void clickWithMods(bool right)
 	if (c) { keys[0x11] = true; push(WM_KEYDOWN, 0x11, 1, 0); }
 	if (a) { keys[0x12] = true; push(WM_KEYDOWN, 0x12, 1, 0); }
 	if (right) { rDown = true; push(WM_RBUTTONDOWN, mouseFlags(), xy(), 40); rDown = false; push(WM_RBUTTONUP, mouseFlags(), xy(), 40); }
-	else if (onRadar)
-	{
-		// minimap: a plain click there is an order for the selected units; a drag always moves the camera. So the tap
-		// becomes a short drag that leaves the cursor where the finger was (the camera jumps to that point)
-		int ox = curX, oy = curY, dx = curX + 24 < bw ? 24 : -24;
-		lDown = true; push(WM_LBUTTONDOWN, mouseFlags(), xy(), 40);
-		curX = ox + dx; push(WM_MOUSEMOVE, mouseFlags(), xy(), 40);
-		curX = ox + dx / 2; push(WM_MOUSEMOVE, mouseFlags(), xy(), 30);
-		curX = ox; curY = oy; push(WM_MOUSEMOVE, mouseFlags(), xy(), 30);
-		lDown = false; push(WM_LBUTTONUP, mouseFlags(), xy(), 60);
-	}
 	else { lDown = true; push(WM_LBUTTONDOWN, mouseFlags(), xy(), 40); lDown = false; push(WM_LBUTTONUP, mouseFlags(), xy(), 40); }
 	if (c) { keys[0x11] = false; push(WM_KEYUP, 0x11, 1u | 0xc0000000u, 0); ctrlSticky = false; }
 	if (a) { keys[0x12] = false; push(WM_KEYUP, 0x12, 1u | 0xc0000000u, 0); altSticky = false; }
@@ -223,7 +212,9 @@ void onTouch(int action, int idx, int count, const float* xs, const float* ys)
 				moved = true;
 				int cx = curX, cy = curY;
 				curX = startCX; curY = startCY;
-				if (onRadar || now - downAt >= 250) { dragMode = 1; lDown = true; push(WM_LBUTTONDOWN, mouseFlags(), xy(), 0); }
+				// minimap: the right button moves the camera there, held while the finger moves
+				if (onRadar) { dragMode = 3; rDown = true; push(WM_RBUTTONDOWN, mouseFlags(), xy(), 0); }
+				else if (now - downAt >= 250) { dragMode = 1; lDown = true; push(WM_LBUTTONDOWN, mouseFlags(), xy(), 0); }
 				else { dragMode = 2; rDown = true; push(WM_RBUTTONDOWN, mouseFlags(), xy(), 0); panBegin(startX, startY); }
 				curX = cx; curY = cy;
 			}
@@ -261,9 +252,11 @@ void onTouch(int action, int idx, int count, const float* xs, const float* ys)
 	}
 	else if (action == UP || action == CANCEL)
 	{
-		if (pending && dragMode == 0 && action == UP) clickWithMods(now - downAt >= 600);   // tap = left click, long press = right click
+		// tap = left click, long press = right click; on the minimap the other way round: a tap (right click) moves the
+		// camera, a long press (left click) sends the selected units there
+		if (pending && dragMode == 0 && action == UP) { bool lp = now - downAt >= 600; clickWithMods(onRadar ? !lp : lp); }
 		if (lDown) { lDown = false; push(WM_LBUTTONUP, mouseFlags(), xy(), 40); }
-		if (rDown && dragMode == 2) { rDown = false; push(WM_RBUTTONUP, mouseFlags(), xy(), 40); }
+		if (rDown && (dragMode == 2 || dragMode == 3)) { rDown = false; push(WM_RBUTTONUP, mouseFlags(), xy(), 40); }
 		if (mDown) { mDown = false; twoPan = false; push(WM_MBUTTONUP, mouseFlags(), xy(), 40); }
 		pending = false; dragMode = 0;
 		threeSeen = false;
