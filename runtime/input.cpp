@@ -27,6 +27,7 @@ int64_t lastReady = 0;
 bool keys[256];
 int curX = 0, curY = 0;
 bool lDown = false, rDown = false, mDown = false;
+bool lGot = false, rGot = false, mGot = false;   // button state as of the messages the game has already received
 bool started = false;
 bool kbToggle = false;
 uint32_t wndProc = 0;
@@ -83,6 +84,9 @@ void mapTo(float sx, float sy)
 	curY = std::max(0, std::min(bh - 1, y));
 }
 
+// the minimap in the top right corner of the in-game HUD (the HUD scales with the back buffer height)
+bool inRadar(int x, int y) { return x >= bw - bh * 275 / 1000 && x <= bw - bh * 15 / 1000 && y >= bh * 10 / 1000 && y <= bh * 280 / 1000; }
+
 // gesture state
 int prevCount = 0;
 int64_t downAt = 0, twoAt = 0, threeAt = 0;
@@ -91,6 +95,7 @@ bool twoPan = false;
 float lastDist = 0;
 bool ctrlSticky = false, altSticky = false;
 bool moved = false, twoMoved = false, threeSeen = false, pending = false;
+bool onRadar = false;   // the gesture started on the minimap
 int dragMode = 0;   // 0 none, 1 left button (selection / UI drag), 2 right button (camera pan)
 int startCX = 0, startCY = 0;
 }
@@ -104,7 +109,11 @@ void clickWithMods(bool right)
 	if (c) { keys[0x11] = true; push(WM_KEYDOWN, 0x11, 1, 0); }
 	if (a) { keys[0x12] = true; push(WM_KEYDOWN, 0x12, 1, 0); }
 	if (right) { rDown = true; push(WM_RBUTTONDOWN, mouseFlags(), xy(), 40); rDown = false; push(WM_RBUTTONUP, mouseFlags(), xy(), 40); }
-	else { lDown = true; push(WM_LBUTTONDOWN, mouseFlags(), xy(), 40); lDown = false; push(WM_LBUTTONUP, mouseFlags(), xy(), 40); }
+	else
+	{
+		// on the minimap the button is held a little longer: the game moves the camera while it sees the button down
+		lDown = true; push(WM_LBUTTONDOWN, mouseFlags(), xy(), 40); lDown = false; push(WM_LBUTTONUP, mouseFlags(), xy(), onRadar ? 120 : 40);
+	}
 	if (c) { keys[0x11] = false; push(WM_KEYUP, 0x11, 1u | 0xc0000000u, 0); ctrlSticky = false; }
 	if (a) { keys[0x12] = false; push(WM_KEYUP, 0x12, 1u | 0xc0000000u, 0); altSticky = false; }
 }
@@ -180,6 +189,8 @@ void onTouch(int action, int idx, int count, const float* xs, const float* ys)
 		push(WM_MOUSEMOVE, mouseFlags(), xy(), 0);
 		// the button press is deferred: a tap clicks, a quick swipe pans the camera, hold-then-drag selects
 		pending = true; dragMode = 0; startCX = curX; startCY = curY;
+		onRadar = inRadar(curX, curY);
+		if (onRadar) { static int nr = 0; if (nr++ < 10) log("input: touch on the minimap at %d,%d", curX, curY); }
 	}
 	else if (action == PDOWN)
 	{
@@ -205,7 +216,7 @@ void onTouch(int action, int idx, int count, const float* xs, const float* ys)
 				moved = true;
 				int cx = curX, cy = curY;
 				curX = startCX; curY = startCY;
-				if (now - downAt >= 250) { dragMode = 1; lDown = true; push(WM_LBUTTONDOWN, mouseFlags(), xy(), 0); }
+				if (onRadar || now - downAt >= 250) { dragMode = 1; lDown = true; push(WM_LBUTTONDOWN, mouseFlags(), xy(), 0); }
 				else { dragMode = 2; rDown = true; push(WM_RBUTTONDOWN, mouseFlags(), xy(), 0); panBegin(startX, startY); }
 				curX = cx; curY = cy;
 			}
@@ -325,6 +336,12 @@ bool pollMsg(Msg& out)
 	if (q.empty() || q.front().readyAt > nowMs()) return false;
 	out = q.front();
 	q.pop_front();
+	switch (out.msg)
+	{
+	case WM_LBUTTONDOWN: lGot = true; break; case WM_LBUTTONUP: lGot = false; break;
+	case WM_RBUTTONDOWN: rGot = true; break; case WM_RBUTTONUP: rGot = false; break;
+	case WM_MBUTTONDOWN: mGot = true; break; case WM_MBUTTONUP: mGot = false; break;
+	}
 	return true;
 }
 void fillMsg(uint32_t p, const Msg& m)
@@ -335,7 +352,9 @@ void fillMsg(uint32_t p, const Msg& m)
 int16_t keyState(uint32_t vk)
 {
 	std::lock_guard<std::mutex> g(mu);
-	bool d = vk < 256 && (vk == 1 ? lDown : vk == 2 ? rDown : keys[vk]);
+	// mouse buttons as the game's message queue sees them: a tap is queued as down+up at once, and the game must still
+	// see the button held while it handles the down message (minimap camera jump)
+	bool d = vk < 256 && (vk == 1 ? lGot : vk == 2 ? rGot : vk == 4 ? mGot : keys[vk]);
 	return d ? (int16_t)0x8001 : 0;
 }
 }
