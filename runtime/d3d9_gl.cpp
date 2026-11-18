@@ -447,6 +447,9 @@ void resizeBackBufferImpl()
 	glClearColor(0.f, 0.f, 0.f, 1.f);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 	if (gBackBuffer) { gBackBuffer->w = backW; gBackBuffer->h = backH; }
+	// the device's own depth buffer is a texture of the old size: recreate it, otherwise every render target used with it
+	// is clipped to the old resolution (world drawn in a corner after changing the resolution in the game's options)
+	if (gDefaultDs && gDefaultDs->glTex) { glDeleteTextures(1, &gDefaultDs->glTex); gDefaultDs->glTex = 0; gDefaultDs->glVer = 0; gTexBindDirty = true; }
 	log("GL: back buffer resized to %ux%u (status 0x%x)", backW, backH, glCheckFramebufferStatus(GL_FRAMEBUFFER));
 }
 
