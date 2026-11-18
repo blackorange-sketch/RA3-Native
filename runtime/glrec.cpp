@@ -29,7 +29,9 @@ Chunk* cur = nullptr;
 uint64_t submitted = 0, executed = 0;          // chunks (guarded by qm)
 uint64_t framesSub = 0, framesDone = 0;
 bool renderWaiting = false;                    // render thread blocked on qcv (guarded by qm)
-int doneWaiters = 0;                           // producers blocked on doneCv (guarded by qm)        // frame markers (guarded by qm)
+int doneWaiters = 0;                           // producers blocked on doneCv (guarded by qm)
+std::atomic<uint64_t> nSubmitted{0};
+uint64_t executedSeen = 0;                     // chunks taken by the render thread (render thread only)           // mirror of `submitted` for the render thread's lock-free poll
 std::atomic<uint64_t> busyUs{0};
 std::atomic<int> gRenderTid{0};
 
@@ -57,6 +59,7 @@ void publishLocked()   // producer lock held
 		std::lock_guard<std::mutex> l(qm);
 		ready.push_back(cur);
 		submitted++;
+		nSubmitted.store(submitted, std::memory_order_release);
 		wake = renderWaiting;
 	}
 	if (wake) qcv.notify_one();
@@ -68,10 +71,21 @@ void renderLoop()
 	for (;;)
 	{
 		Chunk* c;
+		// poll briefly before sleeping: the game publishes chunks in quick succession, and waking a sleeping render
+		// thread cost the game thread a futex syscall per chunk (several % of its time in the profile)
+		{
+			uint64_t t0 = nowUs();
+			for (int i = 0; nSubmitted.load(std::memory_order_acquire) == executedSeen; i++)
+			{
+				if ((i & 63) == 63 && nowUs() - t0 > 1000) break;
+				__asm__ __volatile__("yield");
+			}
+		}
 		{
 			std::unique_lock<std::mutex> l(qm);
 			if (ready.empty()) { renderWaiting = true; qcv.wait(l, [] { return !ready.empty(); }); renderWaiting = false; }
 			c = ready.front(); ready.pop_front();
+			executedSeen++;
 		}
 		uint64_t t0 = nowUs();
 		size_t off = 0;

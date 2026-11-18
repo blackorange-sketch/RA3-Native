@@ -91,10 +91,41 @@ Waitable* asWaitable(uint32_t h)
 }
 
 // ---- critical sections: the guest struct stores an index into a host mutex table
-std::recursive_mutex* csTable[1 << 16];
+// recursive lock with an inline owner check (std::recursive_mutex: a pthread call + tid lookup each time)
+struct CsLock
+{
+	std::atomic<pthread_t> owner{0};
+	std::mutex m;
+	int depth = 0;
+	void lock()
+	{
+		pthread_t me = pthread_self();
+		if (owner.load(std::memory_order_relaxed) == me) { depth++; return; }
+		m.lock();
+		owner.store(me, std::memory_order_relaxed);
+		depth = 1;
+	}
+	bool try_lock()
+	{
+		pthread_t me = pthread_self();
+		if (owner.load(std::memory_order_relaxed) == me) { depth++; return true; }
+		if (!m.try_lock()) return false;
+		owner.store(me, std::memory_order_relaxed);
+		depth = 1;
+		return true;
+	}
+	void unlock()
+	{
+		if (owner.load(std::memory_order_relaxed) != pthread_self()) return;   // Leave without Enter: ignore
+		if (--depth) return;
+		owner.store(0, std::memory_order_relaxed);
+		m.unlock();
+	}
+};
+CsLock* csTable[1 << 16];
 std::atomic<uint32_t> csCount{1};
 std::mutex csInitMu;
-std::recursive_mutex* csGet(uint32_t cs)
+CsLock* csGet(uint32_t cs)
 {
 	uint32_t idx = guest::load<uint32_t>(cs);
 	if (idx == 0 || idx >= (1u << 16) || !csTable[idx])
@@ -105,7 +136,7 @@ std::recursive_mutex* csGet(uint32_t cs)
 		{
 			idx = csCount++;
 			if (idx >= (1u << 16)) fatal("critical section table full");
-			csTable[idx] = new std::recursive_mutex;
+			csTable[idx] = new CsLock;
 			guest::store<uint32_t>(cs, idx);
 		}
 	}

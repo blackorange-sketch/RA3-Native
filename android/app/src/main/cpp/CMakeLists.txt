@@ -15,6 +15,7 @@ add_library(ra3native SHARED
   ${LIFTED_SRC})
 target_include_directories(ra3native PRIVATE ${GLUE} ${RT} ${LIFTED_DIR})
 # RA3_TRACE (per-call ring trace for crash reports) is off for speed; fatal faults print a host frame walk instead.
-target_compile_options(ra3native PRIVATE -O2 -fno-strict-aliasing -w)
+# Android 10+: native ELF TLS (emulated TLS cost ~1.5% of the game thread in the profile)
+target_compile_options(ra3native PRIVATE -O2 -fno-strict-aliasing -w -fno-emulated-tls)
 target_link_libraries(ra3native android log EGL GLESv3 aaudio)
 set_target_properties(ra3native PROPERTIES LINK_FLAGS "-Wl,-u,ANativeActivity_onCreate")
