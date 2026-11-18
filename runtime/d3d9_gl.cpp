@@ -615,7 +615,8 @@ GLenum stencilOp(uint32_t o)
 {
 	switch (o) { case 2: return GL_ZERO; case 3: return GL_REPLACE; case 4: return GL_INCR; case 5: return GL_DECR; case 6: return GL_INVERT; case 7: return GL_INCR_WRAP; case 8: return GL_DECR_WRAP; default: return GL_KEEP; }
 }
-static bool gHasBorder = false;   // GL_EXT/OES_texture_border_clamp (or GLES 3.2)
+static bool gHasBorder = false;
+static float gMaxAniso = 1.f;   // GL_EXT_texture_filter_anisotropic   // GL_EXT/OES_texture_border_clamp (or GLES 3.2)
 GLenum wrapMode(uint32_t a)
 {
 	// D3DTADDRESS_BORDER: samples outside [0,1] return the border colour (shadow maps rely on it: outside the map = lit)
@@ -787,6 +788,13 @@ void bindSamplers(Prog* p, ShaderObj* ps)
 		else minF = (!hasMips || mip == 0) ? GL_LINEAR : mip == 1 ? GL_LINEAR_MIPMAP_NEAREST : GL_LINEAR_MIPMAP_LINEAR;
 		sp(3, GL_TEXTURE_MIN_FILTER, minF);
 		sp(4, GL_TEXTURE_MAG_FILTER, (noFilter || mag == 1) ? GL_NEAREST : GL_LINEAR);
+		{
+			// D3DTEXF_ANISOTROPIC (3) with D3DSAMP_MAXANISOTROPY: terrain and roads seen at the camera's angle
+			static float aniso[16] = {0};
+			float want = 1.f;
+			if (!noFilter && gMaxAniso > 1.f && (mn == 3 || mag == 3)) want = std::max(1.f, std::min((float)std::max(1u, s[10]), gMaxAniso));
+			if (aniso[i] != want) { glSamplerParameterf(gSamplers[i], 0x84FE, want); aniso[i] = want; }   // GL_TEXTURE_MAX_ANISOTROPY_EXT
+		}
 		cacheValid[i] = true;
 	}
 	p->samplersSet = true;
@@ -847,7 +855,8 @@ bool init()
 	{
 		GLint maj = 0, mnr = 0; glGetIntegerv(GL_MAJOR_VERSION, &maj); glGetIntegerv(GL_MINOR_VERSION, &mnr);
 		gHasBorder = (maj > 3 || (maj == 3 && mnr >= 2)) || (ext && (strstr(ext, "_texture_border_clamp")));
-		log("GL: border clamp %d (GLES %d.%d)", (int)gHasBorder, maj, mnr);
+		if (ext && strstr(ext, "GL_EXT_texture_filter_anisotropic")) { GLfloat m = 1.f; glGetFloatv(0x84FF, &m); gMaxAniso = m; }   // MAX_TEXTURE_MAX_ANISOTROPY
+		log("GL: border clamp %d (GLES %d.%d), max anisotropy %g", (int)gHasBorder, maj, mnr, (double)gMaxAniso);
 	}
 	log("GL: %s | %s | s3tc %d | float rt %d", glGetString(GL_RENDERER), glGetString(GL_VERSION), (int)gHasS3tc, ext && strstr(ext, "EXT_color_buffer_float") != nullptr);
 	glGenVertexArrays(1, &gVao);
