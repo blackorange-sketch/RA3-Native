@@ -1349,24 +1349,26 @@ static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, 
 	bool diag = uiDiagFrame();
 	if (!apt && !pass) { if (diag) log("ui-diag: vs %016llx prim %u n %u: not an interface shader", (unsigned long long)dev.vs->hash, dc.prim, dc.primCount); return 0.f; }
 	const DeclElem* pe = nullptr;
-	for (uint32_t i = 0; i < nEls; i++) if (els[i].usage == 0 && els[i].index == 0 && (els[i].type == 2 || els[i].type == 3)) { pe = &els[i]; break; }
-	if (!pe) return 0.f;
+	for (uint32_t i = 0; i < nEls; i++) if (els[i].usage == 0 && els[i].index == 0 && (els[i].type >= 1 && els[i].type <= 3)) { pe = &els[i]; break; }
+	auto fail = [&](const char* why) { if (diag) log("ui-diag: vs %016llx prim %u n %u skipped: %s", (unsigned long long)dev.vs->hash, dc.prim, dc.primCount, why); return 0.f; };
+	if (!pe) { if (diag) { std::string t; for (uint32_t q = 0; q < nEls; q++) { char b[32]; snprintf(b, sizeof b, " u%u.%u:t%u", els[q].usage, els[q].index, els[q].type); t += b; } log("ui-diag: no position element:%s", t.c_str()); } return 0.f; }
 	const uint8_t* vb; uint32_t stride; uint64_t vbSize;
 	if (dc.upVerts) { vb = (const uint8_t*)dc.upVerts; stride = dc.upStride; vbSize = ~0ull; }
 	else
 	{
 		const Stream& st = dev.streams[pe->stream < 16 ? pe->stream : 0];
-		if (!st.vb || !st.vb->data || !st.stride) return 0.f;
+		if (!st.vb || !st.vb->data || !st.stride) return fail("no vertex data");
 		vb = (const uint8_t*)guest::host(st.vb->data) + st.offset; stride = st.stride; vbSize = st.vb->size > st.offset ? st.vb->size - st.offset : 0;
 	}
 	uint32_t nIdx = (uint32_t)primVertices(dc.prim, dc.primCount);
-	if (!nIdx || nIdx > 6000) return 0.f;
+	if (!nIdx || nIdx > 6000) return fail("vertex count");
 	float m[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
 	if (apt) memcpy(m, dev.vsF + 4 * 11, sizeof m);
-	if (m[12] != 0.f || m[13] != 0.f) return 0.f;   // w must not depend on x, y (flat interface)
+	if (m[12] != 0.f || m[13] != 0.f) return fail("perspective");   // w must not depend on x, y (flat interface)
 	const bool pos4 = pe->type == 3;
+	const size_t posBytes = pe->type == 1 ? 8 : pos4 ? 16 : 12;
 	float det = m[0] * m[5] - m[1] * m[4];
-	if (fabsf(det) < 1e-12f) return 0.f;
+	if (fabsf(det) < 1e-12f) return fail("singular matrix");
 	uint32_t vx = dev.vp[0], vy = dev.vp[1], vw = dev.vp[2], vh = dev.vp[3];
 	if (!vw || !vh) { vx = vy = 0; targetSize(nullptr, vw, vh); }
 	const float W = (float)vw, H = (float)vh;
@@ -1374,8 +1376,8 @@ static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, 
 	if (dc.indexed)
 	{
 		if (dc.upIdx) { ip = (const uint8_t*)dc.upIdx; i32 = dc.upIdxFmt == 102; }
-		else if (dev.ib && dev.ib->data) { i32 = dev.ib->fmt == 102; if ((uint64_t)(dc.startIndex + nIdx) * (i32 ? 4 : 2) > dev.ib->size) return 0.f; ip = (const uint8_t*)guest::host(dev.ib->data) + (uint64_t)dc.startIndex * (i32 ? 4 : 2); }
-		else return 0.f;
+		else if (dev.ib && dev.ib->data) { i32 = dev.ib->fmt == 102; if ((uint64_t)(dc.startIndex + nIdx) * (i32 ? 4 : 2) > dev.ib->size) return fail("index range"); ip = (const uint8_t*)guest::host(dev.ib->data) + (uint64_t)dc.startIndex * (i32 ? 4 : 2); }
+		else return fail("no index buffer");
 	}
 	static std::vector<int64_t> vix; static std::vector<float> sxy, wv;
 	vix.resize(nIdx); sxy.resize(nIdx * 2); wv.resize(nIdx);
@@ -1385,12 +1387,12 @@ static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, 
 		int64_t v;
 		if (ip) { uint32_t k; if (i32) memcpy(&k, ip + 4 * i, 4); else { uint16_t s16; memcpy(&s16, ip + 2 * i, 2); k = s16; } v = (int64_t)dc.baseVertex + k; }
 		else v = (int64_t)dc.baseVertex + i;
-		if (v < 0 || (uint64_t)(v + 1) * stride > vbSize) return 0.f;
-		float p[4] = {0, 0, 0, 1}; memcpy(p, vb + (uint64_t)v * stride + pe->offset, pos4 ? 16 : 12);
+		if (v < 0 || (uint64_t)v * stride + pe->offset + posBytes > vbSize) return fail("vertex outside the buffer");
+		float p[4] = {0, 0, 0, 1}; memcpy(p, vb + (uint64_t)v * stride + pe->offset, posBytes);
 		float cx = p[0] * m[0] + p[1] * m[1] + p[2] * m[2] + p[3] * m[3];
 		float cy = p[0] * m[4] + p[1] * m[5] + p[2] * m[6] + p[3] * m[7];
 		float cw = p[2] * m[14] + p[3] * m[15];
-		if (fabsf(cw) < 1e-6f) return 0.f;
+		if (fabsf(cw) < 1e-6f) return fail("w = 0");
 		float sx = vx + (cx / cw + 1.f) * 0.5f * W, sy = vy + (1.f - cy / cw) * 0.5f * H;
 		vix[i] = v; sxy[2 * i] = sx; sxy[2 * i + 1] = sy; wv[i] = cw;
 		x0 = std::min(x0, sx); x1 = std::max(x1, sx); y0 = std::min(y0, sy); y1 = std::max(y1, sy);
@@ -1430,7 +1432,7 @@ static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, 
 		axN = (c - 1) & 1 ? 1.f : -1.f; ayN = (c - 1) & 2 ? -1.f : 1.f;
 		return s - 1.f;
 	}
-	if (dc.prim != 4 || nIdx % 3) return 0.f;
+	if (dc.prim != 4 || nIdx % 3) return fail("mixed corners, not a triangle list");
 	// mixed draw: per triangle
 	bool any = false;
 	for (uint32_t t = 0; t < nIdx && !any; t += 3)
@@ -1451,13 +1453,13 @@ static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, 
 		for (uint32_t k = t; k < t + 3; k++)
 		{
 			uint8_t* d = split.data() + (size_t)k * stride;
-			memcpy(d, vb + (uint64_t)vix[k] * stride, stride);
+			{ uint64_t at = (uint64_t)vix[k] * stride; memset(d, 0, stride); memcpy(d, vb + at, (size_t)std::min<uint64_t>(stride, vbSize - at)); }
 			if (!tc) continue;
 			// new screen position -> clip space -> object x, y (z kept)
 			float nx = cx + (sxy[2 * k] - cx) * s, ny = cy + (sxy[2 * k + 1] - cy) * s;
 			float w = wv[k];
 			float qx = ((nx - vx) / W * 2.f - 1.f) * w, qy = (1.f - (ny - vy) / H * 2.f) * w;
-			float p[4] = {0, 0, 0, 1}; memcpy(p, d + pe->offset, pos4 ? 16 : 12);
+			float p[4] = {0, 0, 0, 1}; memcpy(p, d + pe->offset, posBytes);
 			float rx = qx - m[2] * p[2] - m[3] * p[3], ry = qy - m[6] * p[2] - m[7] * p[3];
 			p[0] = (rx * m[5] - m[1] * ry) / det;
 			p[1] = (m[0] * ry - rx * m[4]) / det;
