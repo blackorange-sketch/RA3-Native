@@ -637,7 +637,9 @@ static void packConst(const FxInfo& fx, const CtabConst& c, ShaderObj* sh, bool 
 	uint32_t maxF = isVs ? 256 : 224;
 	// only the registers the shader's constant table assigns: the compiler drops unused rows (World float4x4 used
 	// as 2 registers), and the next constant (Shroud) lives right behind them
-	uint32_t n = std::max(1u, c.regCount);
+	// /sdcard/ra3_fullpack: old behaviour (whole parameter, may spill into the following registers) for A/B checks
+	static const bool fullPack = access("/sdcard/ra3_fullpack", F_OK) == 0;
+	uint32_t n = fullPack ? 4096u : std::max(1u, c.regCount);
 	if (c.regSet == 2)
 	{
 		if (c.regIndex >= maxF) return;
