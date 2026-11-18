@@ -1,4 +1,5 @@
 #include <chrono>
+namespace rt { extern bool gFps60; }
 // ID3DXEffect: parameter storage and handles, technique/pass application onto the device state.
 #include <unistd.h>
 #include <set>
@@ -420,7 +421,6 @@ H("ID3DXEffect::GetParameterDesc")
 
 // ---- setters
 // 60 fps diagnostics: how the game's shader clock 'Time' advances against wall time and presented frames, and who sets it
-namespace rt { extern bool gFps60; }
 static void noteTime(CPU* c, const PRef& r, const void* v, const char* how)
 {
 	if (!r.valid() || r.p->name != "Time") return;
@@ -430,7 +430,7 @@ static void noteTime(CPU* c, const PRef& r, const void* v, const char* how)
 	if (n >= 40 || us - lastUs < 1000000) return;
 	lastUs = us; n++;
 	float f; memcpy(&f, v, 4);
-	log("fxtime: %s Time=%.4f at %.3f s, frame %u, fps60 %d, caller %08x %08x", how, f, us / 1e6, glr::frameNo(), rt::gFps60 ? 1 : 0,
+	log("fxtime: %s Time=%.4f at %.3f s, frame %u, fps60 %d, caller %08x %08x", how, f, us / 1e6, glr::frameNo(), ::rt::gFps60 ? 1 : 0,
 	    guest::load<uint32_t>(c->r[ESP]), guest::load<uint32_t>(c->r[EBP] + 4));
 }
 H("ID3DXEffect::SetValue")
