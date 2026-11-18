@@ -2,17 +2,23 @@ name: Android APK
 
 # Two channels:
 #  * every push to main -> the 'nightly' pre-release (test builds, tag moved to the built commit)
-#  * a pushed tag vX.Y.Z -> a stable release 'vX.Y.Z' with its own version number and a changelog
+#  * Actions -> "Android APK" -> Run workflow with a version (e.g. 0.2.0), or a pushed tag vX.Y.Z -> a stable release
+#    'vX.Y.Z' with its own version number and a changelog
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Stable version to release, e.g. 0.2.0 (leave empty for a nightly build)'
+        required: false
+        default: ''
   push:
     branches: [main]
     tags: ['v*']
     paths: ['runtime/**', 'tools/**', 'android/**', '.github/workflows/android.yml']
 
 concurrency:
-  group: build-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
+  group: build-${{ github.ref }}-${{ inputs.version || 'nightly' }}
+  cancel-in-progress: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
 permissions:
   contents: write
@@ -25,9 +31,14 @@ jobs:
         with: { fetch-depth: 0 }   # tags and history for the changelog
 
       - name: Channel and version
+        env: { INPUT_VERSION: '${{ inputs.version }}' }
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            echo "CHANNEL=stable" >> $GITHUB_ENV; echo "APP_VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_ENV
+          if [ -n "$INPUT_VERSION" ]; then V="${INPUT_VERSION#v}"
+          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then V="${GITHUB_REF_NAME#v}"
+          else V=""; fi
+          if [ -n "$V" ]; then
+            [[ "$V" =~ ^[0-9]+(\.[0-9]+){1,2}(-[0-9A-Za-z.]+)?$ ]] || { echo "bad version '$V'"; exit 1; }
+            echo "CHANNEL=stable" >> $GITHUB_ENV; echo "APP_VERSION=$V" >> $GITHUB_ENV; echo "TAG=v$V" >> $GITHUB_ENV
           else
             echo "CHANNEL=nightly" >> $GITHUB_ENV; echo "APP_VERSION=nightly" >> $GITHUB_ENV
           fi
@@ -94,7 +105,7 @@ jobs:
       # The APK is published as a release asset (does not count against the Actions artifact quota).
       - name: Changelog
         run: |
-          PREV=$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD^ 2>/dev/null || true)
+          PREV=$(git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude "${TAG:-none}" HEAD 2>/dev/null || true)
           echo "PREV=$PREV" >> $GITHUB_ENV
           if [ -n "$PREV" ]; then git log --no-merges --pretty='- %s' "$PREV..HEAD" > changes.md; else git log --no-merges --pretty='- %s' -n 40 > changes.md; fi
 
@@ -118,7 +129,7 @@ jobs:
         if: env.CHANNEL == 'stable'
         env: { GH_TOKEN: '${{ github.token }}' }
         run: |
-          APK="ra3-native-$GITHUB_REF_NAME.apk"
+          APK="ra3-native-$TAG.apk"
           cp android/app/build/outputs/apk/debug/app-debug.apk "$APK"
           {
             echo "Install **$APK** (Android 8.0+, arm64). You need your own copy of Red Alert 3 1.12 — see the [installation guide](https://github.com/$GITHUB_REPOSITORY#installation)."
@@ -126,7 +137,9 @@ jobs:
             echo "### Changes since ${PREV:-the first commit}"
             cat changes.md
           } > notes.md
-          gh release create "$GITHUB_REF_NAME" "$APK" --title "RA3 Native $GITHUB_REF_NAME" --notes-file notes.md --verify-tag
+          gh release create "$TAG" "$APK" --title "RA3 Native $TAG" --notes-file notes.md --target "$GITHUB_SHA"
+          # the old single 'latest' pre-release shadows GitHub's /releases/latest link
+          gh release delete latest --cleanup-tag -y 2>/dev/null || true
 
       - uses: actions/upload-artifact@v4
         continue-on-error: true
