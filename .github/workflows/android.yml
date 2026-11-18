@@ -134,8 +134,14 @@ jobs:
           {
             echo "Install **$APK** (Android 8.0+, arm64). You need your own copy of Red Alert 3 1.12 — see the [installation guide](https://github.com/$GITHUB_REPOSITORY#installation)."
             echo
-            echo "### Changes since ${PREV:-the first commit}"
-            cat changes.md
+            # hand-written notes in docs/releases/<tag>.md when present, the commit list below them
+            if [ -f "docs/releases/$TAG.md" ]; then
+              cat "docs/releases/$TAG.md"; echo
+              echo "<details><summary>All changes since ${PREV:-the first commit}</summary>"; echo; cat changes.md; echo; echo "</details>"
+            else
+              echo "### Changes since ${PREV:-the first commit}"
+              cat changes.md
+            fi
           } > notes.md
           gh release create "$TAG" "$APK" --title "RA3 Native $TAG" --notes-file notes.md --target "$GITHUB_SHA"
           # the old single 'latest' pre-release shadows GitHub's /releases/latest link
