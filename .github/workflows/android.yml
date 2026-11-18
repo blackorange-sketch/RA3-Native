@@ -103,6 +103,15 @@ jobs:
           gradle assembleDebug -PbuildId=${{ github.sha }} -PversionName=$APP_VERSION -PversionCode=${{ github.run_number }} -PliftedDir=${{ github.workspace }}/lifted $CC_OPT --no-daemon
           command -v ccache >/dev/null && ccache -s | head -8 || echo "built without ccache"
 
+      # Symbols of the runtime (static functions have no dynamic symbol): the profiler (/sdcard/ra3_prof) logs raw
+      # offsets that are resolved with this list. Lifted game functions (f_<address>) are left out, they are exported.
+      - name: Runtime symbol list
+        run: |
+          SO=$(find android/app/build/intermediates -path '*arm64-v8a*' -name libra3native.so -size +1M | xargs ls -S | head -1)
+          NM=$(ls $ANDROID_HOME/ndk/*/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm | head -1)
+          "$NM" -n -S -C --defined-only "$SO" | grep -iv ' f_00[0-9a-f]*(CPU\*)' | grep -i ' [tw] ' > ra3native-symbols.txt || true
+          wc -l ra3native-symbols.txt; echo "from $SO"
+
       # The APK is published as a release asset (does not count against the Actions artifact quota).
       - name: Changelog
         run: |
@@ -123,7 +132,7 @@ jobs:
             cat changes.md
           } > notes.md
           gh release view nightly >/dev/null 2>&1 || gh release create nightly --title "Nightly build" --notes "Nightly" --prerelease --target "$GITHUB_SHA"
-          gh release upload nightly ra3-native.apk --clobber
+          gh release upload nightly ra3-native.apk ra3native-symbols.txt --clobber
           gh release edit nightly --notes-file notes.md --prerelease
 
       - name: Publish stable release
@@ -144,7 +153,7 @@ jobs:
               cat changes.md
             fi
           } > notes.md
-          gh release create "$TAG" "$APK" --title "RA3 Native $TAG" --notes-file notes.md --target "$GITHUB_SHA"
+          gh release create "$TAG" "$APK" ra3native-symbols.txt --title "RA3 Native $TAG" --notes-file notes.md --target "$GITHUB_SHA"
           # the old single 'latest' pre-release shadows GitHub's /releases/latest link
           gh release delete latest --cleanup-tag -y 2>/dev/null || true
 

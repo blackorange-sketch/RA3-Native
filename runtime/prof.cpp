@@ -112,6 +112,27 @@ void reporter()
 			if ((i + 1) % 6 == 0) { rt::log("prof callers:%s", line.c_str()); line.clear(); }
 		}
 		if (!line.empty()) rt::log("prof callers:%s", line.c_str());
+		// exact offsets of the hottest samples in libra3native.so code without a dynamic symbol (static functions):
+		// resolved offline with the symbol list published next to the APK (ra3native-symbols.txt)
+		std::unordered_map<uintptr_t, uint32_t> perOff;
+		Dl_info self{};
+		if (dladdr((void*)&reporter, &self) && self.dli_fbase)
+			for (auto& kv : perPc)
+			{
+				const std::string& nm = nameOf(kv.first, cache);
+				if (nm.compare(0, 16, "libra3native.so+") == 0) perOff[kv.first - (uintptr_t)self.dli_fbase] += kv.second;
+			}
+		std::vector<std::pair<uint32_t, uintptr_t>> vo;
+		for (auto& kv : perOff) vo.push_back({kv.second, kv.first});
+		std::sort(vo.rbegin(), vo.rend());
+		line.clear();
+		for (size_t i = 0; i < vo.size() && i < 120; i++)
+		{
+			char b[40]; snprintf(b, sizeof b, " %zx:%u", (size_t)vo[i].second, vo[i].first);
+			line += b;
+			if ((i + 1) % 12 == 0) { rt::log("prof raw:%s", line.c_str()); line.clear(); }
+		}
+		if (!line.empty()) rt::log("prof raw:%s", line.c_str());
 	}
 }
 }
