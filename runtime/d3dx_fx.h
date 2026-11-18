@@ -77,6 +77,7 @@ struct FxInfo
 	std::vector<FxTech> techs;
 	uint32_t current = 0;
 	int diagId = -1;     // effect-usage statistics
+	int gpuParticle = -1;   // -1 unknown, 1: GPU particle effect (Physics + Update parameters)
 	int shroudIdx = -2;  // index of the Terrain.Shroud parameter (-1 none, -2 not looked up yet)
 	uint32_t base = 0;   // header size that offsets are relative to (4 or 8)
 	std::vector<uint8_t> blob;

@@ -812,6 +812,15 @@ void fxApplyPass(Obj* o)
 				std::vector<uint32_t> regs(nd, 0);
 				fxrt::packToRegs(pp.ty, pp.val.data(), pp.val.size(), 2, 0, regs.data(), (uint32_t)(nd / 4));
 				for (size_t i = 0; i < nd; i++) { float f; memcpy(&f, &regs[i], 4); dst[i] = f; }
+				// GPU particles: the shader turns Time into a frame clock with a fixed 30 (frames per second) while the
+				// game stamps each particle's birth with the frame clock of the current cap. Above 30 fps the clocks
+				// drift apart (particles born "in the future", effects stretched or overbright): scale Time to match.
+				if (c.name == "Time" && ::rt::gFps60 && nd)
+				{
+					if (fx->gpuParticle < 0) fx->gpuParticle = fxrt::findParam(*fx, "Physics") >= 0 && fxrt::findParam(*fx, "Update") >= 0 ? 1 : 0;
+					uint32_t cap = guest::load<uint32_t>(0xcaf9d4);
+					if (fx->gpuParticle == 1 && cap > 30 && cap <= 240) dst[0] *= cap / 30.0;
+				}
 			};
 			fxrt::PresOut po;
 			bool okp = fxrt::runPreshader(sh->info.pres.data(), sh->info.pres.size(), fill, po);
