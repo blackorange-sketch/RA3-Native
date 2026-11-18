@@ -254,7 +254,7 @@ void draw(ANativeWindow* w)
 					float a = d < 1.f ? 0.4f * (1.f - d) : 0.f;   // 0x66 alpha fading out
 					float r = br + (0xa0 - br) * a, g = bgc + (0x0d - bgc) * a, bl = bb + (0x10 - bb) * a;
 					if (scan) { r += (255 - r) * 0.047f; g += (255 - g) * 0.047f; bl += (255 - bl) * 0.047f; }
-					bg[(size_t)y * W + x] = 0xff000000u | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)bl;   // 0xAARRGGBB
+					bg[(size_t)y * W + x] = 0xff000000u | ((uint32_t)bl << 16) | ((uint32_t)g << 8) | (uint32_t)r;   // memory order R, G, B, A (0xAABBGGRR)
 				}
 			}
 			bgW = W; bgH = H;
@@ -295,11 +295,11 @@ void draw(ANativeWindow* w)
 		int sc2 = std::max(1, sc / 2);
 		char st[64];
 		snprintf(st, sizeof st, "LOADING  %d%%", (int)(shown * 100.f + 0.5f));
-		big((W - (int)strlen(st) * 8 * sc2) / 2, H / 2 + 4 * sc, sc2, st, 0xffffc21a);
+		big((W - (int)strlen(st) * 8 * sc2) / 2, H / 2 + 4 * sc, sc2, st, 0xff1ac2ff);
 		// red rule + hazard stripes as the progress bar (lit part = progress), like the launcher
 		int bh = 8 * dp;
 		for (int y = H - bh - 3 * dp; y < H - bh; y++)
-			for (int x = 0; x < W; x++) px[y * b.stride + x] = 0xff6e0a0c;   // RED_DARK
+			for (int x = 0; x < W; x++) px[y * b.stride + x] = 0xff0c0a6e;   // RED_DARK
 		int fill = (int)(W * shown);
 		for (int y = H - bh; y < H; y++)
 			for (int x = 0; x < W; x++)
@@ -307,11 +307,11 @@ void draw(ANativeWindow* w)
 				int d = (x + (H - y)) % (bh * 2);
 				bool stripe = d < bh;
 				uint32_t c = 0xff111111;
-				if (stripe) c = x <= fill ? 0xffffc21au : 0xff4a3c16u;   // YELLOW lit / dim
+				if (stripe) c = x <= fill ? 0xff1ac2ffu : 0xff163c4au;   // YELLOW lit / dim
 				px[y * b.stride + x] = c;
 			}
 		for (int y = 6 * dp; y < 7 * dp; y++)
-			for (int x = 0; x < W; x++) px[y * b.stride + x] = 0xff80161a;   // thin top rule
+			for (int x = 0; x < W; x++) px[y * b.stride + x] = 0xff1a1680;   // thin top rule
 		unlockAndPost();
 		return;
 	}
