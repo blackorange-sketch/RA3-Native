@@ -1451,7 +1451,8 @@ static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, 
 		if (!attached) noteRight(c, x0, y0, x1, y1);
 		float s = scaleOf(c);
 		addRect(x0, y0, x1, y1, ax, ay, s);
-		if (gUiPieces.size() < 2000) gUiPieces.push_back({x0, y0, x1, y1, ax, ay, s});
+		// a tooltip's text can start left of its box: texts get a wider catch area to the left of attached popups
+		if (gUiPieces.size() < 2000) gUiPieces.push_back({attached ? x0 - 0.12f * W : x0, y0, x1, y1, ax, ay, s});
 		axN = (c - 1) & 1 ? 1.f : -1.f; ayN = (c - 1) & 2 ? -1.f : 1.f;
 		return s - 1.f;
 	}
