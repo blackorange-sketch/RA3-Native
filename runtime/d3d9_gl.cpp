@@ -230,12 +230,44 @@ static void uploadTextureImpl(Obj* o)
 	TexFmt tf = texFmtOf(o->fmt);
 	GLenum target = targetOf(o);
 	glBindTexture(target, o->glTex); gTexBindDirty = true;
-	if (tf.compressed && !gHasS3tc) { tf.compressed = false; tf.convert = true; }   // decoded to RGBA8 on the CPU (expandLevel)
+	// GPUs without S3TC (Mali, PowerVR): DXT is decoded on the CPU. Opaque DXT1 becomes RGB565 (half the memory of RGBA8),
+	// and textures of 512 px and up start at their second mip level (a quarter of the memory) unless /sdcard/ra3_fulltex exists
+	bool soft = tf.compressed && !gHasS3tc;
+	bool to565 = false;
+	uint32_t skip = 0;
+	if (soft)
+	{
+		tf.compressed = false; tf.convert = true;
+		static const bool fullTex = access("/sdcard/ra3_fulltex", F_OK) == 0;
+		if (!fullTex && o->levels > 1 && o->w >= 512 && o->h >= 512 && o->iface != IVolume) skip = 1;
+		if (o->fmt == 0x31545844 && o->data)
+		{
+			// punch-through alpha: a block with c0 <= c1 that uses index 3
+			to565 = true;
+			for (uint32_t f = 0; f < o->faces && to565; f++)
+				for (uint32_t l = skip; l < o->levels && to565; l++)
+				{
+					uint32_t w = std::max(1u, o->w >> l), h = std::max(1u, o->h >> l), nb = ((w + 3) / 4) * ((h + 3) / 4);
+					const uint8_t* b = (const uint8_t*)guest::host(o->data + o->levelOff[f * o->levels + l]);
+					for (uint32_t k = 0; k < nb; k++, b += 8)
+					{
+						uint16_t c0 = b[0] | (b[1] << 8), c1 = b[2] | (b[3] << 8);
+						if (c0 > c1) continue;
+						uint32_t idx = b[4] | (b[5] << 8) | (b[6] << 16) | ((uint32_t)b[7] << 24);
+						bool t = false;
+						for (int i = 0; i < 16; i++) if (((idx >> (2 * i)) & 3) == 3) { t = true; break; }
+						if (t) { to565 = false; break; }
+					}
+				}
+		}
+		static int nl = 0;
+		if (nl++ < 8) log("GL: no S3TC: decoding %ux%u DXT%c texture on the CPU (%s, from level %u)", o->w, o->h, (char)(o->fmt >> 24), to565 ? "RGB565" : "RGBA8", skip);
+	}
 	if (!(o->rtTex && !o->data))
 	{
 		std::vector<uint8_t> tmp;
 		for (uint32_t f = 0; f < o->faces; f++)
-			for (uint32_t l = 0; l < o->levels; l++)
+			for (uint32_t l = skip; l < o->levels; l++)
 			{
 				uint32_t w = std::max(1u, o->w >> l), h = std::max(1u, o->h >> l), d = std::max(1u, o->d >> l);
 				const uint8_t* src = (const uint8_t*)guest::host(o->data + o->levelOff[f * o->levels + l]);
@@ -257,7 +289,15 @@ static void uploadTextureImpl(Obj* o)
 					else
 					{
 						expandLevel(o->fmt, src, w, h, tmp);
-						glTexImage2D(tgt, l, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, tmp.data());
+						if (to565)
+						{
+							size_t n = (size_t)w * h;
+							uint16_t* d16 = (uint16_t*)tmp.data();   // in place: each 4-byte pixel becomes 2 bytes
+							for (size_t i = 0; i < n; i++) { const uint8_t* q = &tmp[i * 4]; d16[i] = (uint16_t)(((q[0] >> 3) << 11) | ((q[1] >> 2) << 5) | (q[2] >> 3)); }
+							glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
+							glTexImage2D(tgt, l, GL_RGB565, w, h, 0, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, tmp.data());
+						}
+						else glTexImage2D(tgt, l, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, tmp.data());
 					}
 				}
 				else if (o->iface == IVolume) glTexImage3D(GL_TEXTURE_3D, l, tf.internal, w, h, d, 0, tf.format, tf.type, src);
@@ -268,7 +308,7 @@ static void uploadTextureImpl(Obj* o)
 				}
 			}
 	}
-	glTexParameteri(target, GL_TEXTURE_BASE_LEVEL, 0);
+	glTexParameteri(target, GL_TEXTURE_BASE_LEVEL, (GLint)skip);
 	glTexParameteri(target, GL_TEXTURE_MAX_LEVEL, o->levels - 1);
 	if (tf.swizzle)
 	{

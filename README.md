@@ -14,6 +14,7 @@
   <a href="https://github.com/blackorange-sketch/RA3-Native/releases"><img src="https://img.shields.io/github/downloads/blackorange-sketch/RA3-Native/total?color=ffc21a" alt="Downloads"></a>
   <img src="https://img.shields.io/badge/android-8.0%2B%20%7C%20arm64-3ddc84" alt="Android 8.0+ arm64">
   <img src="https://img.shields.io/badge/status-experimental-orange" alt="Experimental">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue" alt="GPL-3.0"></a>
 </p>
 
 > [!IMPORTANT]
@@ -33,6 +34,7 @@
 - [How it works](#how-it-works)
 - [Troubleshooting and diagnostics](#troubleshooting-and-diagnostics)
 - [Building](#building)
+- [License](#license)
 - [Legal](#legal)
 
 ## What works
@@ -51,6 +53,7 @@
 ## Requirements
 
 - **Android 8.0 or newer, 64-bit (arm64)** with OpenGL ES 3.2. Developed and tested on a Snapdragon 8 Gen 2; other recent Snapdragon devices should work.
+- **Mali / PowerVR GPUs** — experimental: these GPUs cannot read the game's DXT textures, so they are decoded on the CPU at load time (and large textures are loaded at half resolution to save memory). Reports from Mali devices are very welcome.
 - **Red Alert 3, patch 1.12** — the full game folder (about 8.7 GB), copied to the phone's internal storage.
 - About **4 GB of free RAM** recommended.
 
@@ -147,6 +150,7 @@ Empty files with these names in `/sdcard` change the runtime's behaviour:
 | `ra3_fxstat` | Per-effect draw statistics |
 | `ra3_frame` | Full trace of two frames (and render-target dumps into `/sdcard/ra3_dump/` if that folder exists) |
 | `ra3_fps60` | 60 fps cap, same as the launcher option |
+| `ra3_fulltex` | Mali / PowerVR: load large textures at full resolution (uses about 4× more memory) |
 
 Remove them again for normal play — some of them slow the game down.
 
@@ -160,6 +164,10 @@ The analyser alone:
 g++ -O2 -std=c++17 -I<capstone>/include tools/analyze.cpp <capstone>/libcapstone.a -o analyze
 ./analyze ra3_1.12.game out
 ```
+
+## License
+
+The code in this repository is licensed under the [GNU General Public License v3.0](LICENSE). Forks and modified builds are welcome under its terms, which means the source of distributed changes stays open under the same license. Please credit RA3 Native with a link to this repository, and never bundle game files. Pull requests — especially for device compatibility — are appreciated.
 
 ## Legal
 
