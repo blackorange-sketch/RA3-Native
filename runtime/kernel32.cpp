@@ -318,7 +318,7 @@ void fpsPinTick()
 		// particle systems advance a fixed step per update, made for 30 updates per second: at a higher cap they
 		// update only on every (cap / 30)-th frame (0x6d18f0 is gated, see ra3_gate)
 		extern bool gParticleSkip;
-		static const bool off = access("/sdcard/ra3_nopthrottle", F_OK) == 0;
+		static const bool off = access("/sdcard/ra3_pthrottle", F_OK) != 0;   // experiment, off by default (lights blinked)
 		uint32_t cap = guest::load<uint32_t>(0xcaf9d4);
 		static float acc = 0.f;
 		if (off || cap <= 30) gParticleSkip = false;
