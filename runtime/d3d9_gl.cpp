@@ -1311,10 +1311,15 @@ void uiUnmapImpl(int& x, int& y)
 		return;
 	}
 }
-// anchor (clip space) and scale-1 for this draw, 0 when it is not scaled
-static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, float& axN, float& ayN, float& ax, float& ay)
+// Interface scaling of one draw. Returns the scale-1 to apply with the u_ui uniform when the whole draw lies in one
+// corner zone (anchor in clip space). A draw with pieces in several zones (text of the whole HUD batched into one
+// draw) is rebuilt on the CPU instead: every triangle in a corner zone is moved there, the rest stays; then `split`
+// holds the vertices for a non-indexed triangle list.
+static bool gUiNested = false;     // drawing a rebuilt interface draw (no second analysis)
+static uint32_t gUiWorldDraws = 0;   // depth-tested draws this frame: the HUD is scaled in a battle only, not in menus
+static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, float& axN, float& ayN, float& ax, float& ay, std::vector<uint8_t>& split)
 {
-	if (gUiScale <= 1.001f || !dev.vs || dev.vs->hash != kAptVs || !isBack(dev.rt0)) return 0.f;
+	if (gUiNested || gUiScale <= 1.001f || gUiWorldDraws < 50 || !dev.vs || dev.vs->hash != kAptVs || !isBack(dev.rt0)) return 0.f;
 	const DeclElem* pe = nullptr;
 	for (uint32_t i = 0; i < nEls; i++) if (els[i].usage == 0 && els[i].index == 0 && (els[i].type == 2 || els[i].type == 3)) { pe = &els[i]; break; }
 	if (!pe) return 0.f;
@@ -1329,9 +1334,12 @@ static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, 
 	uint32_t nIdx = (uint32_t)primVertices(dc.prim, dc.primCount);
 	if (!nIdx || nIdx > 6000) return 0.f;
 	const float* m = dev.vsF + 4 * 11;
+	if (m[12] != 0.f || m[13] != 0.f) return 0.f;   // w must not depend on x, y (flat interface)
+	float det = m[0] * m[5] - m[1] * m[4];
+	if (fabsf(det) < 1e-12f) return 0.f;
 	uint32_t vx = dev.vp[0], vy = dev.vp[1], vw = dev.vp[2], vh = dev.vp[3];
 	if (!vw || !vh) { vx = vy = 0; targetSize(nullptr, vw, vh); }
-	float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+	const float W = (float)vw, H = (float)vh;
 	const uint8_t* ip = nullptr; bool i32 = false;
 	if (dc.indexed)
 	{
@@ -1339,29 +1347,76 @@ static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, 
 		else if (dev.ib && dev.ib->data) { i32 = dev.ib->fmt == 102; if ((uint64_t)(dc.startIndex + nIdx) * (i32 ? 4 : 2) > dev.ib->size) return 0.f; ip = (const uint8_t*)guest::host(dev.ib->data) + (uint64_t)dc.startIndex * (i32 ? 4 : 2); }
 		else return 0.f;
 	}
+	static std::vector<int64_t> vix; static std::vector<float> sxy, wv;
+	vix.resize(nIdx); sxy.resize(nIdx * 2); wv.resize(nIdx);
+	float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
 	for (uint32_t i = 0; i < nIdx; i++)
 	{
 		int64_t v;
-		if (ip) { uint32_t k; if (i32) memcpy(&k, ip + 4 * i, 4); else { uint16_t s; memcpy(&s, ip + 2 * i, 2); k = s; } v = (int64_t)dc.baseVertex + k; }
+		if (ip) { uint32_t k; if (i32) memcpy(&k, ip + 4 * i, 4); else { uint16_t s16; memcpy(&s16, ip + 2 * i, 2); k = s16; } v = (int64_t)dc.baseVertex + k; }
 		else v = (int64_t)dc.baseVertex + i;
 		if (v < 0 || (uint64_t)(v + 1) * stride > vbSize) return 0.f;
 		float p[3]; memcpy(p, vb + (uint64_t)v * stride + pe->offset, 12);
 		float cx = p[0] * m[0] + p[1] * m[1] + p[2] * m[2] + m[3];
 		float cy = p[0] * m[4] + p[1] * m[5] + p[2] * m[6] + m[7];
-		float cw = p[0] * m[12] + p[1] * m[13] + p[2] * m[14] + m[15];
+		float cw = p[2] * m[14] + m[15];
 		if (fabsf(cw) < 1e-6f) return 0.f;
-		float sx = vx + (cx / cw + 1.f) * 0.5f * vw, sy = vy + (1.f - cy / cw) * 0.5f * vh;
+		float sx = vx + (cx / cw + 1.f) * 0.5f * W, sy = vy + (1.f - cy / cw) * 0.5f * H;
+		vix[i] = v; sxy[2 * i] = sx; sxy[2 * i + 1] = sy; wv[i] = cw;
 		x0 = std::min(x0, sx); x1 = std::max(x1, sx); y0 = std::min(y0, sy); y1 = std::max(y1, sy);
 	}
-	// corner zones: the piece must lie entirely in one of them
-	float W = (float)vw, H = (float)vh;
-	bool left = x1 <= vx + 0.40f * W, right = x0 >= vx + 0.60f * W, top = y1 <= vy + 0.45f * H, bottom = y0 >= vy + 0.55f * H;
-	if (!(left || right) || !(top || bottom)) return 0.f;
-	ax = left ? (float)vx : (float)vx + W; ay = top ? (float)vy : (float)vy + H;
-	float s = gUiScale;
-	gUiCur.push_back({ax + (x0 - ax) * s, ay + (y0 - ay) * s, ax + (x1 - ax) * s, ay + (y1 - ay) * s, ax, ay});
-	axN = left ? -1.f : 1.f; ayN = top ? 1.f : -1.f;
-	return s - 1.f;
+	const float s = gUiScale;
+	// corner of a rectangle: 0 none, else 1 + (right) + 2 * (bottom)
+	auto corner = [&](float a0, float b0, float a1, float b1) -> int {
+		bool l = a1 <= vx + 0.40f * W, r = a0 >= vx + 0.60f * W, t = b1 <= vy + 0.45f * H, b = b0 >= vy + 0.55f * H;
+		if (!(l || r) || !(t || b)) return 0;
+		return 1 + (r ? 1 : 0) + (b ? 2 : 0);
+	};
+	auto anchorOf = [&](int c, float& cx, float& cy) { cx = (c - 1) & 1 ? (float)vx + W : (float)vx; cy = (c - 1) & 2 ? (float)vy + H : (float)vy; };
+	auto addRect = [&](float a0, float b0, float a1, float b1, float cx, float cy) { if (gUiCur.size() < 4000) gUiCur.push_back({cx + (a0 - cx) * s, cy + (b0 - cy) * s, cx + (a1 - cx) * s, cy + (b1 - cy) * s, cx, cy}); };
+	int c = corner(x0, y0, x1, y1);
+	if (c)
+	{
+		anchorOf(c, ax, ay);
+		addRect(x0, y0, x1, y1, ax, ay);
+		axN = (c - 1) & 1 ? 1.f : -1.f; ayN = (c - 1) & 2 ? -1.f : 1.f;
+		return s - 1.f;
+	}
+	if (dc.prim != 4 || nIdx % 3) return 0.f;
+	// mixed draw: per triangle
+	bool any = false;
+	for (uint32_t t = 0; t < nIdx && !any; t += 3)
+	{
+		float a0 = std::min({sxy[2 * t], sxy[2 * t + 2], sxy[2 * t + 4]}), a1 = std::max({sxy[2 * t], sxy[2 * t + 2], sxy[2 * t + 4]});
+		float b0 = std::min({sxy[2 * t + 1], sxy[2 * t + 3], sxy[2 * t + 5]}), b1 = std::max({sxy[2 * t + 1], sxy[2 * t + 3], sxy[2 * t + 5]});
+		any = corner(a0, b0, a1, b1) != 0;
+	}
+	if (!any) return 0.f;
+	split.resize((size_t)nIdx * stride);
+	for (uint32_t t = 0; t < nIdx; t += 3)
+	{
+		float a0 = std::min({sxy[2 * t], sxy[2 * t + 2], sxy[2 * t + 4]}), a1 = std::max({sxy[2 * t], sxy[2 * t + 2], sxy[2 * t + 4]});
+		float b0 = std::min({sxy[2 * t + 1], sxy[2 * t + 3], sxy[2 * t + 5]}), b1 = std::max({sxy[2 * t + 1], sxy[2 * t + 3], sxy[2 * t + 5]});
+		int tc = corner(a0, b0, a1, b1);
+		float cx = 0, cy = 0;
+		if (tc) { anchorOf(tc, cx, cy); addRect(a0, b0, a1, b1, cx, cy); }
+		for (uint32_t k = t; k < t + 3; k++)
+		{
+			uint8_t* d = split.data() + (size_t)k * stride;
+			memcpy(d, vb + (uint64_t)vix[k] * stride, stride);
+			if (!tc) continue;
+			// new screen position -> clip space -> object x, y (z kept)
+			float nx = cx + (sxy[2 * k] - cx) * s, ny = cy + (sxy[2 * k + 1] - cy) * s;
+			float w = wv[k];
+			float qx = ((nx - vx) / W * 2.f - 1.f) * w, qy = (1.f - (ny - vy) / H * 2.f) * w;
+			float p[3]; memcpy(p, d + pe->offset, 12);
+			float rx = qx - m[2] * p[2] - m[3], ry = qy - m[6] * p[2] - m[7];
+			p[0] = (rx * m[5] - m[1] * ry) / det;
+			p[1] = (m[0] * ry - rx * m[4]) / det;
+			memcpy(d + pe->offset, p, 8);
+		}
+	}
+	return 0.f;
 }
 void draw(const DrawCall& dc)
 {
@@ -1384,6 +1439,7 @@ static void drawImpl(const DrawCall& dc)
 	Prog* p = getProgram(vs, ps);
 	if (!p) { gHNoProg++; static int nf = 0; if (nf++ < 10) log("d3d9: draw skipped: no program for vs %016llx ps %016llx", (unsigned long long)vs->hash, (unsigned long long)ps->hash); return; }
 	healthStates();
+	if (dev.rs[7] && !gUiNested) gUiWorldDraws++;   // ZENABLE
 	if (fxStatOn() && gFxDiagCur >= 0 && gFxDiagCur < 512) { gFxDraws[gFxDiagCur * 8 + (gFxDiagTech & 7)]++; gFxPrims[gFxDiagCur * 8 + (gFxDiagTech & 7)] += dc.primCount; }
 	if (traceFrame())
 	{
@@ -1736,7 +1792,24 @@ static void drawImpl(const DrawCall& dc)
 	{
 		// interface scaling (HUD panels in the corners)
 		float axN = 0, ayN = 0, ax = 0, ay = 0;
-		float k = uiScaleFor(dc, elsBuf, nEls, axN, ayN, ax, ay);
+		static std::vector<uint8_t> split;
+		split.clear();
+		float k = uiScaleFor(dc, elsBuf, nEls, axN, ayN, ax, ay, split);
+		if (!split.empty())
+		{
+			// pieces in several corners: draw the rebuilt triangles instead (same state, plain triangle list)
+			static std::vector<uint8_t> keep;
+			keep.swap(split);
+			DrawCall d2;
+			d2.prim = 4; d2.primCount = dc.primCount; d2.upVerts = keep.data(); d2.upStride = dev.streams[0].stride;
+			for (uint32_t q = 0; q < nEls; q++) if (elsBuf[q].usage == 0 && elsBuf[q].index == 0) d2.upStride = dev.streams[elsBuf[q].stream < 16 ? elsBuf[q].stream : 0].stride ? dev.streams[elsBuf[q].stream < 16 ? elsBuf[q].stream : 0].stride : d2.upStride;
+			if (dc.upVerts) d2.upStride = dc.upStride;
+			gUiNested = true;
+			drawImpl(d2);
+			gUiNested = false;
+			keep.swap(split);
+			return;
+		}
 		if (p->ui >= 0 && (!p->shadowValid || p->uiShadow[0] != axN || p->uiShadow[1] != ayN || p->uiShadow[2] != k))
 		{
 			glUniform4f(p->ui, axN, ayN, k, 0.f);
@@ -2035,6 +2108,7 @@ static void presentImpl()
 		std::lock_guard<std::mutex> l(gUiMu);
 		gUiScale = std::max(1.f, std::min(2.f, rt::config.uiScale));
 		gUiPub.swap(gUiCur); gUiCur.clear();
+		gUiWorldDraws = 0;
 		static int nl = 0;
 		if (gUiScale > 1.001f && !gUiPub.empty() && nl < 3 && gFrameNo > 600) { nl++; log("ui: interface scale %.2f, %zu panel pieces scaled this frame", gUiScale, gUiPub.size()); }
 	}
