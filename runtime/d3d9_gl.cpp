@@ -1320,11 +1320,22 @@ void uiUnmapImpl(int& x, int& y)
 // holds the vertices for a non-indexed triangle list.
 static bool gUiDiag = false;
 static bool uiDiagFrame() { return gUiDiag; }   // a few frames during play: every interface draw into the log
+static bool gUiAptSeen = false;   // an interface draw happened this frame (diagnostics)
+static bool gUiHud = false;       // the HUD panels have started this frame: earlier interface draws belong to the world
 static bool gUiNested = false;     // drawing a rebuilt interface draw (no second analysis)
 static uint32_t gUiWorldDraws = 0;   // depth-tested draws this frame: the HUD is scaled in a battle only, not in menus
 static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, float& axN, float& ayN, float& ax, float& ay, std::vector<uint8_t>& split)
 {
-	if (gUiNested || gUiScale <= 1.001f || gUiWorldDraws < 50 || !dev.vs || !isBack(dev.rt0) || dev.rs[7]) return 0.f;
+	if (gUiNested || gUiScale <= 1.001f || gUiWorldDraws < 50 || !dev.vs || !isBack(dev.rt0)) return 0.f;
+	if (gUiDiag && gUiAptSeen)
+	{
+		// every back-buffer draw after the first interface draw: which shaders draw the rest (texts)
+		std::string cn;
+		for (auto& cc : dev.vs->info.ctab) if (cc.regSet != 3 && cn.size() < 80) { cn += " "; cn += cc.name; }
+		log("ui-diag: draw vs %016llx z %u prim %u n %u up %d consts:%s", (unsigned long long)dev.vs->hash, dev.rs[7], dc.prim, dc.primCount, dc.upVerts ? 1 : 0, cn.c_str());
+	}
+	if (dev.vs->hash == kAptVs) gUiAptSeen = true;
+	if (dev.rs[7]) return 0.f;
 	// the interface shader (World matrix in c11..c14) or a shader without constants that passes clip-space positions
 	// through (the commander video on the minimap); anything else is left alone
 	bool apt = dev.vs->hash == kAptVs, pass = false;
@@ -1385,14 +1396,20 @@ static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, 
 	}
 	const float s = gUiScale;
 	// corner of a rectangle: 0 none, else 1 + (right) + 2 * (bottom)
+	// corner zones; on the right the minimap column with the open build menu reaches two thirds down the screen
 	auto corner = [&](float a0, float b0, float a1, float b1) -> int {
-		bool l = a1 <= vx + 0.40f * W, r = a0 >= vx + 0.60f * W, t = b1 <= vy + 0.45f * H, b = b0 >= vy + 0.55f * H;
-		if (!(l || r) || !(t || b)) return 0;
+		bool l = a1 <= vx + 0.40f * W, r = a0 >= vx + 0.60f * W;
+		if (!(l || r)) return 0;
+		bool t = b1 <= vy + (r ? 0.66f : 0.45f) * H, b = b0 >= vy + (r ? 0.70f : 0.55f) * H;
+		if (!(t || b)) return 0;
 		return 1 + (r ? 1 : 0) + (b ? 2 : 0);
 	};
 	auto anchorOf = [&](int c, float& cx, float& cy) { cx = (c - 1) & 1 ? (float)vx + W : (float)vx; cy = (c - 1) & 2 ? (float)vy + H : (float)vy; };
 	auto addRect = [&](float a0, float b0, float a1, float b1, float cx, float cy) { if (gUiCur.size() < 4000) gUiCur.push_back({cx + (a0 - cx) * s, cy + (b0 - cy) * s, cx + (a1 - cx) * s, cy + (b1 - cy) * s, cx, cy}); };
 	int c = corner(x0, y0, x1, y1);
+	// unit markers, health bars and names come first in a frame: only what follows the first big corner panel is HUD
+	if (!gUiHud && c && (x1 - x0) * (y1 - y0) >= 0.01f * W * H) gUiHud = true;
+	if (!gUiHud) { if (diag) log("ui-diag: vs %016llx box %.0f,%.0f-%.0f,%.0f before the HUD", (unsigned long long)dev.vs->hash, x0, y0, x1, y1); return 0.f; }
 	if (diag) log("ui-diag: vs %016llx%s prim %u n %u idx %u box %.0f,%.0f-%.0f,%.0f corner %d", (unsigned long long)dev.vs->hash, apt ? " (apt)" : " (pass)", dc.prim, dc.primCount, nIdx, x0, y0, x1, y1, c);
 	if (c)
 	{
@@ -2133,7 +2150,7 @@ static void presentImpl()
 			gUiDiag = inGame && gUiScale > 1.001f && diagFrames < 3 && gFrameNo % 900 == 0;
 			if (gUiDiag) { diagFrames++; log("ui-diag: frame %u", gFrameNo + 1); }
 		}
-		gUiWorldDraws = 0;
+		gUiWorldDraws = 0; gUiHud = false; gUiAptSeen = false;
 		static int nl = 0;
 		if (gUiScale > 1.001f && !gUiPub.empty() && nl < 3 && gFrameNo > 600) { nl++; log("ui: interface scale %.2f, %zu panel pieces scaled this frame", gUiScale, gUiPub.size()); }
 	}
