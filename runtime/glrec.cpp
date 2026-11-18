@@ -59,9 +59,11 @@ void publishLocked()   // producer lock held
 		std::lock_guard<std::mutex> l(qm);
 		ready.push_back(cur);
 		submitted++;
-		nSubmitted.store(submitted, std::memory_order_release);
 		wake = renderWaiting;
 	}
+	// published after qm is released: a polling render thread that saw it while we still held qm would block on
+	// qm, and our unlock would then cost a futex wake
+	nSubmitted.fetch_add(1, std::memory_order_release);
 	if (wake) qcv.notify_one();
 	cur = nullptr;
 }

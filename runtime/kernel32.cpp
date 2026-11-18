@@ -11,6 +11,7 @@
 #include <thread>
 #include <unistd.h>
 
+#include "fastlock.h"
 #include "rt.h"
 
 #define K "KERNEL32.dll"
@@ -91,37 +92,7 @@ Waitable* asWaitable(uint32_t h)
 }
 
 // ---- critical sections: the guest struct stores an index into a host mutex table
-// recursive lock with an inline owner check (std::recursive_mutex: a pthread call + tid lookup each time)
-struct CsLock
-{
-	std::atomic<pthread_t> owner{0};
-	std::mutex m;
-	int depth = 0;
-	void lock()
-	{
-		pthread_t me = pthread_self();
-		if (owner.load(std::memory_order_relaxed) == me) { depth++; return; }
-		m.lock();
-		owner.store(me, std::memory_order_relaxed);
-		depth = 1;
-	}
-	bool try_lock()
-	{
-		pthread_t me = pthread_self();
-		if (owner.load(std::memory_order_relaxed) == me) { depth++; return true; }
-		if (!m.try_lock()) return false;
-		owner.store(me, std::memory_order_relaxed);
-		depth = 1;
-		return true;
-	}
-	void unlock()
-	{
-		if (owner.load(std::memory_order_relaxed) != pthread_self()) return;   // Leave without Enter: ignore
-		if (--depth) return;
-		owner.store(0, std::memory_order_relaxed);
-		m.unlock();
-	}
-};
+using CsLock = rt::FastRecLock;   // guest critical sections (fastlock.h)
 CsLock* csTable[1 << 16];
 std::atomic<uint32_t> csCount{1};
 std::mutex csInitMu;
