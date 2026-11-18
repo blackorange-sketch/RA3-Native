@@ -10,7 +10,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/blackorange-sketch/RA3-Native/releases/tag/latest"><img src="https://img.shields.io/github/v/release/blackorange-sketch/RA3-Native?include_prereleases&label=download&color=d0161a" alt="Download"></a>
+  <a href="https://github.com/blackorange-sketch/RA3-Native/releases/latest"><img src="https://img.shields.io/github/v/release/blackorange-sketch/RA3-Native?label=download&color=d0161a" alt="Download"></a>
+  <a href="https://github.com/blackorange-sketch/RA3-Native/releases/tag/nightly"><img src="https://img.shields.io/badge/nightly-test%20build-555" alt="Nightly"></a>
   <a href="https://github.com/blackorange-sketch/RA3-Native/releases"><img src="https://img.shields.io/github/downloads/blackorange-sketch/RA3-Native/total?color=ffc21a" alt="Downloads"></a>
   <img src="https://img.shields.io/badge/android-8.0%2B%20%7C%20arm64-3ddc84" alt="Android 8.0+ arm64">
   <img src="https://img.shields.io/badge/status-experimental-orange" alt="Experimental">
@@ -59,7 +60,8 @@
 
 ## Installation
 
-1. Download **`ra3-native.apk`** from the [latest release](https://github.com/blackorange-sketch/RA3-Native/releases/tag/latest) and install it.
+1. Download the APK from the [latest stable release](https://github.com/blackorange-sketch/RA3-Native/releases/latest) and install it.
+   Want the newest fixes before they are released? The [nightly build](https://github.com/blackorange-sketch/RA3-Native/releases/tag/nightly) is rebuilt after every change — it may be broken. A newer build always installs over an older one, whichever channel it comes from.
 2. Copy your game folder to the phone, for example to
    `/sdcard/Command and Conquer - Red Alert 3/`
    (the folder that contains `Data/ra3_1.12.game` and the `RA3_<language>_1.12.SkuDef` files).

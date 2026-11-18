@@ -1,10 +1,18 @@
 name: Android APK
 
+# Two channels:
+#  * every push to main -> the 'nightly' pre-release (test builds, tag moved to the built commit)
+#  * a pushed tag vX.Y.Z -> a stable release 'vX.Y.Z' with its own version number and a changelog
 on:
   workflow_dispatch:
   push:
     branches: [main]
+    tags: ['v*']
     paths: ['runtime/**', 'tools/**', 'android/**', '.github/workflows/android.yml']
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
 
 permissions:
   contents: write
@@ -14,6 +22,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }   # tags and history for the changelog
+
+      - name: Channel and version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "CHANNEL=stable" >> $GITHUB_ENV; echo "APP_VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_ENV
+          else
+            echo "CHANNEL=nightly" >> $GITHUB_ENV; echo "APP_VERSION=nightly" >> $GITHUB_ENV
+          fi
 
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: '17' }
@@ -58,7 +75,9 @@ jobs:
           restore-keys: ccache-
 
       - name: Stamp build id
-        run: echo '#define RA3_BUILD_ID "${{ github.sha }}"' > runtime/build_id.h
+        run: |
+          echo '#define RA3_BUILD_ID "${{ github.sha }}"' > runtime/build_id.h
+          echo "#define RA3_VERSION \"$APP_VERSION\"" >> runtime/build_id.h
       - name: Build APK
         working-directory: android
         env:
@@ -69,18 +88,45 @@ jobs:
         run: |
           export CCACHE_DIR=$HOME/.ccache
           CC_OPT=""; command -v ccache >/dev/null && CC_OPT="-PuseCcache=1"
-          gradle assembleDebug -PbuildId=${{ github.sha }} -PliftedDir=${{ github.workspace }}/lifted $CC_OPT --no-daemon
+          gradle assembleDebug -PbuildId=${{ github.sha }} -PversionName=$APP_VERSION -PversionCode=${{ github.run_number }} -PliftedDir=${{ github.workspace }}/lifted $CC_OPT --no-daemon
           command -v ccache >/dev/null && ccache -s | head -8 || echo "built without ccache"
 
       # The APK is published as a release asset (does not count against the Actions artifact quota).
-      - name: Publish APK to the 'latest' release
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Changelog
+        run: |
+          PREV=$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD^ 2>/dev/null || true)
+          echo "PREV=$PREV" >> $GITHUB_ENV
+          if [ -n "$PREV" ]; then git log --no-merges --pretty='- %s' "$PREV..HEAD" > changes.md; else git log --no-merges --pretty='- %s' -n 40 > changes.md; fi
+
+      - name: Publish nightly
+        if: env.CHANNEL == 'nightly'
+        env: { GH_TOKEN: '${{ github.token }}' }
         run: |
           cp android/app/build/outputs/apk/debug/app-debug.apk ra3-native.apk
-          gh release view latest >/dev/null 2>&1 || gh release create latest --title "Latest build" --notes "Automatic debug build of main" --prerelease
-          gh release upload latest ra3-native.apk --clobber
-          gh release edit latest --notes "Build of ${GITHUB_SHA::7} ($(date -u +%F\ %H:%M) UTC)"
+          git tag -f nightly "$GITHUB_SHA" && git push -f origin refs/tags/nightly
+          {
+            echo "**Test build** of \`${GITHUB_SHA::7}\` ($(date -u +%F\ %H:%M) UTC). It may be broken — stable versions are on the [releases page](https://github.com/$GITHUB_REPOSITORY/releases/latest)."
+            echo
+            echo "### Changes since ${PREV:-the first commit}"
+            cat changes.md
+          } > notes.md
+          gh release view nightly >/dev/null 2>&1 || gh release create nightly --title "Nightly build" --notes "Nightly" --prerelease --target "$GITHUB_SHA"
+          gh release upload nightly ra3-native.apk --clobber
+          gh release edit nightly --notes-file notes.md --prerelease
+
+      - name: Publish stable release
+        if: env.CHANNEL == 'stable'
+        env: { GH_TOKEN: '${{ github.token }}' }
+        run: |
+          APK="ra3-native-$GITHUB_REF_NAME.apk"
+          cp android/app/build/outputs/apk/debug/app-debug.apk "$APK"
+          {
+            echo "Install **$APK** (Android 8.0+, arm64). You need your own copy of Red Alert 3 1.12 — see the [installation guide](https://github.com/$GITHUB_REPOSITORY#installation)."
+            echo
+            echo "### Changes since ${PREV:-the first commit}"
+            cat changes.md
+          } > notes.md
+          gh release create "$GITHUB_REF_NAME" "$APK" --title "RA3 Native $GITHUB_REF_NAME" --notes-file notes.md --verify-tag
 
       - uses: actions/upload-artifact@v4
         continue-on-error: true

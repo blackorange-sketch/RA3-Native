@@ -7,8 +7,8 @@ android {
         applicationId 'org.ra3native'
         minSdk 26
         targetSdk 34
-        versionCode 1
-        versionName '0.1'
+        versionCode((project.findProperty('versionCode') ?: '1') as Integer)
+        versionName(project.findProperty('versionName') ?: 'dev')
         ndk { abiFilters 'arm64-v8a' }
         buildConfigField "String", "BUILD_ID", "\"${project.findProperty('buildId') ?: 'local'}\""
         externalNativeBuild {

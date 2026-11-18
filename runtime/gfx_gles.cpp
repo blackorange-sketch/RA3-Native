@@ -154,7 +154,10 @@ void setWindow(void* w)
 	curValid = makeCurrentHere();
 	#if __has_include("build_id.h")
 	#include "build_id.h"
-	rt::log("build %.8s", RA3_BUILD_ID);
+	#ifndef RA3_VERSION
+	#define RA3_VERSION ""
+	#endif
+	rt::log("build %.8s %s", RA3_BUILD_ID, RA3_VERSION);
 	#endif
 	rt::log("EGL: surface %dx%d, GL %s / %s", surfW, surfH, (const char*)glGetString(GL_VERSION), (const char*)glGetString(GL_RENDERER));
 }

@@ -136,7 +136,7 @@ public class LauncherActivity extends Activity {
         left.addView(spacer, new LinearLayout.LayoutParams(1, 0, 1f));
         gameText = label("", 10, TEXT_DIM, false, 0f);
         left.addView(gameText);
-        TextView ver = label("BUILD " + BuildConfig.BUILD_ID.substring(0, Math.min(8, BuildConfig.BUILD_ID.length())).toUpperCase(Locale.ROOT), 9, 0xff6b7176, false, 0.2f);
+        TextView ver = label(versionLabel(), 9, 0xff6b7176, false, 0.2f);
         left.addView(ver);
 
         // right: settings panel
@@ -679,5 +679,13 @@ public class LauncherActivity extends Activity {
         @Override public void setAlpha(int a) {}
         @Override public void setColorFilter(android.graphics.ColorFilter f) {}
         @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
+    }
+
+    // "V0.2.0 · BUILD 1A2B3C4D" for releases, "NIGHTLY · BUILD 1A2B3C4D" for test builds
+    private static String versionLabel() {
+        String id = BuildConfig.BUILD_ID.substring(0, Math.min(8, BuildConfig.BUILD_ID.length())).toUpperCase(Locale.ROOT);
+        String v = BuildConfig.VERSION_NAME;
+        String head = Character.isDigit(v.isEmpty() ? 'x' : v.charAt(0)) ? "V" + v : v.toUpperCase(Locale.ROOT);
+        return head + " \u00b7 BUILD " + id;
     }
 }
