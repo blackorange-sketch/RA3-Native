@@ -303,17 +303,7 @@ void fpsPinTick()
 				log("fpsdiag: particle manager %08x vtable[%d] %08x", mgr, base, vt);
 			}
 			gWatchLo = lo; gWatchHi = hi; f0 = frames;
-			// the FX particle manager's per-frame update (particle systems advance a fixed step per call, made for
-			// 30 calls per second): at a higher frame cap it runs only on every (cap / 30)-th frame
-			extern uint32_t gThrottleAddr; extern float gThrottleRatio;
-			uint32_t cap = guest::load<uint32_t>(0xcaf9d4);
-			bool have = false;
-			for (int i = 0; i < gWatchN; i++) if (gWatch[i] == 0x5f43a0u) have = true;
-			if (have && cap > 30 && access("/sdcard/ra3_nopthrottle", F_OK) != 0)
-			{
-				gThrottleRatio = 30.f / (float)cap; gThrottleAddr = 0x5f43a0u;
-				log("fps60: particle update at 30 Hz (every %.2f frames)", 1.f / gThrottleRatio);
-			}
+
 		}
 		if (gWatchN && frames - f0 >= 600)
 		{
@@ -322,6 +312,23 @@ void fpsPinTick()
 			static int nl = 0;
 			if (nl++ < 6) log("fpsdiag: calls per frame of manager methods:%s", o.c_str());
 			f0 = frames;
+		}
+	}
+	{
+		// particle systems advance a fixed step per update, made for 30 updates per second: at a higher cap they
+		// update only on every (cap / 30)-th frame (0x6d18f0 is gated, see ra3_gate)
+		extern bool gParticleSkip;
+		static const bool off = access("/sdcard/ra3_nopthrottle", F_OK) == 0;
+		uint32_t cap = guest::load<uint32_t>(0xcaf9d4);
+		static float acc = 0.f;
+		if (off || cap <= 30) gParticleSkip = false;
+		else
+		{
+			acc += 30.f / (float)cap;
+			gParticleSkip = acc < 1.f;
+			if (!gParticleSkip) acc -= 1.f;
+			static bool logged = false;
+			if (!logged) { logged = true; log("fps60: particle systems update at 30 Hz (every %.2f frames)", cap / 30.f); }
 		}
 	}
 	static const bool noPin = access("/sdcard/ra3_fpsnopin", F_OK) == 0;   // experiment: let the game lower it on slow frames

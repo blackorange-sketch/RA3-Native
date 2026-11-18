@@ -389,7 +389,7 @@ std::string hostPath(const std::string& win)
 namespace rt
 {
 uint32_t gWatch[64]; std::atomic<uint32_t> gWatchCalls[64]; int gWatchN = 0; uint32_t gWatchLo = 0xffffffffu, gWatchHi = 0;
-uint32_t gThrottleAddr = 0; float gThrottleRatio = 1.f;   // 60 fps: per-frame particle update run at the 30 Hz the effects are made for
+bool gParticleSkip = false;   // 60 fps: this frame the particle systems do not advance (they are made for 30 steps per second)
 }
 // ---- dispatcher: every guest call that is not a direct call to a lifted function comes through here
 void call_target(CPU* c, uint32_t addr)
@@ -408,15 +408,6 @@ void call_target(CPU* c, uint32_t addr)
 		e->fn(c);
 		c->r[ESP] += 4 + e->pop;
 		return;
-	}
-	if (addr == gThrottleAddr && addr)
-	{
-		// FX particle manager per-frame update (0x5f43a0, thiscall, no arguments): skip it on surplus frames
-		static float acc = 0.f;
-		acc += gThrottleRatio;
-		if (acc < 1.f) { c->r[ESP] += 4; return; }
-		acc -= 1.f;
-		if (acc > 1.f) acc = 0.f;
 	}
 	// 60 fps diagnostics: count calls to the methods of the particle system manager (which one runs every frame)
 	if (addr >= gWatchLo && addr <= gWatchHi)
@@ -461,6 +452,11 @@ uint32_t ra3_stub_tolower = 0xffffffffu;
 
 namespace rt { std::string commandLine() { return "\"C:\\RA3\\Data\\ra3_1.12.game\" -config RA3_" + config.language + "_1.12.SkuDef -win"; } }
 namespace rt { bool verbose() { static bool v = access("/sdcard/ra3_verbose", F_OK) == 0; return v; } }
+bool ra3_gate(CPU*, uint32_t fn)
+{
+	// 0x6d18f0: FX particle system update (one fixed step per call), called for every system once per frame
+	return fn == 0x6d18f0u && rt::gParticleSkip;
+}
 void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t ecx)
 {
 	if (fn == 0x9c6870u)

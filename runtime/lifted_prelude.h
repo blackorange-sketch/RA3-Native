@@ -19,6 +19,7 @@ extern thread_local uint32_t ra3_ring_pos;
 #endif
 
 void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t ecx);
+bool ra3_gate(CPU* c, uint32_t fn);   // RA3_GATES: true = skip this call
 
 // ---- MMX (mm registers live in CPU::mm; the x87 aliasing is not modelled, EMMS is a no-op)
 union MMU { uint64_t q; uint8_t b[8]; int8_t sb[8]; uint16_t w[4]; int16_t sw[4]; uint32_t d[2]; int32_t sd[2]; };
