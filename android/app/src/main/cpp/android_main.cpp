@@ -234,24 +234,84 @@ void draw(ANativeWindow* w)
 	}
 	if (quietStart && !fatalShown && !picking)
 	{
-		// started from the launcher: a quiet loading screen instead of the console (the console returns on errors)
-		for (int y = 0; y < b.height; y++)
-			for (int x = 0; x < b.width; x++) px[y * b.stride + x] = 0xff070708;
-		std::string msg = "LOADING";
-		int dots = (int)((rtNowMs() / 400) % 4);
-		msg += std::string(dots, '.');
-		int tx = (b.width / cw - 7) / 2 - 1, ty = b.height / ch / 2 - 1;
-		text(ty, std::string(std::max(0, tx), ' ') + msg, 0xffffc21a);   // yellow
-		// hazard stripe bar along the bottom, running
-		int bh = std::max(8, b.height / 60), off = (int)((rtNowMs() / 12) % (bh * 2));
-		for (int y = b.height - bh; y < b.height; y++)
-			for (int x = 0; x < b.width; x++)
+		// started from the launcher: the launcher's backdrop with a progress bar (the console returns on errors)
+		const int W = b.width, H = b.height, dp = std::max(1, H / 400);
+		static std::vector<uint32_t> bg;
+		static int bgW = 0, bgH = 0;
+		if (bgW != W || bgH != H)
+		{
+			// vertical dark gradient, a red glow at the upper left third, faint scan lines (as LauncherActivity.Backdrop)
+			bg.assign((size_t)W * H, 0);
+			float gx = W * 0.28f, gy = H * 0.35f, gr = std::max(W, H) * 0.6f;
+			for (int y = 0; y < H; y++)
 			{
-				int d = (x + off + (b.height - y)) % (bh * 2);
-				px[y * b.stride + x] = d < bh ? 0xffffc21a : 0xff111111;
+				float t = (float)y / std::max(1, H - 1);
+				float br = 0x0c + (0x05 - 0x0c) * t, bgc = 0x0d + (0x05 - 0x0d) * t, bb = 0x0f + (0x05 - 0x0f) * t;
+				bool scan = (y % (3 * dp)) == 0;
+				for (int x = 0; x < W; x++)
+				{
+					float d = std::sqrt((x - gx) * (x - gx) + (y - gy) * (y - gy)) / gr;
+					float a = d < 1.f ? 0.4f * (1.f - d) : 0.f;   // 0x66 alpha fading out
+					float r = br + (0xa0 - br) * a, g = bgc + (0x0d - bgc) * a, bl = bb + (0x10 - bb) * a;
+					if (scan) { r += (255 - r) * 0.047f; g += (255 - g) * 0.047f; bl += (255 - bl) * 0.047f; }
+					bg[(size_t)y * W + x] = 0xff000000u | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)bl;   // 0xAARRGGBB
+				}
 			}
-		for (int y = b.height - bh - 3; y < b.height - bh; y++)
-			for (int x = 0; x < b.width; x++) px[y * b.stride + x] = 0xff6e0a0c;
+			bgW = W; bgH = H;
+		}
+		memcpy(px, bg.data(), bg.size() * 4);
+		auto big = [&](int x0, int y0, int sc, const std::string& str, uint32_t col) {
+			for (size_t i = 0; i < str.size(); i++)
+			{
+				unsigned char c = str[i];
+				if (c < 32 || c > 126) c = '?';
+				for (int gy = 0; gy < 16; gy++)
+					for (int gx = 0; gx < 8; gx++)
+						if (kFont8x16[c - 32][gy] >> (7 - gx) & 1)
+							for (int sy = 0; sy < sc; sy++)
+								for (int sx = 0; sx < sc; sx++)
+								{
+									int X = x0 + ((int)i * 8 + gx) * sc + sx, Y = y0 + gy * sc + sy;
+									if (X >= 0 && X < W && Y >= 0 && Y < H) px[Y * b.stride + X] = col;
+								}
+			}
+		};
+		// progress: bytes the game has read so far against what the last start needed before its first frame
+		uint64_t rb = 0, ru = 0, rc = 0;
+		rt::ioStats(rb, ru, rc);
+		static uint64_t expect = 0;
+		if (!expect)
+		{
+			expect = 400ull << 20;   // first start: a guess
+			if (FILE* f = fopen((rt::config.dataRoot + "/loadbytes").c_str(), "r")) { unsigned long long v = 0; if (fscanf(f, "%llu", &v) == 1 && v > (16ull << 20)) expect = v; fclose(f); }
+		}
+		float prog = started ? std::min(0.97f, (float)rb / (float)expect) : 0.f;
+		static float shown = 0.f;
+		shown += (prog - shown) * 0.25f;
+		// title and status
+		int sc = std::max(2, H / 180);
+		std::string title = "RED ALERT 3";
+		big((W - (int)title.size() * 8 * sc) / 2, H / 2 - 16 * sc, sc, title, 0xffffffff);
+		int sc2 = std::max(1, sc / 2);
+		char st[64];
+		snprintf(st, sizeof st, "LOADING  %d%%", (int)(shown * 100.f + 0.5f));
+		big((W - (int)strlen(st) * 8 * sc2) / 2, H / 2 + 4 * sc, sc2, st, 0xffffc21a);
+		// red rule + hazard stripes as the progress bar (lit part = progress), like the launcher
+		int bh = 8 * dp;
+		for (int y = H - bh - 3 * dp; y < H - bh; y++)
+			for (int x = 0; x < W; x++) px[y * b.stride + x] = 0xff6e0a0c;   // RED_DARK
+		int fill = (int)(W * shown);
+		for (int y = H - bh; y < H; y++)
+			for (int x = 0; x < W; x++)
+			{
+				int d = (x + (H - y)) % (bh * 2);
+				bool stripe = d < bh;
+				uint32_t c = 0xff111111;
+				if (stripe) c = x <= fill ? 0xffffc21au : 0xff4a3c16u;   // YELLOW lit / dim
+				px[y * b.stride + x] = c;
+			}
+		for (int y = 6 * dp; y < 7 * dp; y++)
+			for (int x = 0; x < W; x++) px[y * b.stride + x] = 0xff80161a;   // thin top rule
 		unlockAndPost();
 		return;
 	}
@@ -439,5 +499,16 @@ void android_main(android_app* app)
 		tick++;
 		gfx::servicePlatform();
 		if (window && (dirty.exchange(false) || (quietStart && !gfx::ownedByGame()))) draw(window);
+		{
+			// remember how much the game read before its first frame: the next loading screen's 100%
+			static bool saved = false;
+			if (!saved && started && gfx::ownedByGame())
+			{
+				saved = true;
+				uint64_t rb = 0, ru = 0, rc = 0;
+				rt::ioStats(rb, ru, rc);
+				if (rb > (16ull << 20)) if (FILE* f = fopen((rt::config.dataRoot + "/loadbytes").c_str(), "w")) { fprintf(f, "%llu\n", (unsigned long long)rb); fclose(f); }
+			}
+		}
 	}
 }

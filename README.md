@@ -95,7 +95,7 @@ The phone's volume keys keep working, and the screen stays on while the game run
 | Interface language | detected | Every language installed in your game folder (`RA3_<language>_1.12.SkuDef`) |
 | Cutscenes | On | Intro, briefings and campaign videos |
 | Log file | On | Writes `/sdcard/ra3_native.log` — please attach it to bug reports |
-| HUD size | 130% | Enlarges the minimap, build menu and other corner panels (100–200% in 10% steps) |
+| HUD size | 110% | Enlarges the minimap, build menu and other corner panels (100–200% in 10% steps) |
 | 60 FPS (experimental) | Off | Smoother picture, but construction animations break and white flashes can appear |
 
 ## Performance
