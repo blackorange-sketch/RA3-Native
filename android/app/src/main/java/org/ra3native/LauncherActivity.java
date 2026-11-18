@@ -364,18 +364,18 @@ public class LauncherActivity extends Activity {
         checkFiles();
     }
 
-    static final int[] UI_SCALES = {100, 125, 150, 175};
+    static final int[] UI_SCALES = {100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 200};
     TextView uiValue;
 
     void stepUiScale(int d) {
-        int cur = prefs.getInt("ui_scale", 125), i = 0;
-        for (int k = 0; k < UI_SCALES.length; k++) if (UI_SCALES[k] == cur) i = k;
+        int cur = prefs.getInt("ui_scale", 130), i = 0;
+        for (int k = 0; k < UI_SCALES.length; k++) if (UI_SCALES[k] <= cur) i = k;
         i = Math.max(0, Math.min(UI_SCALES.length - 1, i + d));
         prefs.edit().putInt("ui_scale", UI_SCALES[i]).apply();
         showUiScale();
     }
 
-    void showUiScale() { uiValue.setText(prefs.getInt("ui_scale", 125) + "%"); }
+    void showUiScale() { uiValue.setText(prefs.getInt("ui_scale", 130) + "%"); }
 
     void stepLanguage(int d) {
         if (languages.isEmpty()) return;
@@ -566,7 +566,7 @@ public class LauncherActivity extends Activity {
         cfg.append("cutscenes=").append(prefs.getBoolean("cutscenes", true) ? 1 : 0).append('\n');
         cfg.append("log=").append(prefs.getBoolean("log", true) ? 1 : 0).append('\n');
         cfg.append("fps60=").append(prefs.getBoolean("fps60", false) ? 1 : 0).append('\n');
-        cfg.append("ui_scale=").append(prefs.getInt("ui_scale", 125)).append('\n');
+        cfg.append("ui_scale=").append(prefs.getInt("ui_scale", 130)).append('\n');
         if (!gamePath.isEmpty()) cfg.append("gamepath=").append(gamePath).append('\n');
         try (FileOutputStream o = new FileOutputStream(new File(getFilesDir(), "launcher.cfg"))) {
             o.write(cfg.toString().getBytes("UTF-8"));

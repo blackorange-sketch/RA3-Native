@@ -1318,11 +1318,24 @@ void uiUnmapImpl(int& x, int& y)
 // corner zone (anchor in clip space). A draw with pieces in several zones (text of the whole HUD batched into one
 // draw) is rebuilt on the CPU instead: every triangle in a corner zone is moved there, the rest stays; then `split`
 // holds the vertices for a non-indexed triangle list.
+static bool gUiDiag = false;
+static bool uiDiagFrame() { return gUiDiag; }   // a few frames during play: every interface draw into the log
 static bool gUiNested = false;     // drawing a rebuilt interface draw (no second analysis)
 static uint32_t gUiWorldDraws = 0;   // depth-tested draws this frame: the HUD is scaled in a battle only, not in menus
 static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, float& axN, float& ayN, float& ax, float& ay, std::vector<uint8_t>& split)
 {
-	if (gUiNested || gUiScale <= 1.001f || gUiWorldDraws < 50 || !dev.vs || dev.vs->hash != kAptVs || !isBack(dev.rt0)) return 0.f;
+	if (gUiNested || gUiScale <= 1.001f || gUiWorldDraws < 50 || !dev.vs || !isBack(dev.rt0) || dev.rs[7]) return 0.f;
+	// the interface shader (World matrix in c11..c14) or a shader without constants that passes clip-space positions
+	// through (the commander video on the minimap); anything else is left alone
+	bool apt = dev.vs->hash == kAptVs, pass = false;
+	if (!apt)
+	{
+		pass = true;
+		for (auto& cc : dev.vs->info.ctab) if (cc.regSet != 3) { pass = false; break; }
+		if (!dev.vs->info.defF.empty()) pass = false;
+	}
+	bool diag = uiDiagFrame();
+	if (!apt && !pass) { if (diag) log("ui-diag: vs %016llx prim %u n %u: not an interface shader", (unsigned long long)dev.vs->hash, dc.prim, dc.primCount); return 0.f; }
 	const DeclElem* pe = nullptr;
 	for (uint32_t i = 0; i < nEls; i++) if (els[i].usage == 0 && els[i].index == 0 && (els[i].type == 2 || els[i].type == 3)) { pe = &els[i]; break; }
 	if (!pe) return 0.f;
@@ -1336,8 +1349,10 @@ static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, 
 	}
 	uint32_t nIdx = (uint32_t)primVertices(dc.prim, dc.primCount);
 	if (!nIdx || nIdx > 6000) return 0.f;
-	const float* m = dev.vsF + 4 * 11;
+	float m[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+	if (apt) memcpy(m, dev.vsF + 4 * 11, sizeof m);
 	if (m[12] != 0.f || m[13] != 0.f) return 0.f;   // w must not depend on x, y (flat interface)
+	const bool pos4 = pe->type == 3;
 	float det = m[0] * m[5] - m[1] * m[4];
 	if (fabsf(det) < 1e-12f) return 0.f;
 	uint32_t vx = dev.vp[0], vy = dev.vp[1], vw = dev.vp[2], vh = dev.vp[3];
@@ -1359,10 +1374,10 @@ static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, 
 		if (ip) { uint32_t k; if (i32) memcpy(&k, ip + 4 * i, 4); else { uint16_t s16; memcpy(&s16, ip + 2 * i, 2); k = s16; } v = (int64_t)dc.baseVertex + k; }
 		else v = (int64_t)dc.baseVertex + i;
 		if (v < 0 || (uint64_t)(v + 1) * stride > vbSize) return 0.f;
-		float p[3]; memcpy(p, vb + (uint64_t)v * stride + pe->offset, 12);
-		float cx = p[0] * m[0] + p[1] * m[1] + p[2] * m[2] + m[3];
-		float cy = p[0] * m[4] + p[1] * m[5] + p[2] * m[6] + m[7];
-		float cw = p[2] * m[14] + m[15];
+		float p[4] = {0, 0, 0, 1}; memcpy(p, vb + (uint64_t)v * stride + pe->offset, pos4 ? 16 : 12);
+		float cx = p[0] * m[0] + p[1] * m[1] + p[2] * m[2] + p[3] * m[3];
+		float cy = p[0] * m[4] + p[1] * m[5] + p[2] * m[6] + p[3] * m[7];
+		float cw = p[2] * m[14] + p[3] * m[15];
 		if (fabsf(cw) < 1e-6f) return 0.f;
 		float sx = vx + (cx / cw + 1.f) * 0.5f * W, sy = vy + (1.f - cy / cw) * 0.5f * H;
 		vix[i] = v; sxy[2 * i] = sx; sxy[2 * i + 1] = sy; wv[i] = cw;
@@ -1378,6 +1393,7 @@ static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, 
 	auto anchorOf = [&](int c, float& cx, float& cy) { cx = (c - 1) & 1 ? (float)vx + W : (float)vx; cy = (c - 1) & 2 ? (float)vy + H : (float)vy; };
 	auto addRect = [&](float a0, float b0, float a1, float b1, float cx, float cy) { if (gUiCur.size() < 4000) gUiCur.push_back({cx + (a0 - cx) * s, cy + (b0 - cy) * s, cx + (a1 - cx) * s, cy + (b1 - cy) * s, cx, cy}); };
 	int c = corner(x0, y0, x1, y1);
+	if (diag) log("ui-diag: vs %016llx%s prim %u n %u idx %u box %.0f,%.0f-%.0f,%.0f corner %d", (unsigned long long)dev.vs->hash, apt ? " (apt)" : " (pass)", dc.prim, dc.primCount, nIdx, x0, y0, x1, y1, c);
 	if (c)
 	{
 		anchorOf(c, ax, ay);
@@ -1412,8 +1428,8 @@ static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, 
 			float nx = cx + (sxy[2 * k] - cx) * s, ny = cy + (sxy[2 * k + 1] - cy) * s;
 			float w = wv[k];
 			float qx = ((nx - vx) / W * 2.f - 1.f) * w, qy = (1.f - (ny - vy) / H * 2.f) * w;
-			float p[3]; memcpy(p, d + pe->offset, 12);
-			float rx = qx - m[2] * p[2] - m[3], ry = qy - m[6] * p[2] - m[7];
+			float p[4] = {0, 0, 0, 1}; memcpy(p, d + pe->offset, pos4 ? 16 : 12);
+			float rx = qx - m[2] * p[2] - m[3] * p[3], ry = qy - m[6] * p[2] - m[7] * p[3];
 			p[0] = (rx * m[5] - m[1] * ry) / det;
 			p[1] = (m[0] * ry - rx * m[4]) / det;
 			memcpy(d + pe->offset, p, 8);
@@ -2111,6 +2127,12 @@ static void presentImpl()
 		std::lock_guard<std::mutex> l(gUiMu);
 		gUiScale = std::max(1.f, std::min(2.f, rt::config.uiScale));
 		gUiPub.swap(gUiCur); gUiCur.clear();
+		{
+			static int diagFrames = 0;
+			bool inGame = gUiWorldDraws >= 50;
+			gUiDiag = inGame && gUiScale > 1.001f && diagFrames < 3 && gFrameNo % 900 == 0;
+			if (gUiDiag) { diagFrames++; log("ui-diag: frame %u", gFrameNo + 1); }
+		}
 		gUiWorldDraws = 0;
 		static int nl = 0;
 		if (gUiScale > 1.001f && !gUiPub.empty() && nl < 3 && gFrameNo > 600) { nl++; log("ui: interface scale %.2f, %zu panel pieces scaled this frame", gUiScale, gUiPub.size()); }
