@@ -13,7 +13,7 @@
   <a href="https://github.com/blackorange-sketch/RA3-Native/releases/latest"><img src="https://img.shields.io/github/v/release/blackorange-sketch/RA3-Native?label=download&color=d0161a" alt="Download"></a>
   <a href="https://github.com/blackorange-sketch/RA3-Native/releases/tag/nightly"><img src="https://img.shields.io/badge/nightly-test%20build-555" alt="Nightly"></a>
   <a href="https://github.com/blackorange-sketch/RA3-Native/releases"><img src="https://img.shields.io/github/downloads/blackorange-sketch/RA3-Native/total?color=ffc21a" alt="Downloads"></a>
-  <img src="https://img.shields.io/badge/android-8.0%2B%20%7C%20arm64-3ddc84" alt="Android 8.0+ arm64">
+  <img src="https://img.shields.io/badge/android-10%2B%20%7C%20arm64-3ddc84" alt="Android 10+ arm64">
   <img src="https://img.shields.io/badge/status-experimental-orange" alt="Experimental">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue" alt="GPL-3.0"></a>
 </p>
@@ -53,7 +53,7 @@
 
 ## Requirements
 
-- **Android 8.0 or newer, 64-bit (arm64)** with OpenGL ES 3.2. Developed and tested on a Snapdragon 8 Gen 2; other recent Snapdragon devices should work.
+- **Android 10 or newer, 64-bit (arm64)** with OpenGL ES 3.2. Developed and tested on a Snapdragon 8 Gen 2; other recent Snapdragon devices should work.
 - **Mali / PowerVR GPUs** — experimental: these GPUs cannot read the game's DXT textures, so they are decoded on the CPU at load time (and large textures are loaded at half resolution to save memory). Reports from Mali devices are very welcome.
 - **Red Alert 3, patch 1.12** — the full game folder (about 8.7 GB), copied to the phone's internal storage.
 - About **4 GB of free RAM** recommended.
