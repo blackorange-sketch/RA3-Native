@@ -303,6 +303,17 @@ void fpsPinTick()
 				log("fpsdiag: particle manager %08x vtable[%d] %08x", mgr, base, vt);
 			}
 			gWatchLo = lo; gWatchHi = hi; f0 = frames;
+			// the FX particle manager's per-frame update (particle systems advance a fixed step per call, made for
+			// 30 calls per second): at a higher frame cap it runs only on every (cap / 30)-th frame
+			extern uint32_t gThrottleAddr; extern float gThrottleRatio;
+			uint32_t cap = guest::load<uint32_t>(0xcaf9d4);
+			bool have = false;
+			for (int i = 0; i < gWatchN; i++) if (gWatch[i] == 0x5f43a0u) have = true;
+			if (have && cap > 30 && access("/sdcard/ra3_nopthrottle", F_OK) != 0)
+			{
+				gThrottleRatio = 30.f / (float)cap; gThrottleAddr = 0x5f43a0u;
+				log("fps60: particle update at 30 Hz (every %.2f frames)", 1.f / gThrottleRatio);
+			}
 		}
 		if (gWatchN && frames - f0 >= 600)
 		{

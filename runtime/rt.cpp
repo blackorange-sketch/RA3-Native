@@ -389,6 +389,7 @@ std::string hostPath(const std::string& win)
 namespace rt
 {
 uint32_t gWatch[64]; std::atomic<uint32_t> gWatchCalls[64]; int gWatchN = 0; uint32_t gWatchLo = 0xffffffffu, gWatchHi = 0;
+uint32_t gThrottleAddr = 0; float gThrottleRatio = 1.f;   // 60 fps: per-frame particle update run at the 30 Hz the effects are made for
 }
 // ---- dispatcher: every guest call that is not a direct call to a lifted function comes through here
 void call_target(CPU* c, uint32_t addr)
@@ -407,6 +408,15 @@ void call_target(CPU* c, uint32_t addr)
 		e->fn(c);
 		c->r[ESP] += 4 + e->pop;
 		return;
+	}
+	if (addr == gThrottleAddr && addr)
+	{
+		// FX particle manager per-frame update (0x5f43a0, thiscall, no arguments): skip it on surplus frames
+		static float acc = 0.f;
+		acc += gThrottleRatio;
+		if (acc < 1.f) { c->r[ESP] += 4; return; }
+		acc -= 1.f;
+		if (acc > 1.f) acc = 0.f;
 	}
 	// 60 fps diagnostics: count calls to the methods of the particle system manager (which one runs every frame)
 	if (addr >= gWatchLo && addr <= gWatchHi)
