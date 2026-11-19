@@ -383,7 +383,7 @@ static void dumpModeCaller(CPU* c, const char* what)
 	for (int i = 0; i < n; i++) if (seen[i] == ret) return;
 	if (n >= 8) return;
 	seen[n++] = ret;
-	rt::log("modes: %s called from %08x (ebp %08x, caller of caller %08x)", what, ret, c->r[EBP], guest::load<uint32_t>(c->r[EBP] + 4));
+	rt::log("modes: %s called from %08x (stack: %08x %08x %08x %08x)", what, ret, guest::load<uint32_t>(c->r[ESP] + 4), guest::load<uint32_t>(c->r[ESP] + 8), guest::load<uint32_t>(c->r[ESP] + 12), guest::load<uint32_t>(c->r[ESP] + 16));
 	for (uint32_t a = (ret - 0x400) & ~31u; a < ret + 0x600; a += 32)
 	{
 		char t[120]; int k = snprintf(t, sizeof t, "code %08x:", a);
