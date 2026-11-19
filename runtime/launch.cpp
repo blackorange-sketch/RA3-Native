@@ -204,21 +204,22 @@ int launch(const std::string& gameFile)
 	for (auto& sec : img.sections) imageSections.push_back({img.base + sec.va, sec.vsize});
 	if (config.wideScreen)
 	{
-		// wide screen research: where the game keeps the aspect ratios its resolution menu accepts (floats or doubles
-		// near 4:3, 16:10, 16:9)
+		// wide screen research: the callers of the display mode list builder (009af960) - their code into the log
 		int n = 0;
-		auto near = [](double v) { return fabs(v - 16.0 / 9.0) < 0.0008 || fabs(v - 4.0 / 3.0) < 0.0005 || fabs(v - 1.6) < 0.0005 || fabs(v - 1.25) < 0.0003; };
 		for (auto& r : imageSections)
-			for (uint32_t a = r.first; a + 8 <= r.first + r.second && n < 60; a += 4)
-			{
-				float f = guest::load<float>(a); double d = guest::load<double>(a);
-				bool isF = near(f), isD = !(a & 7) && near(d);
-				if (!isF && !isD) continue;
-				char t[200]; int k = snprintf(t, sizeof t, "aspect const at %08x (%s %.6f):", a, isD ? "double" : "float", isD ? d : (double)f);
-				for (int j = -4; j < 8; j++) k += snprintf(t + k, sizeof t - k, " %.4g", (double)guest::load<float>(a + 4 * j));
-				log("%s", t); n++;
-			}
-		log("aspect consts: %d found", n);
+			for (uint32_t a = r.first; a + 5 <= r.first + r.second && n < 6; a++)
+				if (guest::load<uint8_t>(a) == 0xe8 && a + 5 + guest::load<uint32_t>(a + 1) == 0x009af960u)
+				{
+					n++;
+					log("modes: call to 009af960 at %08x", a);
+					for (uint32_t q = (a - 0x200) & ~31u; q < a + 0x500; q += 32)
+					{
+						char t[120]; int k = snprintf(t, sizeof t, "code %08x:", q);
+						for (int j = 0; j < 32; j++) k += snprintf(t + k, sizeof t - k, "%02x", guest::load<uint8_t>(q + j));
+						log("%s", t);
+					}
+				}
+		log("modes: %d callers", n);
 	}
 	tls = {img.tlsStart, img.tlsEnd, img.tlsZeroFill, 0};
 	log("loaded %s, entry %08x, %u imports", gameFile.c_str(), imageEntry, img.importCount);
