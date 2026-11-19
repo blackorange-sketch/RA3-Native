@@ -56,7 +56,7 @@ bool gFboDirty = true;   // framebuffer bindings/attachments changed outside bin
 bool gTexBindDirty = true;   // a texture was bound outside bindSamplers: its binding cache is stale
 GLuint gVao = 0, gBackFbo = 0, gBackTex = 0, gBackDepth = 0, gDrawFbo = 0, gReadFbo = 0, gUpVbo = 0, gUpIbo = 0;
 GLuint gBlitProg = 0, gRectProg = 0, gBlurProg = 0, gBlurSampler = 0;
-static GLint gBlurMapLoc = -1, gBlurTexLoc = -1;
+static GLint gBlurMapLoc = -1, gBlurTexLoc = -1, gBlurALoc = -1;
 GLint gRectLoc = -1, gRectColLoc = -1;
 GLuint gSamplers[16] = {};
 GLuint gDummy2D = 0, gDummyCube = 0, gDummy3D = 0;
@@ -1070,10 +1070,10 @@ GLenum primMode(uint32_t prim)
 const char* kBlitVs = "#version 300 es\nout vec2 uv;\nvoid main(){ vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)); uv = vec2(p.x, 1.0 - p.y); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }\n";
 // Menu side bars in wide screen mode: the stage, zoomed to the screen width, from a small mip level of the back
 // buffer (9 taps), darkened.
-const char* kBlurFs = "#version 300 es\nprecision mediump float;\nin vec2 uv;\nuniform sampler2D t;\nuniform vec4 m;\nout vec4 o;\n"
+const char* kBlurFs = "#version 300 es\nprecision mediump float;\nin vec2 uv;\nuniform sampler2D t;\nuniform vec4 m;\nuniform float a;\nout vec4 o;\n"
 	"void main(){ vec2 q = m.xy + uv * m.zw; vec2 d = 1.0 / vec2(textureSize(t, 5)); vec3 c = vec3(0.0);\n"
 	"for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) c += textureLod(t, q + vec2(float(x), float(y)) * d, 5.0).rgb;\n"
-	"o = vec4(c * (0.55 / 9.0), 1.0); }\n";
+	"o = vec4(c * (0.55 / 9.0), a); }\n";
 const char* kBlitFs = "#version 300 es\nprecision mediump float;\nin vec2 uv;\nuniform sampler2D t;\nout vec4 o;\nvoid main(){ o = vec4(texture(t, uv).rgb, 1.0); }\n";
 // on-screen buttons: a translucent rectangle (r = x0, y0, x1, y1 in clip space)
 const char* kRectVs = "#version 300 es\nuniform vec4 r;\nvoid main(){ vec2 p = vec2(float(gl_VertexID & 1), float(gl_VertexID >> 1)); gl_Position = vec4(mix(r.x, r.z, p.x), mix(r.y, r.w, p.y), 0.0, 1.0); }\n";
@@ -1160,6 +1160,7 @@ bool init()
 		glLinkProgram(gBlurProg);
 		gBlurMapLoc = glGetUniformLocation(gBlurProg, "m");
 		gBlurTexLoc = glGetUniformLocation(gBlurProg, "t");
+		gBlurALoc = glGetUniformLocation(gBlurProg, "a");
 		glGenSamplers(1, &gBlurSampler);
 		glSamplerParameteri(gBlurSampler, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
 		glSamplerParameteri(gBlurSampler, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -2369,14 +2370,16 @@ static void presentImpl()
 			static int nl = 0;
 			if (nl++ < 40) log("wide: side bars %s (interface draws %u, video %u, world %u)", blur ? "blurred" : "black", gAptDraws, gVideoDraws, gUiWorldDraws);
 		}
-		// a big window over the battle (pause / episode menu): blurred bars as well, the battle stays behind the window
-		static int wstreak = 0; static bool bigWin = false;
+		// a big window over the battle (pause / episode menu): blurred bars as well, faded in and out over a few
+		// frames (the window itself animates; switching at once looked like a jump)
+		static float winA = 0.f;
 		bool wnow = inGame && gBigWin;
-		wstreak = wnow != bigWin ? wstreak + 1 : 0;
-		if (wstreak >= 3) { bigWin = wnow; wstreak = 0; }
-		bool useBlur = blur || bigWin;
+		winA = wnow ? std::min(1.f, winA + 0.2f) : std::max(0.f, winA - 0.2f);
+		if (!inGame) winA = 0.f;
+		float barA = inGame ? winA : 1.f;
+		bool useBlur = blur || inGame;
 		int cw = vh * 16 / 9;
-		if ((!inGame || bigWin) && vw > cw + 4)
+		if (barA > 0.f && vw > cw + 4)
 		{
 			int cx = vx + (vw - cw) / 2;
 			glEnable(GL_SCISSOR_TEST);
@@ -2386,6 +2389,8 @@ static void presentImpl()
 				glViewport(0, 0, sw, sh);
 				glUseProgram(gBlurProg);
 				glBindSampler(0, gBlurSampler);
+				if (barA < 1.f) { glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); }
+				glUniform1f(gBlurALoc, barA);
 				glUniform1i(gBlurTexLoc, 0);
 				// the 16:9 stage of the back buffer, zoomed to fill the screen width
 				float f = std::min(1.f, (float)backH * 16.f / 9.f / backW), u0 = (1.f - f) / 2.f;
@@ -2394,6 +2399,7 @@ static void presentImpl()
 				glScissor(0, 0, cx, sh); glDrawArrays(GL_TRIANGLES, 0, 3);
 				glScissor(cx + cw, 0, sw - cx - cw, sh); glDrawArrays(GL_TRIANGLES, 0, 3);
 				glBindSampler(0, 0);
+				glDisable(GL_BLEND);
 				glUseProgram(gBlitProg);
 			}
 			else
