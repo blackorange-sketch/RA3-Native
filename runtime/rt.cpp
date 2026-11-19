@@ -409,6 +409,9 @@ static inline int liftedIndex(uint32_t addr)
 // search (the search on every miss cost ~14% of the game thread and made saving the game hang)
 void call_target_ic(CPU* c, uint32_t addr, std::atomic<uint64_t>* ic)
 {
+	// import stubs first (a range check): COM methods (every Direct3D call) and Win32 functions are called through
+	// pointers too, and each such call used to binary-search the lifted table before reaching the import
+	if (imports::lookup(addr)) { call_target(c, addr); return; }
 	int i = liftedIndex(addr);
 	if (i >= 0)
 	{
