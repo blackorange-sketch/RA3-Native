@@ -1,11 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
-<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:aapt="http://schemas.android.com/aapt"
+<!-- original emblem: red sunburst -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
     <path android:pathData="M0,0 L108,0 L108,108 L0,108 Z">
         <aapt:attr name="android:fillColor">
-            <gradient android:type="radial" android:centerX="54" android:centerY="46" android:gradientRadius="70"
-                android:startColor="#FF5A0A0C" android:endColor="#FF0C0D0F" />
+            <gradient android:type="radial" android:centerX="54" android:centerY="48.6" android:gradientRadius="70">
+                <item android:offset="0" android:color="#FFD4211B" />
+                <item android:offset="0.55" android:color="#FF7D0A0C" />
+                <item android:offset="1" android:color="#FF2A0405" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <path android:fillColor="#1AFFCF8A" android:pathData="M54,54 L144.00,54.00 L143.23,65.75 Z M54,54 L140.93,77.29 L137.15,88.44 Z M54,54 L131.94,99.00 L125.40,108.79 Z M54,54 L117.64,117.64 L108.79,125.40 Z M54,54 L99.00,131.94 L88.44,137.15 Z M54,54 L77.29,140.93 L65.75,143.23 Z M54,54 L54.00,144.00 L42.25,143.23 Z M54,54 L30.71,140.93 L19.56,137.15 Z M54,54 L9.00,131.94 L-0.79,125.40 Z M54,54 L-9.64,117.64 L-17.40,108.79 Z M54,54 L-23.94,99.00 L-29.15,88.44 Z M54,54 L-32.93,77.29 L-35.23,65.75 Z M54,54 L-36.00,54.00 L-35.23,42.25 Z M54,54 L-32.93,30.71 L-29.15,19.56 Z M54,54 L-23.94,9.00 L-17.40,-0.79 Z M54,54 L-9.64,-9.64 L-0.79,-17.40 Z M54,54 L9.00,-23.94 L19.56,-29.15 Z M54,54 L30.71,-32.93 L42.25,-35.23 Z M54,54 L54.00,-36.00 L65.75,-35.23 Z M54,54 L77.29,-32.93 L88.44,-29.15 Z M54,54 L99.00,-23.94 L108.79,-17.40 Z M54,54 L117.64,-9.64 L125.40,-0.79 Z M54,54 L131.94,9.00 L137.15,19.56 Z M54,54 L140.93,30.71 L143.23,42.25 Z" />
+    <path android:pathData="M20,54 A34,34 0 1,0 88,54 A34,34 0 1,0 20,54 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient android:type="radial" android:centerX="54" android:centerY="54" android:gradientRadius="34">
+                <item android:offset="0" android:color="#8CFFB36B" />
+                <item android:offset="1" android:color="#00FF6A2A" />
+            </gradient>
         </aapt:attr>
     </path>
 </vector>
