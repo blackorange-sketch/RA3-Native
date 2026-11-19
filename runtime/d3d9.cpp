@@ -155,6 +155,7 @@ ShaderObj* getShader(const uint8_t* code, size_t n)
 static constexpr uint32_t kMaxObjs = 1u << 20;
 static std::atomic<Obj*> objTable[kMaxObjs];
 static std::atomic<uint32_t> objCount{1};
+static std::atomic<uint32_t> gObjGen{1};   // bumped by every new object (invalidates cached misses in objectAt)
 static std::atomic<uint32_t> objLo{0xffffffffu}, objHi{0};   // address range of object blocks (committed heap)
 Obj* objectAtSlow(uint32_t addr);
 Obj* objectAt(uint32_t addr)
@@ -162,12 +163,16 @@ Obj* objectAt(uint32_t addr)
 	// most calls are made on the same object as the previous one (the device, the current effect): objects are
 	// never deleted and never change address, so a per-thread one-entry cache is always valid
 	// (16 entries, direct-mapped by block address: calls alternate between the device, effects and textures)
-	static thread_local uint32_t cacheA[16];
+	// Misses (null and non-object pointers: SetTexture(stage, 0) and the like) are cached too; creating an object
+	// bumps a generation that invalidates them, since a freed non-object block could become an object later.
+	if (!addr) return nullptr;
+	static thread_local uint32_t cacheA[16], cacheG[16];
 	static thread_local Obj* cacheO[16];
 	uint32_t k = (addr >> 4) & 15;
-	if (cacheA[k] == addr && addr) return cacheO[k];
+	uint32_t gen = gObjGen.load(std::memory_order_acquire);
+	if (cacheA[k] == addr && (cacheO[k] || cacheG[k] == gen)) return cacheO[k];
 	Obj* o = objectAtSlow(addr);
-	if (o) { cacheA[k] = addr; cacheO[k] = o; }
+	cacheA[k] = addr; cacheO[k] = o; cacheG[k] = gen;
 	return o;
 }
 Obj* objectAtSlow(uint32_t addr)
@@ -222,6 +227,7 @@ Obj* newObj(Iface i)
 	}
 	std::lock_guard<std::mutex> l(objMu);
 	objs[o->addr] = o;
+	gObjGen.fetch_add(1, std::memory_order_release);
 	return o;
 }
 
