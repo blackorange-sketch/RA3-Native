@@ -387,19 +387,33 @@ std::string hostPath(const std::string& win)
 namespace rt
 {
 }
-// ---- per-site inline cache miss: find the lifted function, remember it at the call site, call it
-void call_target_ic(CPU* c, uint32_t addr, std::atomic<uint64_t>* ic)
+// global cache of indirect targets: guest address -> lifted table index (shared by all call sites)
+static std::atomic<uint64_t> gTargetCache[1u << 16];
+static inline uint32_t targetSlot(uint32_t addr) { return (addr ^ (addr >> 16)) & ((1u << 16) - 1); }
+static inline int liftedIndex(uint32_t addr)
 {
+	uint32_t slot = targetSlot(addr);
+	uint64_t ce = gTargetCache[slot].load(std::memory_order_relaxed);
+	if ((uint32_t)ce == addr && addr) return (int)(ce >> 32);
 	unsigned lo = 0, hi = lifted_count;
 	while (lo < hi)
 	{
 		unsigned mid = (lo + hi) / 2;
 		if (lifted_table[mid].addr < addr) lo = mid + 1; else hi = mid;
 	}
-	if (addr && lo < lifted_count && lifted_table[lo].addr == addr)
+	if (!addr || lo >= lifted_count || lifted_table[lo].addr != addr) return -1;
+	gTargetCache[slot].store((uint64_t)lo << 32 | addr, std::memory_order_relaxed);
+	return (int)lo;
+}
+// ---- per-site inline cache miss: polymorphic sites miss often, so the shared hash cache comes before the binary
+// search (the search on every miss cost ~14% of the game thread and made saving the game hang)
+void call_target_ic(CPU* c, uint32_t addr, std::atomic<uint64_t>* ic)
+{
+	int i = liftedIndex(addr);
+	if (i >= 0)
 	{
-		ic->store((uint64_t)lo << 32 | addr, std::memory_order_relaxed);
-		lifted_table[lo].fn(c);
+		ic->store((uint64_t)i << 32 | addr, std::memory_order_relaxed);
+		lifted_table[i].fn(c);
 		return;
 	}
 	call_target(c, addr);   // import stubs and the error path
@@ -413,9 +427,7 @@ void call_target(CPU* c, uint32_t addr)
 	#endif
 	// indirect calls (virtual methods, function pointers) are frequent: cache guest address -> table index.
 	// Checked first: only lifted functions are cached, imports go through the stub lookup below.
-	static std::atomic<uint64_t> cache[1u << 16];
-	uint32_t slot = (addr ^ (addr >> 16)) & ((1u << 16) - 1);
-	uint64_t ce = cache[slot].load(std::memory_order_relaxed);
+	uint64_t ce = gTargetCache[targetSlot(addr)].load(std::memory_order_relaxed);
 	if ((uint32_t)ce == addr && addr) { lifted_table[ce >> 32].fn(c); return; }
 	if (auto* e = imports::lookup(addr))
 	{
@@ -428,13 +440,7 @@ void call_target(CPU* c, uint32_t addr)
 		c->r[ESP] += 4 + e->pop;
 		return;
 	}
-	unsigned lo = 0, hi = lifted_count;
-	while (lo < hi)
-	{
-		unsigned mid = (lo + hi) / 2;
-		if (lifted_table[mid].addr < addr) lo = mid + 1; else hi = mid;
-	}
-	if (lo < lifted_count && lifted_table[lo].addr == addr) { cache[slot].store((uint64_t)lo << 32 | addr, std::memory_order_relaxed); lifted_table[lo].fn(c); return; }
+	if (int i = liftedIndex(addr); i >= 0) { lifted_table[i].fn(c); return; }
 	{
 		const char* nm[8] = {"eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"};
 		for (int i = 0; i < 8; i++)
