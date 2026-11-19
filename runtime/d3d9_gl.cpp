@@ -1481,6 +1481,50 @@ static bool gUiMenu = false;      // a big window covers the battle this frame
 static bool gUiNested = false;     // drawing a rebuilt interface draw (no second analysis)
 static uint32_t gUiWorldDraws = 0;
 static uint32_t gAptDraws = 0, gVideoDraws = 0;   // interface (Flash) and video draws this frame: menu vs. loading screen / cutscene   // depth-tested draws this frame: the HUD is scaled in a battle only, not in menus
+// Wide screen: a big interface window over the battle this frame (pause / episode menu, laid out for 16:9 like the
+// main menus): it gets the menu side bars. A quad's box only (the window backdrop), cheap enough for every draw.
+static bool gBigWin = false;
+static void checkBigWindow(const DrawCall& dc, const DeclElem* els, uint32_t nEls)
+{
+	const DeclElem* pe = nullptr;
+	for (uint32_t i = 0; i < nEls; i++) if (els[i].usage == 0 && els[i].index == 0 && (els[i].type >= 1 && els[i].type <= 3)) { pe = &els[i]; break; }
+	if (!pe) return;
+	uint32_t nIdx = (uint32_t)primVertices(dc.prim, dc.primCount);
+	if (!nIdx || nIdx > 6) return;
+	const uint8_t* vb; uint32_t stride; uint64_t vbSize;
+	if (dc.upVerts) { vb = (const uint8_t*)dc.upVerts; stride = dc.upStride; vbSize = ~0ull; }
+	else
+	{
+		const Stream& st = dev.streams[pe->stream < 16 ? pe->stream : 0];
+		if (!st.vb || !st.vb->data || !st.stride) return;
+		vb = (const uint8_t*)guest::host(st.vb->data) + st.offset; stride = st.stride; vbSize = st.vb->size > st.offset ? st.vb->size - st.offset : 0;
+	}
+	const uint8_t* ip = nullptr; bool i32 = false;
+	if (dc.indexed)
+	{
+		if (dc.upIdx) { ip = (const uint8_t*)dc.upIdx; i32 = dc.upIdxFmt == 102; }
+		else if (dev.ib && dev.ib->data) { i32 = dev.ib->fmt == 102; if ((uint64_t)(dc.startIndex + nIdx) * (i32 ? 4 : 2) > dev.ib->size) return; ip = (const uint8_t*)guest::host(dev.ib->data) + (uint64_t)dc.startIndex * (i32 ? 4 : 2); }
+		else return;
+	}
+	const float* m = dev.vsF + 4 * 11;
+	if (m[12] != 0.f || m[13] != 0.f) return;
+	const size_t posBytes = pe->type == 1 ? 8 : pe->type == 3 ? 16 : 12;
+	float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+	for (uint32_t i = 0; i < nIdx; i++)
+	{
+		int64_t v;
+		if (ip) { uint32_t k; if (i32) memcpy(&k, ip + 4 * i, 4); else { uint16_t s16; memcpy(&s16, ip + 2 * i, 2); k = s16; } v = (int64_t)dc.baseVertex + k; }
+		else v = (int64_t)dc.baseVertex + i;
+		if (v < 0 || (uint64_t)v * stride + pe->offset + posBytes > vbSize) return;
+		float p[4] = {0, 0, 0, 1}; memcpy(p, vb + (uint64_t)v * stride + pe->offset, posBytes);
+		float cw = p[2] * m[14] + p[3] * m[15];
+		if (fabsf(cw) < 1e-6f) return;
+		float cx = (p[0] * m[0] + p[1] * m[1] + p[2] * m[2] + p[3] * m[3]) / cw, cy = (p[0] * m[4] + p[1] * m[5] + p[2] * m[6] + p[3] * m[7]) / cw;
+		x0 = std::min(x0, cx); x1 = std::max(x1, cx); y0 = std::min(y0, cy); y1 = std::max(y1, cy);
+	}
+	// clip space: the whole screen is 2 x 2
+	if ((x1 - x0) * (y1 - y0) >= 0.35f * 4.f && (x1 - x0) < 0.98f * 2.f) gBigWin = true;
+}
 static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, float& axN, float& ayN, float& ax, float& ay, std::vector<uint8_t>& split)
 {
 	if (gUiNested || gUiScale <= 1.001f || gUiWorldDraws < 50 || !dev.vs || !isBack(dev.rt0)) return 0.f;
@@ -2044,6 +2088,8 @@ static void drawImpl(const DrawCall& dc)
 		float axN = 0, ayN = 0, ax = 0, ay = 0;
 		static std::vector<uint8_t> split;
 		split.clear();
+		if (rt::config.wideScreen && !gBigWin && !gUiNested && dev.vs && dev.vs->hash == kAptVs && !dev.rs[7] && gUiWorldDraws >= 50 && isBack(dev.rt0))
+			checkBigWindow(dc, elsBuf, nEls);
 		float k = uiScaleFor(dc, elsBuf, nEls, axN, ayN, ax, ay, split);
 		if (!split.empty())
 		{
@@ -2323,12 +2369,18 @@ static void presentImpl()
 			static int nl = 0;
 			if (nl++ < 40) log("wide: side bars %s (interface draws %u, video %u, world %u)", blur ? "blurred" : "black", gAptDraws, gVideoDraws, gUiWorldDraws);
 		}
+		// a big window over the battle (pause / episode menu): blurred bars as well, the battle stays behind the window
+		static int wstreak = 0; static bool bigWin = false;
+		bool wnow = inGame && gBigWin;
+		wstreak = wnow != bigWin ? wstreak + 1 : 0;
+		if (wstreak >= 3) { bigWin = wnow; wstreak = 0; }
+		bool useBlur = blur || bigWin;
 		int cw = vh * 16 / 9;
-		if (!inGame && vw > cw + 4)
+		if ((!inGame || bigWin) && vw > cw + 4)
 		{
 			int cx = vx + (vw - cw) / 2;
 			glEnable(GL_SCISSOR_TEST);
-			if (blur && gBlurProg)
+			if (useBlur && gBlurProg)
 			{
 				glGenerateMipmap(GL_TEXTURE_2D);   // gBackTex is still bound
 				glViewport(0, 0, sw, sh);
@@ -2446,7 +2498,7 @@ static void presentImpl()
 		// the right column's extents only grow (the open build menu is the largest): its scale stays the same when menus open
 		if (gUiHud) { gUiRightT = std::max(gUiRightT, gUiCurT); gUiRightB = std::min(gUiRightB, gUiCurB); if (gUiCurColLeft < 1e8f) gUiColLeft = gUiCurColLeft; }
 		gUiCurT = 0.f; gUiCurB = 1.f; gUiCurColLeft = 1e9f;
-		gUiWorldDraws = 0; gAptDraws = gVideoDraws = 0; gUiHud = false; gUiAptSeen = false; gUiPieces.clear(); gUiMenu = false;
+		gUiWorldDraws = 0; gAptDraws = gVideoDraws = 0; gBigWin = false; gUiHud = false; gUiAptSeen = false; gUiPieces.clear(); gUiMenu = false;
 		static int nl = 0;
 		if (gUiScale > 1.001f && !gUiPub.empty() && nl < 3 && gFrameNo > 600) { nl++; log("ui: interface scale %.2f, %zu panel pieces scaled this frame", gUiScale, gUiPub.size()); }
 	}
