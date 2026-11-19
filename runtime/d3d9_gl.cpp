@@ -55,7 +55,8 @@ bool gAttrDirty = true;   // vertex attribute state of gVao changed outside setA
 bool gFboDirty = true;   // framebuffer bindings/attachments changed outside bindTargets
 bool gTexBindDirty = true;   // a texture was bound outside bindSamplers: its binding cache is stale
 GLuint gVao = 0, gBackFbo = 0, gBackTex = 0, gBackDepth = 0, gDrawFbo = 0, gReadFbo = 0, gUpVbo = 0, gUpIbo = 0;
-GLuint gBlitProg = 0, gRectProg = 0;
+GLuint gBlitProg = 0, gRectProg = 0, gBlurProg = 0, gBlurSampler = 0;
+static GLint gBlurMapLoc = -1, gBlurTexLoc = -1;
 GLint gRectLoc = -1, gRectColLoc = -1;
 GLuint gSamplers[16] = {};
 GLuint gDummy2D = 0, gDummyCube = 0, gDummy3D = 0;
@@ -1067,6 +1068,12 @@ GLenum primMode(uint32_t prim)
 }
 
 const char* kBlitVs = "#version 300 es\nout vec2 uv;\nvoid main(){ vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)); uv = vec2(p.x, 1.0 - p.y); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }\n";
+// Menu side bars in wide screen mode: the stage, zoomed to the screen width, from a small mip level of the back
+// buffer (9 taps), darkened.
+const char* kBlurFs = "#version 300 es\nprecision mediump float;\nin vec2 uv;\nuniform sampler2D t;\nuniform vec4 m;\nout vec4 o;\n"
+	"void main(){ vec2 q = m.xy + uv * m.zw; vec2 d = 1.0 / vec2(textureSize(t, 5)); vec3 c = vec3(0.0);\n"
+	"for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) c += textureLod(t, q + vec2(float(x), float(y)) * d, 5.0).rgb;\n"
+	"o = vec4(c * (0.55 / 9.0), 1.0); }\n";
 const char* kBlitFs = "#version 300 es\nprecision mediump float;\nin vec2 uv;\nuniform sampler2D t;\nout vec4 o;\nvoid main(){ o = vec4(texture(t, uv).rgb, 1.0); }\n";
 // on-screen buttons: a translucent rectangle (r = x0, y0, x1, y1 in clip space)
 const char* kRectVs = "#version 300 es\nuniform vec4 r;\nvoid main(){ vec2 p = vec2(float(gl_VertexID & 1), float(gl_VertexID >> 1)); gl_Position = vec4(mix(r.x, r.z, p.x), mix(r.y, r.w, p.y), 0.0, 1.0); }\n";
@@ -1144,6 +1151,20 @@ bool init()
 		glLinkProgram(gRectProg);
 		gRectLoc = glGetUniformLocation(gRectProg, "r");
 		gRectColLoc = glGetUniformLocation(gRectProg, "c");
+	}
+	{
+		GLuint bv = compileStage(GL_VERTEX_SHADER, kBlitVs, "blur vs"), bf = compileStage(GL_FRAGMENT_SHADER, kBlurFs, "blur fs");
+		gBlurProg = glCreateProgram();
+		glAttachShader(gBlurProg, bv);
+		glAttachShader(gBlurProg, bf);
+		glLinkProgram(gBlurProg);
+		gBlurMapLoc = glGetUniformLocation(gBlurProg, "m");
+		gBlurTexLoc = glGetUniformLocation(gBlurProg, "t");
+		glGenSamplers(1, &gBlurSampler);
+		glSamplerParameteri(gBlurSampler, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+		glSamplerParameteri(gBlurSampler, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		glSamplerParameteri(gBlurSampler, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glSamplerParameteri(gBlurSampler, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 	}
 	glGenBuffers(1, &gUpVbo);
 	glGenBuffers(1, &gUpIbo);
@@ -1458,7 +1479,8 @@ static float gUiRightT = 0.f, gUiRightB = 1.f, gUiCurT = 0.f, gUiCurB = 1.f;   /
 static std::vector<UiRect> gUiPieces;   // panel pieces scaled this frame, in the game's own (unscaled) coordinates
 static bool gUiMenu = false;      // a big window covers the battle this frame
 static bool gUiNested = false;     // drawing a rebuilt interface draw (no second analysis)
-static uint32_t gUiWorldDraws = 0;   // depth-tested draws this frame: the HUD is scaled in a battle only, not in menus
+static uint32_t gUiWorldDraws = 0;
+static uint32_t gAptDraws = 0, gVideoDraws = 0;   // interface (Flash) and video draws this frame: menu vs. loading screen / cutscene   // depth-tested draws this frame: the HUD is scaled in a battle only, not in menus
 static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, float& axN, float& ayN, float& ax, float& ay, std::vector<uint8_t>& split)
 {
 	if (gUiNested || gUiScale <= 1.001f || gUiWorldDraws < 50 || !dev.vs || !isBack(dev.rt0)) return 0.f;
@@ -1662,6 +1684,7 @@ static void drawImpl(const DrawCall& dc)
 	if (!p) { gHNoProg++; static int nf = 0; if (nf++ < 10) log("d3d9: draw skipped: no program for vs %016llx ps %016llx", (unsigned long long)vs->hash, (unsigned long long)ps->hash); return; }
 	healthStates();
 	if (dev.rs[7] && !gUiNested) gUiWorldDraws++;   // ZENABLE
+	if (!gUiNested) { if (vs->hash == kAptVs) gAptDraws++; else if (vs->hash == kVideoVs) gVideoDraws++; }
 	if (gUiDiag && !gUiNested)
 	{
 		static int nd = 0;
@@ -2290,13 +2313,42 @@ static void presentImpl()
 		bool now = gUiWorldDraws >= 50;
 		streak = now != inGame ? streak + 1 : 0;
 		if (streak >= 15) { inGame = now; streak = 0; }
+		// menus get blurred side bars in the game's colours; loading screens and videos (few interface draws) stay black
+		static int bstreak = 0; static bool blur = false;
+		bool bnow = !inGame && gAptDraws >= 12;
+		bstreak = bnow != blur ? bstreak + 1 : 0;
+		if (bstreak >= 10)
+		{
+			blur = bnow; bstreak = 0;
+			static int nl = 0;
+			if (nl++ < 40) log("wide: side bars %s (interface draws %u, video %u, world %u)", blur ? "blurred" : "black", gAptDraws, gVideoDraws, gUiWorldDraws);
+		}
 		int cw = vh * 16 / 9;
 		if (!inGame && vw > cw + 4)
 		{
 			int cx = vx + (vw - cw) / 2;
 			glEnable(GL_SCISSOR_TEST);
-			glScissor(vx, 0, cx - vx, sh); glClear(GL_COLOR_BUFFER_BIT);
-			glScissor(cx + cw, 0, vx + vw - cx - cw, sh); glClear(GL_COLOR_BUFFER_BIT);
+			if (blur && gBlurProg)
+			{
+				glGenerateMipmap(GL_TEXTURE_2D);   // gBackTex is still bound
+				glViewport(0, 0, sw, sh);
+				glUseProgram(gBlurProg);
+				glBindSampler(0, gBlurSampler);
+				glUniform1i(gBlurTexLoc, 0);
+				// the 16:9 stage of the back buffer, zoomed to fill the screen width
+				float f = std::min(1.f, (float)backH * 16.f / 9.f / backW), u0 = (1.f - f) / 2.f;
+				float vspan = std::min(1.f, (float)sh * cw / ((float)vh * sw));
+				glUniform4f(gBlurMapLoc, u0, 0.5f - 0.5f * vspan, f, vspan);
+				glScissor(0, 0, cx, sh); glDrawArrays(GL_TRIANGLES, 0, 3);
+				glScissor(cx + cw, 0, sw - cx - cw, sh); glDrawArrays(GL_TRIANGLES, 0, 3);
+				glBindSampler(0, 0);
+				glUseProgram(gBlitProg);
+			}
+			else
+			{
+				glScissor(0, 0, cx, sh); glClear(GL_COLOR_BUFFER_BIT);
+				glScissor(cx + cw, 0, sw - cx - cw, sh); glClear(GL_COLOR_BUFFER_BIT);
+			}
 			glDisable(GL_SCISSOR_TEST);
 		}
 	}
@@ -2394,7 +2446,7 @@ static void presentImpl()
 		// the right column's extents only grow (the open build menu is the largest): its scale stays the same when menus open
 		if (gUiHud) { gUiRightT = std::max(gUiRightT, gUiCurT); gUiRightB = std::min(gUiRightB, gUiCurB); if (gUiCurColLeft < 1e8f) gUiColLeft = gUiCurColLeft; }
 		gUiCurT = 0.f; gUiCurB = 1.f; gUiCurColLeft = 1e9f;
-		gUiWorldDraws = 0; gUiHud = false; gUiAptSeen = false; gUiPieces.clear(); gUiMenu = false;
+		gUiWorldDraws = 0; gAptDraws = gVideoDraws = 0; gUiHud = false; gUiAptSeen = false; gUiPieces.clear(); gUiMenu = false;
 		static int nl = 0;
 		if (gUiScale > 1.001f && !gUiPub.empty() && nl < 3 && gFrameNo > 600) { nl++; log("ui: interface scale %.2f, %zu panel pieces scaled this frame", gUiScale, gUiPub.size()); }
 	}
