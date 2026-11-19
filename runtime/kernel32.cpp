@@ -16,6 +16,7 @@
 
 #define K "KERNEL32.dll"
 using namespace rt;
+void profThread(uint32_t guestTid);   // prof.cpp
 
 namespace rt
 {
@@ -127,6 +128,7 @@ void threadMain(ThreadObj* t)
 	{
 		char nm[16]; snprintf(nm, sizeof nm, "g%u-%06x", t->tid, t->fn & 0xffffff);   // shows in the thread CPU monitor
 		pthread_setname_np(pthread_self(), nm);
+		::profThread(t->tid);
 	}
 	tctx.stackTop = top;
 	tctx.teb = makeTeb(low, top, t->tid);

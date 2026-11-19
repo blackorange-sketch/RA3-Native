@@ -32,11 +32,24 @@ constexpr int Deep = 4;
 uintptr_t deep[N][Deep];          // return addresses from the frame-pointer chain (who called the libc caller)
 uintptr_t stackLo = 0, stackHi = 0;
 std::atomic<uint32_t> head{0};
+// other game threads (worker threads): pc + guest thread id, reported separately
+constexpr uint32_t N2 = 1u << 16;
+uintptr_t samples2[N2];
+uint32_t tags2[N2];
+std::atomic<uint32_t> head2{0};
+bool gEnabled = false;
 
-void onProf(int, siginfo_t*, void* uctx)
+void onProf(int, siginfo_t* si, void* uctx)
 {
 #if defined(__aarch64__)
 	ucontext_t* uc = (ucontext_t*)uctx;
+	if (int tag = si ? si->si_value.sival_int : 0)
+	{
+		uint32_t j = head2.fetch_add(1, std::memory_order_relaxed);
+		samples2[j & (N2 - 1)] = (uintptr_t)uc->uc_mcontext.pc;
+		tags2[j & (N2 - 1)] = (uint32_t)tag;
+		return;
+	}
 	uint32_t i = head.fetch_add(1, std::memory_order_relaxed);
 	samples[i & (N - 1)] = (uintptr_t)uc->uc_mcontext.pc;
 	callers[i & (N - 1)] = (uintptr_t)uc->uc_mcontext.regs[30];
@@ -187,13 +200,79 @@ void reporter()
 			if ((i + 1) % 12 == 0) { rt::log("prof raw:%s", line.c_str()); line.clear(); }
 		}
 		if (!line.empty()) rt::log("prof raw:%s", line.c_str());
+		// worker threads: hottest functions of each thread that used at least 2% of the main thread's samples
+		{
+			static uint32_t tail2 = 0;
+			uint32_t h2 = head2.load();
+			uint32_t n2 = h2 - tail2;
+			if (n2 > N2) { tail2 = h2 - N2; n2 = N2; }
+			std::map<uint32_t, std::unordered_map<std::string, uint32_t>> per;
+			std::map<uint32_t, uint32_t> cnt;
+			for (uint32_t i = tail2; i != h2; i++)
+			{
+				uint32_t j = i & (N2 - 1);
+				per[tags2[j]][nameOf(samples2[j], cache)]++;
+				cnt[tags2[j]]++;
+			}
+			tail2 = h2;
+			Dl_info me{};
+			dladdr((void*)&reporter, &me);
+			for (auto& kv : per)
+			{
+				uint32_t tn = cnt[kv.first];
+				if (tn * 50 < n) continue;
+				std::vector<std::pair<uint32_t, std::string>> w;
+				for (auto& f : kv.second) w.push_back({f.second, f.first});
+				std::sort(w.rbegin(), w.rend());
+				std::string ln;
+				for (size_t i = 0; i < w.size() && i < 16; i++) { char b[160]; snprintf(b, sizeof b, " %s %.1f%% |", w[i].second.c_str(), 100.0 * w[i].first / tn); ln += b; }
+				rt::log("prof thread t%u: %u samples (%.0f%% of main):%s", kv.first, tn, 100.0 * tn / n, ln.c_str());
+			}
+		}
 	}
 }
 }
 
+bool enabledNow()
+{
+	static bool on = [] {
+		if (access("/sdcard/ra3_prof", F_OK) != 0) return false;
+		struct sigaction sa{};
+		sa.sa_sigaction = onProf;
+		sa.sa_flags = SA_SIGINFO | SA_RESTART;
+		sigemptyset(&sa.sa_mask);
+		sigaction(SIGPROF, &sa, nullptr);
+		return true;
+	}();
+	return on;
+}
+
+void startWorker(uint32_t tag)
+{
+	if (!enabledNow()) return;
+	sigevent ev{};
+	ev.sigev_notify = SIGEV_THREAD_ID;
+	ev.sigev_signo = SIGPROF;
+	ev.sigev_value.sival_int = (int)tag;
+#ifdef sigev_notify_thread_id
+	ev.sigev_notify_thread_id = (pid_t)syscall(SYS_gettid);
+#else
+	ev._sigev_un._tid = (pid_t)syscall(SYS_gettid);
+#endif
+	clockid_t clk;
+	timer_t t;
+	if (pthread_getcpuclockid(pthread_self(), &clk) != 0) return;
+	if (timer_create(clk, &ev, &t) != 0) return;
+	itimerspec its{};
+	its.it_interval.tv_nsec = 1000000;
+	its.it_value.tv_nsec = 1000000;
+	timer_settime(t, 0, &its, nullptr);
+}
+
 void startForThisThread()
 {
-	if (access("/sdcard/ra3_prof", F_OK) != 0) return;
+	if (!enabledNow()) return;
+	gEnabled = true;
 	pthread_attr_t at;
 	if (pthread_getattr_np(pthread_self(), &at) == 0)
 	{
@@ -284,6 +363,8 @@ static void threadMonitor()
 		rt::log("threads: %.0f%% of one core over 60 s%s:%s", 100.0 * total / hz / 60.0, ::rt::background() ? " (app in background)" : "", line.c_str());
 	}
 }
+
+void profThread(uint32_t guestTid) { prof::startWorker(guestTid); }   // a game worker thread (after profStart)
 
 void profStart()
 {
