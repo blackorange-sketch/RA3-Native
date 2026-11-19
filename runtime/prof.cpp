@@ -309,6 +309,7 @@ void startForThisThread()
 
 // Per-thread CPU use every 60 s (also while the app is in the background, when the game thread is parked): which
 // threads keep the phone busy. Only with the log file enabled.
+namespace rt { std::string waitStatsLine(); }
 static void threadMonitor()
 {
 	std::map<int, std::pair<uint64_t, std::string>> last;
@@ -361,6 +362,8 @@ static void threadMonitor()
 			line += b;
 		}
 		rt::log("threads: %.0f%% of one core over 60 s%s:%s", 100.0 * total / hz / 60.0, ::rt::background() ? " (app in background)" : "", line.c_str());
+		std::string ws = rt::waitStatsLine();
+		if (!ws.empty()) rt::log("waits (60 s, threads with 10+/s):%s", ws.c_str());
 	}
 }
 

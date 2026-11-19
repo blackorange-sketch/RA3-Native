@@ -40,6 +40,8 @@ std::mutex waitMu;               // one lock for all waitable objects
 // SetEvent: the game's five job workers each burned a few % of a core re-checking and going back to sleep.)
 struct Waiter { std::condition_variable cv; const void* const* objs; int n; };
 std::vector<Waiter*> gWaitList;   // guarded by waitMu
+struct WaitStat { uint64_t n = 0, ms = 0, timeouts = 0; };
+WaitStat gWaitStats[64];          // WaitForSingleObject per guest thread (guarded by waitMu), for the thread monitor
 int gWaiters = 0; // threads blocked (guarded by waitMu)
 inline void wakeWaiters(const void* obj)
 {
@@ -422,6 +424,10 @@ IMP_STD(K, WaitForSingleObject, 2)
 	const void* obj = w;
 	bool r = waitOn(l, &obj, 1, ms, [&] { return waitReady(w, tid); });
 	gWaiting.erase(tid);
+	{
+		WaitStat& ws = gWaitStats[(tid - 0x1000) & 63];
+		ws.n++; if (ms != 0xffffffffu) ws.ms += ms; if (!r) ws.timeouts++;
+	}
 	SET(r ? 0 : 0x102);
 }
 void dumpWaiters()
@@ -599,7 +605,7 @@ void waitWhileBackground()
 }
 IMP_STD(K, GetTickCount, 0) { noteWait(c, "GetTickCount", 0); SET((uint32_t)(gameNs() / 1000000)); }
 IMP_ID("WINMM.dll", "timeGetTime", timeGetTime, 0) { noteWait(c, "timeGetTime", 0); SET((uint32_t)(gameNs() / 1000000)); }
-IMP_ID("WINMM.dll", "timeBeginPeriod", timeBeginPeriod, 4) { SET(0); }
+IMP_ID("WINMM.dll", "timeBeginPeriod", timeBeginPeriod, 4) { static int n = 0; if (n++ < 4) log("timeBeginPeriod(%u)", ARG(0)); SET(0); }
 IMP_ID("WINMM.dll", "timeEndPeriod", timeEndPeriod, 4) { SET(0); }
 IMP_STD(K, QueryPerformanceFrequency, 1) { guest::store<uint64_t>(ARG(0), 1000000000ull); SET(1); }
 IMP_STD(K, QueryPerformanceCounter, 1) { noteWait(c, "QPC", 0); guest::store<uint64_t>(ARG(0), gameNs()); SET(1); }
@@ -1067,6 +1073,21 @@ uint32_t eventCreate(bool manual, bool initial)
 }
 uint32_t getLastError() { return tctx.teb ? guest::load<uint32_t>(tctx.teb + 0x34) : 0; }
 void eventSet(uint32_t h) { if (auto* w = asWaitable(h)) { std::lock_guard<std::mutex> l(waitMu); w->signaled = true; w->sets++; wakeWaiters(w); } }
+// per-thread WaitForSingleObject counts since the last call (thread monitor diagnostics)
+std::string waitStatsLine()
+{
+	std::lock_guard<std::mutex> l(waitMu);
+	std::string out;
+	for (int i = 0; i < 64; i++)
+	{
+		WaitStat& w = gWaitStats[i];
+		if (w.n < 600) { w = WaitStat(); continue; }
+		char b[96]; snprintf(b, sizeof b, " t%d: %llu waits, %llu timeouts, avg %.1f ms |", 0x1000 + i, (unsigned long long)w.n, (unsigned long long)w.timeouts, (double)w.ms / w.n);
+		out += b;
+		w = WaitStat();
+	}
+	return out;
+}
 void eventReset(uint32_t h) { if (auto* w = asWaitable(h)) { std::lock_guard<std::mutex> l(waitMu); w->signaled = false; } }
 // index of the signalled object (all: 0 once all are), -1 on timeout
 int waitHandles(const uint32_t* hs, int n, bool all, uint32_t ms)
