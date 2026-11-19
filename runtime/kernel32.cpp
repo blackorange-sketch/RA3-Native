@@ -422,7 +422,11 @@ IMP_STD(K, WaitForSingleObject, 2)
 	gWaitEsp[tid] = c->r[ESP];
 	gWaitTop[tid] = thisThread().stackTop;
 	const void* obj = w;
-	bool r = waitOn(l, &obj, 1, ms, [&] { return waitReady(w, tid); });
+	// The game's job workers poll their queue with 1 ms timeouts (~900 wake-ups per second each, a few % of a core
+	// apiece). Work handed to them is signalled and wakes them at once; only the polling interval is stretched.
+	uint32_t wms = ms;
+	if (wms > 0 && wms < 4 && tid != 0x1000) wms = 4;
+	bool r = waitOn(l, &obj, 1, wms, [&] { return waitReady(w, tid); });
 	gWaiting.erase(tid);
 	{
 		WaitStat& ws = gWaitStats[(tid - 0x1000) & 63];
