@@ -434,32 +434,7 @@ H("IDirect3DDevice9::GetCreationParameters") { uint32_t p = ARG(1); guest::store
 H("IDirect3DDevice9::ShowCursor") { SET(0); } END;
 H("IDirect3DDevice9::GetNumberOfSwapChains") { SET(1); } END;
 H("IDirect3DDevice9::GetSwapChain") { Obj* s = newObj(ISwap); writeOut(ARG(2), s); SET(0); } END;
-int gVpLogAfterReset = 0;
-// Wide screen: a resolution picked in the game's options is one of its 16:9 modes. Keep its height and widen it to
-// the screen's shape: in the Reset parameters and in the game's own copies of the current resolution (pairs of
-// width, height in its data sections), so it lays out the picture for the new width too.
-static void widenReset(uint32_t pp)
-{
-	if (!rt::config.wideScreen) return;
-	uint32_t w = guest::load<uint32_t>(pp), h = guest::load<uint32_t>(pp + 4);
-	int sw = gfx::width(), sh = gfx::height();
-	if (sh > sw) std::swap(sw, sh);
-	if (!w || !h || sw <= 0 || sh <= 0) return;
-	uint32_t nw = ((uint32_t)((double)h * sw / sh + 0.5)) & ~1u;
-	if (nw <= w + 2 || (double)w / h > 16.0 / 9.0 + 0.02) return;   // already wide (start-up), or not a standard mode
-	int found = 0;
-	for (auto& r : rt::imageWritable)
-		for (uint32_t a = r.first; a + 8 <= r.first + r.second; a += 4)
-			if (guest::load<uint32_t>(a) == w && guest::load<uint32_t>(a + 4) == h)
-			{
-				if (found++ < 24) rt::log("wide screen: game resolution copy at %08x: %u x %u -> %u x %u", a, w, h, nw, h);
-				guest::store<uint32_t>(a, nw);
-			}
-	guest::store<uint32_t>(pp, nw);
-	rt::log("wide screen: Reset %u x %u widened to %u x %u (%d copies in the game's data)", w, h, nw, h, found);
-	gVpLogAfterReset = 8;
-}
-H("IDirect3DDevice9::Reset") { uint32_t pp = ARG(1); widenReset(pp); if (guest::load<uint32_t>(pp) && guest::load<uint32_t>(pp + 4)) { backW = guest::load<uint32_t>(pp); backH = guest::load<uint32_t>(pp + 4); input::setBackSize((int)backW, (int)backH); log("d3d9: Reset to %ux%u", backW, backH); if (gBackBuffer) { gBackBuffer->w = backW; gBackBuffer->h = backH; } if (gDefaultDs) { gDefaultDs->w = backW; gDefaultDs->h = backH; } for (int i = 0; i < 4; i++) dev.vp[i] = 0; glr::resizeBackBuffer(); } SET(0); } END;
+H("IDirect3DDevice9::Reset") { uint32_t pp = ARG(1); if (guest::load<uint32_t>(pp) && guest::load<uint32_t>(pp + 4)) { backW = guest::load<uint32_t>(pp); backH = guest::load<uint32_t>(pp + 4); input::setBackSize((int)backW, (int)backH); log("d3d9: Reset to %ux%u", backW, backH); if (gBackBuffer) { gBackBuffer->w = backW; gBackBuffer->h = backH; } if (gDefaultDs) { gDefaultDs->w = backW; gDefaultDs->h = backH; } for (int i = 0; i < 4; i++) dev.vp[i] = 0; glr::resizeBackBuffer(); } SET(0); } END;
 H("IDirect3DDevice9::CreateTexture")
 {
 	Obj* t = newObj(ITexture);

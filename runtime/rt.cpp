@@ -20,7 +20,7 @@ namespace rt
 {
 Config config;
 uint32_t imageBase, imageEntry;
-std::vector<std::pair<uint32_t, uint32_t>> imageWritable;
+std::vector<std::pair<uint32_t, uint32_t>> imageSections;
 
 static FILE* logFp;
 static std::mutex logMu;

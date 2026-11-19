@@ -64,7 +64,6 @@ H("IDirect3DDevice9::SetViewport")
 	uint32_t p = ARG(1);
 	uint32_t v[4];
 	for (int i = 0; i < 4; i++) v[i] = guest::load<uint32_t>(p + 4 * i);
-	{ extern int gVpLogAfterReset; if (gVpLogAfterReset > 0) { gVpLogAfterReset--; log("wide screen: viewport after Reset %u,%u %ux%u", v[0], v[1], v[2], v[3]); } }
 	// D3D9 rejects a viewport that does not fit the current render target (D3DERR_INVALIDCALL) and keeps the
 	// previous one; the medium-detail depth pass sets a screen-sized viewport on a 1024x1024 target and relies
 	// on that to render scaled into it

@@ -125,7 +125,7 @@ int scanA(const std::string& in, const std::string& fmt, ArgReader& ap, bool sec
 
 // ---- image info (set by the loader)
 extern uint32_t imageBase, imageEntry;
-extern std::vector<std::pair<uint32_t, uint32_t>> imageWritable;   // writable sections of the game image (guest address, size)
+extern std::vector<std::pair<uint32_t, uint32_t>> imageSections;   // sections of the game image (guest address, size)
 }
 
 #define ARG(i) (::guest::load<uint32_t>(c->r[ESP] + 4 + 4 * (i)))
