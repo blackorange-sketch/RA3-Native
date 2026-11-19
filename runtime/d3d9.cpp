@@ -374,7 +374,24 @@ static const std::vector<std::pair<uint32_t, uint32_t>>& modeList()
 	list.erase(std::unique(list.begin(), list.end()), list.end());
 	return list;
 }
-H("IDirect3D9::GetAdapterModeCount") { SET((uint32_t)modeList().size()); } END;
+// wide screen research: the code that walks the display modes (and drops the wide ones) - its bytes into the log
+static void dumpModeCaller(CPU* c, const char* what)
+{
+	if (!rt::config.wideScreen) return;
+	static uint32_t seen[8]; static int n = 0;
+	uint32_t ret = guest::load<uint32_t>(c->r[ESP]);
+	for (int i = 0; i < n; i++) if (seen[i] == ret) return;
+	if (n >= 8) return;
+	seen[n++] = ret;
+	rt::log("modes: %s called from %08x (ebp %08x, caller of caller %08x)", what, ret, c->r[EBP], guest::load<uint32_t>(c->r[EBP] + 4));
+	for (uint32_t a = (ret - 0x400) & ~31u; a < ret + 0x600; a += 32)
+	{
+		char t[120]; int k = snprintf(t, sizeof t, "code %08x:", a);
+		for (int j = 0; j < 32; j++) k += snprintf(t + k, sizeof t - k, "%02x", guest::load<uint8_t>(a + j));
+		rt::log("%s", t);
+	}
+}
+H("IDirect3D9::GetAdapterModeCount") { dumpModeCaller(c, "GetAdapterModeCount"); SET((uint32_t)modeList().size()); } END;
 static void fillMode(uint32_t p, uint32_t idx)
 {
 	auto& l = modeList();
@@ -384,7 +401,7 @@ static void fillMode(uint32_t p, uint32_t idx)
 	guest::store<uint32_t>(p + 8, 60);
 	guest::store<uint32_t>(p + 12, 22);   // X8R8G8B8
 }
-H("IDirect3D9::EnumAdapterModes") { if (ARG(3) >= modeList().size()) { SET(0x8876086c); return; } fillMode(ARG(4), ARG(3)); SET(0); } END;
+H("IDirect3D9::EnumAdapterModes") { dumpModeCaller(c, "EnumAdapterModes"); if (ARG(3) >= modeList().size()) { SET(0x8876086c); return; } fillMode(ARG(4), ARG(3)); SET(0); } END;
 H("IDirect3D9::GetAdapterDisplayMode") { guest::store<uint32_t>(ARG(2), backW); guest::store<uint32_t>(ARG(2) + 4, backH); guest::store<uint32_t>(ARG(2) + 8, 60); guest::store<uint32_t>(ARG(2) + 12, 22); SET(0); } END;
 H("IDirect3D9::CheckDeviceType") { SET(0); } END;
 H("IDirect3D9::CheckDeviceFormat") { SET(0); } END;
