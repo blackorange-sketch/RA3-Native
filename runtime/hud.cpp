@@ -77,7 +77,7 @@ void text(const hud::DrawRect& rect, const std::string& s, R box, float r, float
 {
 	if (s.empty()) return;
 	int n = (int)s.size();
-	int scale = std::max(1, std::min((box.h * 6 / 10) / 7, (box.w - 8) / (6 * n)));
+	int scale = std::max(1, std::min((box.h * 5 / 10) / 7, (box.w - 8) / (6 * n)));
 	int tw = (6 * n - 1) * scale, th = 7 * scale;
 	int x0 = box.x + (box.w - tw) / 2, y0 = box.y + (box.h - th) / 2;
 	for (int i = 0; i < n; i++)
@@ -95,7 +95,7 @@ void text(const hud::DrawRect& rect, const std::string& s, R box, float r, float
 	}
 }
 
-int unit() { return std::max(48, scrH / 12); }
+int unit() { return std::max(40, scrH / 15); }   // buttons: a bit smaller than they were (scrH / 12)
 R editRect() { int u = unit(); int h = u * 3 / 4, gap = u / 6; return {u / 3, u / 3 + u + u / 4, u * 3 / 2, h}; }
 R btnRect(int side, int index)
 {
@@ -147,11 +147,13 @@ void load()
 namespace hud
 {
 void setScreen(int sw, int sh) { std::lock_guard<std::mutex> g(mu); scrW = sw; scrH = sh; load(); buildPages(); }
+bool editingNow() { return editing; }
 void reserves(int sw, int sh, int& left, int& right)
 {
 	std::lock_guard<std::mutex> g(mu);
 	if (btns.empty()) load();
-	int u = std::max(48, sh / 12), col = u / 3 + u * 3 / 2 + u / 4;
+	if (rt::config.wideScreen) { left = right = 0; (void)sw; return; }   // wide: the picture fills the screen, buttons on top
+	int u = std::max(40, sh / 15), col = u / 3 + u * 3 / 2 + u / 4;
 	bool r = false;
 	for (auto& b : btns) if (b.side) r = true;
 	left = col;   // the keyboard button is always on the left
@@ -233,17 +235,17 @@ void draw(const DrawRect& rect)
 	}
 	R e = editRect();
 	rect(e.x, e.y, e.w, e.h, editing ? 0.95f : 0.6f, editing ? 0.75f : 0.6f, editing ? 0.1f : 0.65f);
-	rect(e.x + 4, e.y + 4, e.w - 8, e.h - 8, 0.12f, 0.12f, 0.14f);
-	text(rect, editing ? "DONE" : "EDIT", {e.x + 4, e.y + 4, e.w - 8, e.h - 8}, 0.9f, 0.9f, 0.92f);
+	rect(e.x + 2, e.y + 2, e.w - 4, e.h - 4, 0.12f, 0.12f, 0.14f);
+	text(rect, editing ? "DONE" : "EDIT", {e.x + 2, e.y + 2, e.w - 4, e.h - 4}, 0.9f, 0.9f, 0.92f);
 	for (auto& en : layout())
 	{
 		const Btn& b = btns[en.first]; const R& r = en.second;
 		bool on = en.first == pressed;
 		int m = modIdx(b.vk);
-		if (m >= 0 && latched[m]) { rect(r.x, r.y, r.w, r.h, 1.f, 0.78f, 0.1f); rect(r.x + 3, r.y + 3, r.w - 6, r.h - 6, 0.55f, 0.38f, 0.02f); text(rect, b.label, {r.x + 3, r.y + 3, r.w - 6, r.h - 6}, 1.f, 1.f, 1.f); continue; }
+		if (m >= 0 && latched[m]) { rect(r.x, r.y, r.w, r.h, 1.f, 0.78f, 0.1f); rect(r.x + 2, r.y + 2, r.w - 4, r.h - 4, 0.55f, 0.38f, 0.02f); text(rect, b.label, {r.x + 2, r.y + 2, r.w - 4, r.h - 4}, 1.f, 1.f, 1.f); continue; }
 		rect(r.x, r.y, r.w, r.h, 0.75f, 0.75f, 0.78f);
-		rect(r.x + 3, r.y + 3, r.w - 6, r.h - 6, on ? 0.55f : 0.12f, on ? 0.55f : 0.12f, on ? 0.6f : 0.14f);
-		text(rect, b.label, {r.x + 3, r.y + 3, r.w - 6, r.h - 6}, 0.95f, 0.95f, 0.97f);
+		rect(r.x + 2, r.y + 2, r.w - 4, r.h - 4, on ? 0.55f : 0.12f, on ? 0.55f : 0.12f, on ? 0.6f : 0.14f);
+		text(rect, b.label, {r.x + 2, r.y + 2, r.w - 4, r.h - 4}, 0.95f, 0.95f, 0.97f);
 		if (editing)
 		{
 			int s = r.h / 3;

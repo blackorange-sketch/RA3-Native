@@ -190,7 +190,7 @@ public class LauncherActivity extends Activity {
         showUiScale();
 
         toggleRow(opts, "CUTSCENES", "Intro, briefings and campaign videos", "cutscenes", true);
-        toggleRow(opts, "WIDE SCREEN", "Use the full width of the screen (beside the buttons) instead of 16:9", "wide_screen", false);
+        toggleRow(opts, "WIDE SCREEN", "The game fills the whole screen instead of 16:9 (more of the map, buttons on top)", "wide_screen", false);
         toggleRow(opts, "FAST SHADERS", "Lower precision in pixel shaders: faster on Mali and weaker GPUs, rare visual glitches", "fast_shaders", false);
         toggleRow(opts, "LOG FILE", "Writes /sdcard/ra3_native.log for bug reports", "log", logDefault());
 

@@ -98,7 +98,7 @@ The phone's volume keys keep working, and the screen stays on while the game run
 | Cutscenes | On | Intro, briefings and campaign videos |
 | Log file | Off in releases, on in nightly builds | Writes `/sdcard/ra3_native.log` — turn it on and attach the file to bug reports |
 | HUD size | 110% | Enlarges the minimap, build menu and other corner panels (100–200% in 10% steps) |
-| Wide screen | off | Uses the full width of the screen beside the buttons instead of 16:9 (the game sees more of the map) |
+| Wide screen | off | The game fills the whole screen instead of 16:9 (it shows more of the map; the buttons float over it) |
 | Fast shaders | off | Lower precision in pixel shaders: faster on Mali and weaker GPUs, occasional visual glitches |
 
 ## Performance

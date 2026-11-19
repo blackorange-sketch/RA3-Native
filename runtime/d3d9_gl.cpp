@@ -55,7 +55,8 @@ bool gAttrDirty = true;   // vertex attribute state of gVao changed outside setA
 bool gFboDirty = true;   // framebuffer bindings/attachments changed outside bindTargets
 bool gTexBindDirty = true;   // a texture was bound outside bindSamplers: its binding cache is stale
 GLuint gVao = 0, gBackFbo = 0, gBackTex = 0, gBackDepth = 0, gDrawFbo = 0, gReadFbo = 0, gUpVbo = 0, gUpIbo = 0;
-GLuint gBlitProg = 0;
+GLuint gBlitProg = 0, gRectProg = 0;
+GLint gRectLoc = -1, gRectColLoc = -1;
 GLuint gSamplers[16] = {};
 GLuint gDummy2D = 0, gDummyCube = 0, gDummy3D = 0;
 bool gHasS3tc = false;
@@ -1067,6 +1068,9 @@ GLenum primMode(uint32_t prim)
 
 const char* kBlitVs = "#version 300 es\nout vec2 uv;\nvoid main(){ vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)); uv = vec2(p.x, 1.0 - p.y); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }\n";
 const char* kBlitFs = "#version 300 es\nprecision mediump float;\nin vec2 uv;\nuniform sampler2D t;\nout vec4 o;\nvoid main(){ o = vec4(texture(t, uv).rgb, 1.0); }\n";
+// on-screen buttons: a translucent rectangle (r = x0, y0, x1, y1 in clip space)
+const char* kRectVs = "#version 300 es\nuniform vec4 r;\nvoid main(){ vec2 p = vec2(float(gl_VertexID & 1), float(gl_VertexID >> 1)); gl_Position = vec4(mix(r.x, r.z, p.x), mix(r.y, r.w, p.y), 0.0, 1.0); }\n";
+const char* kRectFs = "#version 300 es\nprecision mediump float;\nuniform vec4 c;\nout vec4 o;\nvoid main(){ o = c; }\n";
 }   // namespace
 void invalidateAttribCache();
 void resizeBackBuffer() { gResizePending = true; }   // may be called from a thread without the GL context: applied by the GL thread
@@ -1132,6 +1136,15 @@ bool init()
 	glAttachShader(gBlitProg, v);
 	glAttachShader(gBlitProg, f);
 	glLinkProgram(gBlitProg);
+	{
+		GLuint rv = compileStage(GL_VERTEX_SHADER, kRectVs, "rect vs"), rf = compileStage(GL_FRAGMENT_SHADER, kRectFs, "rect fs");
+		gRectProg = glCreateProgram();
+		glAttachShader(gRectProg, rv);
+		glAttachShader(gRectProg, rf);
+		glLinkProgram(gRectProg);
+		gRectLoc = glGetUniformLocation(gRectProg, "r");
+		gRectColLoc = glGetUniformLocation(gRectProg, "c");
+	}
 	glGenBuffers(1, &gUpVbo);
 	glGenBuffers(1, &gUpIbo);
 	glErr("init");
@@ -2280,16 +2293,28 @@ static void presentImpl()
 		int kx, ky, kw, kh;
 		input::kbButtonRect(kx, ky, kw, kh);
 		glViewport(0, 0, sw, sh);
-		glEnable(GL_SCISSOR_TEST);
-		auto rect = [&](int x, int y, int w, int h, float r, float g, float b) { glScissor(x, sh - y - h, w, h); glClearColor(r, g, b, 1.f); glClear(GL_COLOR_BUFFER_BIT); };
+		// translucent buttons (the map shows through them in wide screen mode): dark fills are see-through, frames
+		// and letters nearly opaque; the button editor stays opaque
+		glUseProgram(gRectProg);
+		glEnable(GL_BLEND);
+		glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+		bool opaque = hud::editingNow();
+		auto rect = [&](int x, int y, int w, int h, float r, float g, float b) {
+			float lum = 0.3f * r + 0.59f * g + 0.11f * b;
+			float a = opaque ? 1.f : lum < 0.2f ? 0.38f : lum < 0.6f ? 0.7f : 0.9f;
+			float x0 = 2.f * x / sw - 1.f, x1 = 2.f * (x + w) / sw - 1.f, y0 = 1.f - 2.f * (y + h) / sh, y1 = 1.f - 2.f * y / sh;
+			glUniform4f(gRectLoc, x0, y0, x1, y1);
+			glUniform4f(gRectColLoc, r, g, b, a);
+			glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+		};
 		rect(kx, ky, kw, kh, 0.75f, 0.75f, 0.78f);
-		rect(kx + 3, ky + 3, kw - 6, kh - 6, 0.12f, 0.12f, 0.14f);
-		int pad = kh / 8, rows = 3, cols = 7, cw = (kw - 6 - pad * 2) / cols, rh = (kh - 6 - pad * 2) / rows;
+		rect(kx + 2, ky + 2, kw - 4, kh - 4, 0.12f, 0.12f, 0.14f);
+		int pad = kh / 8, rows = 3, cols = 7, cw = (kw - 4 - pad * 2) / cols, rh = (kh - 4 - pad * 2) / rows;
 		for (int r = 0; r < rows; r++)
 			for (int cc = 0; cc < cols; cc++)
-				if (!(r == 2 && cc > 0 && cc < cols - 1) || cc == 3) rect(kx + 3 + pad + cc * cw + 1, ky + 3 + pad + r * rh + 1, (r == 2 && cc == 3 ? cw * 3 : cw) - 2, rh - 2, 0.85f, 0.85f, 0.88f);
+				if (!(r == 2 && cc > 0 && cc < cols - 1) || cc == 3) rect(kx + 2 + pad + cc * cw + 1, ky + 2 + pad + r * rh + 1, (r == 2 && cc == 3 ? cw * 3 : cw) - 2, rh - 2, 0.85f, 0.85f, 0.88f);
 		hud::draw(rect);
-		glDisable(GL_SCISSOR_TEST);
+		glDisable(GL_BLEND);
 	}
 	if (rec::active())
 	{
