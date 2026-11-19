@@ -73,13 +73,13 @@ void renderLoop()
 	for (;;)
 	{
 		Chunk* c;
-		// poll briefly before sleeping: the game publishes chunks in quick succession, and waking a sleeping render
-		// thread cost the game thread a futex syscall per chunk (several % of its time in the profile)
+		// poll very briefly before sleeping (catches chunks published back to back). It used to poll for 1 ms, which
+		// kept a core busy all the time: noticeably more heat and battery drain for a few % of the game thread.
 		{
 			uint64_t t0 = nowUs();
 			for (int i = 0; nSubmitted.load(std::memory_order_acquire) == executedSeen; i++)
 			{
-				if ((i & 63) == 63 && nowUs() - t0 > 1000) break;
+				if ((i & 63) == 63 && nowUs() - t0 > 50) break;
 				__asm__ __volatile__("yield");
 			}
 		}

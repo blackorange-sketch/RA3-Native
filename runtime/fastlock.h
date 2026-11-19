@@ -34,9 +34,9 @@ struct FastRecLock
 	}
 	void acquireSlow()
 	{
-		// spin first (tens of microseconds): a waiter that sleeps makes the owner pay a wake syscall on unlock,
-		// and the game's critical sections are held only briefly
-		for (int i = 0; i < 4000; i++)
+		// short spin, then sleep: spinning longer saved the owner some wake syscalls but burned a whole core in
+		// worker threads waiting on sections the game thread holds for long stretches (heat, battery)
+		for (int i = 0; i < 100; i++)
 		{
 			if (st.load(std::memory_order_relaxed) == 0 && tryAcquire()) return;
 			cpuRelax();
