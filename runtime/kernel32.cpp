@@ -198,6 +198,8 @@ uint32_t spawnMainThread(CPU* c)
 	uint32_t low, top = newGuestStack(low);
 	tctx.cpu = c;
 	tctx.tid = nextTid++;
+	pthread_setname_np(pthread_self(), "g4096-main");
+	::profThread(tctx.tid);
 	tctx.stackTop = top;
 	tctx.teb = makeTeb(low, top, tctx.tid);
 	traceRegister(tctx.tid);
