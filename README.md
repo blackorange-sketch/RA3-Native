@@ -54,7 +54,7 @@
 ## Requirements
 
 - **Android 10 or newer, 64-bit (arm64)** with OpenGL ES 3.2. Developed and tested on a Snapdragon 8 Gen 2; other recent Snapdragon devices should work.
-- **Mali / PowerVR GPUs** — experimental: these GPUs cannot read the game's DXT textures, so they are converted to ETC2 on the first load and kept in a cache, which makes the first start of each map noticeably slower. Large textures are loaded at half resolution to save memory, and the *Fast shaders* launcher option can speed up the GPU. Reports from Mali devices are very welcome.
+- **Mali / PowerVR GPUs** — experimental: these GPUs cannot read the game's DXT textures, so they are converted to ETC2 on the first load and kept in a cache (up to 1.5 GB), which makes the first start of each map noticeably slower. The *Fast shaders* launcher option can speed up the GPU at a small cost in image quality. Reports from Mali devices are very welcome.
 - **Red Alert 3, patch 1.12** — the full game folder (about 8.7 GB), copied to the phone's internal storage.
 - About **4 GB of free RAM** recommended.
 
@@ -155,8 +155,7 @@ Empty files with these names in `/sdcard` change the runtime's behaviour:
 | `ra3_fxstat` | Per-effect draw statistics |
 | `ra3_frame` | Full trace of two frames (and render-target dumps into `/sdcard/ra3_dump/` if that folder exists) |
 | `ra3_fps60` | Experimental 60 fps cap (effects and game speed are still wrong) |
-| `ra3_fulltex` | Mali / PowerVR: load large textures at full resolution (uses about 4× more memory) |
-| `ra3_noetc` | Mali / PowerVR: decode textures on the CPU instead of converting them to ETC2 |
+| `ra3_noetc` | Mali / PowerVR: decode textures on the CPU instead of converting them to ETC2 (large textures then load at half resolution; `ra3_fulltex` keeps them full size) |
 | `ra3_nos3tc` | Test the Mali texture path (ETC2 conversion) on a GPU that supports DXT |
 
 Remove them again for normal play — some of them slow the game down.

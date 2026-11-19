@@ -276,7 +276,11 @@ static void uploadTextureImpl(Obj* o)
 	{
 		tf.compressed = false; tf.convert = true;
 		static const bool fullTex = access("/sdcard/ra3_fulltex", F_OK) == 0;
-		if (!fullTex && o->levels > 1 && o->w >= 512 && o->h >= 512 && o->iface != IVolume) skip = 1;
+		static const bool noEtc0 = access("/sdcard/ra3_noetc", F_OK) == 0;
+		// ETC2 at full resolution takes the same memory as the decoded textures at half resolution did, so only the
+		// decode fallback halves large textures
+		bool etc = !noEtc0 && o->data && o->iface != IVolume && !gTexDir.empty();
+		if (!fullTex && !etc && o->levels > 1 && o->w >= 512 && o->h >= 512 && o->iface != IVolume) skip = 1;
 		if (o->fmt == 0x31545844 && o->data)
 		{
 			// punch-through alpha: a block with c0 <= c1 that uses index 3
@@ -1076,6 +1080,26 @@ bool init()
 	gHasS3tc = ext && strstr(ext, "GL_EXT_texture_compression_s3tc") && access("/sdcard/ra3_nos3tc", F_OK) != 0;
 	gTexDir = rt::config.dataRoot + "/texcache";
 	mkdir(gTexDir.c_str(), 0755);
+	if (!gHasS3tc)
+	{
+		// keep the ETC2 cache bounded: past 1.5 GB (old textures, other mods) start over
+		uint64_t total = 0;
+		std::vector<std::string> files;
+		if (DIR* d = opendir(gTexDir.c_str()))
+		{
+			while (dirent* e = readdir(d))
+			{
+				if (e->d_name[0] == '.') continue;
+				std::string f = gTexDir + "/" + e->d_name;
+				struct stat st;
+				if (stat(f.c_str(), &st) == 0) total += (uint64_t)st.st_size;
+				files.push_back(f);
+			}
+			closedir(d);
+		}
+		if (total > (1536ull << 20)) { for (auto& f : files) remove(f.c_str()); log("GL: ETC2 cache over 1.5 GB, cleared"); }
+		else log("GL: ETC2 texture cache %u files, %llu MB", (unsigned)files.size(), (unsigned long long)(total >> 20));
+	}
 	initBinCache();
 	{
 		GLint maj = 0, mnr = 0; glGetIntegerv(GL_MAJOR_VERSION, &maj); glGetIntegerv(GL_MINOR_VERSION, &mnr);
