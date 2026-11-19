@@ -475,10 +475,22 @@ uint32_t ra3_stub_tolower = 0xffffffffu;
 
 namespace rt { std::string commandLine() { return "\"C:\\RA3\\Data\\ra3_1.12.game\" -config RA3_" + config.language + "_1.12.SkuDef -win"; } }
 namespace rt { bool verbose() { static bool v = access("/sdcard/ra3_verbose", F_OK) == 0; return v; } }
-bool ra3_gate(CPU*, uint32_t fn)
+bool ra3_gate(CPU* c, uint32_t fn)
 {
-	// no gated functions at the moment (RA3_GATES in the workflow)
-	(void)fn;
+	// RA3_GATES in the workflow
+	if (fn == 0x00af99f0u)
+	{
+		// the graphics options' check of a display mode for the resolution list (it accepts standard aspect ratios
+		// only): with Wide screen on, the modes of the screen's own shape are accepted as well (returns 1)
+		if (!rt::config.wideScreen) return false;
+		uint32_t m = guest::load<uint32_t>(c->r[ESP] + 4);
+		if (m < 0x10000) return false;
+		uint32_t w = guest::load<uint32_t>(m), h = guest::load<uint32_t>(m + 4);
+		bool wide = h >= 480 && (double)w / h > 16.0 / 9.0 + 0.05;
+		static int nl = 0;
+		if (wide && nl++ < 8) rt::log("wide screen: resolution list accepts %u x %u", w, h);
+		return wide;
+	}
 	return false;
 }
 void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t ecx)

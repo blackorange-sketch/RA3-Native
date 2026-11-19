@@ -368,7 +368,7 @@ static const std::vector<std::pair<uint32_t, uint32_t>>& modeList()
 		// modes with the phone screen's own aspect ratio (wide displays), at 720p / 1080p height and native
 		uint32_t nw = (uint32_t)w, nh = (uint32_t)h;
 		list.push_back({nw & ~1u, nh & ~1u});
-		for (uint32_t th : {720u, 900u, 1080u}) if (th < nh) list.push_back({((uint32_t)((uint64_t)nw * th / nh)) & ~1u, th});
+		for (uint32_t th : {720u, 900u, 1080u}) if (th < nh) list.push_back({((uint32_t)(((uint64_t)nw * th + nh / 2) / nh)) & ~1u, th});   // rounded like the launcher's Options.ini width
 	}
 	std::sort(list.begin(), list.end(), [](auto& a, auto& b) { return a.second != b.second ? a.second < b.second : a.first < b.first; });
 	list.erase(std::unique(list.begin(), list.end()), list.end());
