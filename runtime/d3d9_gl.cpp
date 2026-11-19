@@ -2312,7 +2312,7 @@ static void presentImpl()
 		static int streak = 0; static bool inGame = false;
 		bool now = gUiWorldDraws >= 50;
 		streak = now != inGame ? streak + 1 : 0;
-		if (streak >= 15) { inGame = now; streak = 0; }
+		if (streak >= (now ? 1 : 15)) { inGame = now; streak = 0; }   // into a battle at once (no bars over its first frames), out slowly
 		// menus get blurred side bars in the game's colours; loading screens and videos (few interface draws) stay black
 		static int bstreak = 0; static bool blur = false;
 		bool bnow = !inGame && gAptDraws >= 12;
