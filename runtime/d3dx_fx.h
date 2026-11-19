@@ -46,6 +46,7 @@ struct FxParam
 	std::vector<uint32_t> val;   // current value, tightly packed (4 bytes per scalar); object params hold ids / unused
 	bool skipConst = false;   // listed in D3DXCreateEffectEx's pSkipConstants: the application sets these registers itself
 	uint32_t texObj = 0;      // texture parameters: guest address of the bound texture object
+	mutable uint32_t texCacheA = 0; mutable void* texCacheO = nullptr;   // texObj resolved (objects are never deleted)
 	uint32_t smpTex = 0;      // sampler parameters: index of the texture parameter it samples + 1
 	struct SS { uint32_t op, v; };
 	std::vector<SS> smp;      // sampler parameters: states (D3DSAMP_* id, value)

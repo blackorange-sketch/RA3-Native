@@ -866,12 +866,17 @@ void fxApplyPass(Obj* o)
 					static int nl = 0;
 					if (nl++ < 40) log("fx: sampler '%s' reg %u param %d smpTex %u texObj %x linkedTex %x", c.name.c_str(), c.regIndex, k, sp.smpTex, sp.texObj, sp.smpTex ? fx->params[sp.smpTex - 1].texObj : 0u);
 				}
+				// texture objects resolved once per binding, not looked up on every pass
+				auto texOf = [](const FxParam& p) -> Obj* {
+					if (p.texCacheA != p.texObj) { p.texCacheO = objectAt(p.texObj); p.texCacheA = p.texObj; }
+					return (Obj*)p.texCacheO;
+				};
 				if (sp.smpTex)
 				{
-					uint32_t t = fx->params[sp.smpTex - 1].texObj;
-					if (t) dev.tex[c.regIndex] = objectAt(t);
+					const FxParam& tp = fx->params[sp.smpTex - 1];
+					if (tp.texObj) dev.tex[c.regIndex] = texOf(tp);
 				}
-				else if (sp.texObj) dev.tex[c.regIndex] = objectAt(sp.texObj);
+				else if (sp.texObj) dev.tex[c.regIndex] = texOf(sp);
 				for (auto& s : sp.smp) if (s.op < 16) dev.samp[c.regIndex][s.op] = s.v;
 			}
 			else packConst(*fx, c, sh, stage == 0, pk);

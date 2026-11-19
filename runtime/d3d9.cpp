@@ -161,11 +161,13 @@ Obj* objectAt(uint32_t addr)
 {
 	// most calls are made on the same object as the previous one (the device, the current effect): objects are
 	// never deleted and never change address, so a per-thread one-entry cache is always valid
-	static thread_local uint32_t lastA = 0;
-	static thread_local Obj* lastO = nullptr;
-	if (addr == lastA && addr) return lastO;
+	// (16 entries, direct-mapped by block address: calls alternate between the device, effects and textures)
+	static thread_local uint32_t cacheA[16];
+	static thread_local Obj* cacheO[16];
+	uint32_t k = (addr >> 4) & 15;
+	if (cacheA[k] == addr && addr) return cacheO[k];
 	Obj* o = objectAtSlow(addr);
-	if (o) { lastA = addr; lastO = o; }
+	if (o) { cacheA[k] = addr; cacheO[k] = o; }
 	return o;
 }
 Obj* objectAtSlow(uint32_t addr)
