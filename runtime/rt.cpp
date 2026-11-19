@@ -412,7 +412,9 @@ void call_target_ic(CPU* c, uint32_t addr, std::atomic<uint64_t>* ic)
 	int i = liftedIndex(addr);
 	if (i >= 0)
 	{
-		ic->store((uint64_t)i << 32 | addr, std::memory_order_relaxed);
+		// a site keeps its first target: polymorphic sites (one call, many virtual methods) used to rewrite their
+		// cache on every miss, and the writes bounced the cache line between the game's threads
+		if (!ic->load(std::memory_order_relaxed)) ic->store((uint64_t)i << 32 | addr, std::memory_order_relaxed);
 		lifted_table[i].fn(c);
 		return;
 	}
