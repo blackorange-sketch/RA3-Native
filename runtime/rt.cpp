@@ -482,13 +482,14 @@ bool ra3_gate(CPU* c, uint32_t fn)
 	{
 		// the graphics options' check of a display mode for the resolution list (it accepts standard aspect ratios
 		// only): with Wide screen on, the modes of the screen's own shape are accepted as well (returns 1)
+		{ static int n0 = 0; if (n0++ < 3) rt::log("wide screen: resolution list check called (wide %d, arg %08x)", (int)rt::config.wideScreen, guest::load<uint32_t>(c->r[ESP] + 4)); }
 		if (!rt::config.wideScreen) return false;
 		uint32_t m = guest::load<uint32_t>(c->r[ESP] + 4);
 		if (m < 0x10000) return false;
 		uint32_t w = guest::load<uint32_t>(m), h = guest::load<uint32_t>(m + 4);
 		bool wide = h >= 480 && (double)w / h > 16.0 / 9.0 + 0.05;
 		static int nl = 0;
-		if (wide && nl++ < 8) rt::log("wide screen: resolution list accepts %u x %u", w, h);
+		if (nl++ < 24) rt::log("wide screen: resolution list check %u x %u%s", w, h, wide ? ": accepted" : "");
 		return wide;
 	}
 	return false;

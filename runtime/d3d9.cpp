@@ -372,6 +372,7 @@ static const std::vector<std::pair<uint32_t, uint32_t>>& modeList()
 	}
 	std::sort(list.begin(), list.end(), [](auto& a, auto& b) { return a.second != b.second ? a.second < b.second : a.first < b.first; });
 	list.erase(std::unique(list.begin(), list.end()), list.end());
+	{ std::string t; for (auto& m : list) t += " " + std::to_string(m.first) + "x" + std::to_string(m.second); rt::log("d3d9: display modes (screen %dx%d):%s", w, h, t.c_str()); }
 	return list;
 }
 H("IDirect3D9::GetAdapterModeCount") { SET((uint32_t)modeList().size()); } END;
