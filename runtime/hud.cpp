@@ -96,21 +96,39 @@ void text(const hud::DrawRect& rect, const std::string& s, R box, float r, float
 }
 
 int unit() { return std::max(40, scrH / 15); }   // buttons: a bit smaller than they were (scrH / 12)
-R editRect() { int u = unit(); int h = u * 3 / 4, gap = u / 6; return {u / 3, u / 3 + u + u / 4, u * 3 / 2, h}; }
+// Wide screen: one horizontal row centred at the top (keyboard, EDIT, then the buttons), between the game's top-left
+// panel and the minimap; otherwise columns at the screen edges.
+bool topRow() { return rt::config.wideScreen; }
+R slotRect(int slot, int nslots)
+{
+	int u = unit(); int w = u * 3 / 2, h = u * 3 / 4, gap = u / 6;
+	int total = nslots * w + (nslots - 1) * gap;
+	return {(scrW - total) / 2 + slot * (w + gap), u / 4, w, h};
+}
+R editRect()
+{
+	if (topRow()) return slotRect(1, 2 + (int)btns.size());
+	int u = unit(); int h = u * 3 / 4; return {u / 3, u / 3 + u + u / 4, u * 3 / 2, h};
+}
 R btnRect(int side, int index)
 {
+	if (topRow()) return slotRect(2 + index, 2 + std::max((int)btns.size(), index + 1));   // index: position in the row
 	int u = unit(); int w = u * 3 / 2, h = u * 3 / 4, gap = u / 6;
 	if (side == 0) return {u / 3, editRect().y + (index + 1) * (h + gap), w, h};
 	return {scrW - u / 3 - w, u / 3 + index * (h + gap), w, h};
 }
-bool fits(const R& r) { return r.y + r.h <= scrH - unit() / 4; }
+bool fits(const R& r) { if (topRow()) return r.x >= scrW * 18 / 100 && r.x + r.w <= scrW * 80 / 100; return r.y + r.h <= scrH - unit() / 4; }
 int countSide(int side) { int n = 0; for (auto& b : btns) if (b.side == side) n++; return n; }
 // index of the button within its side, for layout
 std::vector<std::pair<int, R>> layout()
 {
 	std::vector<std::pair<int, R>> v;
 	int cnt[2] = {0, 0};
-	for (size_t i = 0; i < btns.size(); i++) { R r = btnRect(btns[i].side, cnt[btns[i].side]++); if (fits(r)) v.push_back({(int)i, r}); }
+	for (size_t i = 0; i < btns.size(); i++)
+	{
+		R r = topRow() ? btnRect(0, (int)i) : btnRect(btns[i].side, cnt[btns[i].side]++);
+		if (fits(r)) v.push_back({(int)i, r});
+	}
 	return v;
 }
 
@@ -148,6 +166,15 @@ namespace hud
 {
 void setScreen(int sw, int sh) { std::lock_guard<std::mutex> g(mu); scrW = sw; scrH = sh; load(); buildPages(); }
 bool editingNow() { return editing; }
+bool kbRect(int& x, int& y, int& w, int& h)
+{
+	if (!topRow()) return false;
+	std::lock_guard<std::mutex> g(mu);
+	if (btns.empty()) load();
+	R r = slotRect(0, 2 + (int)btns.size());
+	x = r.x; y = r.y; w = r.w; h = r.h;
+	return true;
+}
 void reserves(int sw, int sh, int& left, int& right)
 {
 	std::lock_guard<std::mutex> g(mu);
@@ -190,7 +217,7 @@ bool onTouch(int action, int idx, int count, const float* xs, const float* ys, s
 			for (size_t i = 0; i < pg.size(); i++)
 			{
 				if (!inside(cellRect((int)i % kCols, 1 + (int)i / kCols), x, y)) continue;
-				R slot = btnRect(addSide, countSide(addSide));
+				R slot = topRow() ? slotRect(2 + (int)btns.size(), 3 + (int)btns.size()) : btnRect(addSide, countSide(addSide));
 				if (fits(slot)) { btns.push_back({pg[i].label, pg[i].vk, pg[i].ctrl, addSide}); flash = 10; }
 				return true;
 			}

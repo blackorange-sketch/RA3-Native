@@ -15,4 +15,6 @@ void draw(const DrawRect& rect);
 // Screen width taken by the button columns on the left and right (wide screen mode keeps the game picture out of them).
 void reserves(int sw, int sh, int& left, int& right);
 bool editingNow();   // the button editor is open
+// Wide screen: the keyboard button's place in the top row (false: the default top-left corner).
+bool kbRect(int& x, int& y, int& w, int& h);
 }
