@@ -47,9 +47,10 @@
 | ⚡ **Performance** | Stable 30 fps in large battles on a Snapdragon 8 Gen 2 (dedicated render thread, shader cache) |
 | 🎬 **Video** | Intro, briefings and campaign cutscenes at full speed |
 | 👆 **Touch controls** | Tap, long press, drag-select, pan, pinch zoom, camera rotation |
-| ⌨️ **Keyboard** | On-screen hotkey buttons and a full keyboard; physical keyboards work too |
+| ⌨️ **Keyboard** | Your own on-screen hotkey buttons (any key, set up in the game), the Android keyboard for text; physical keyboards work too |
 | 🌐 **Network** | Windows sockets on top of Android networking; the LAN menu opens — LAN play is being tested |
-| 🚀 **Launcher** | Start screen with language, HUD size, cutscene and logging options, background file check |
+| 📱 **Wide screens** | Battles fill the whole screen of modern 20:9 / 21:9 phones and show more of the map |
+| 🚀 **Launcher** | Start screen with language, HUD size, wide screen, cutscene and logging options, background file check |
 
 ## Requirements
 
@@ -84,9 +85,11 @@
 | Two-finger drag | Rotate the camera |
 | Minimap: tap / drag | Move the camera there / along the finger |
 | Minimap: long press | Send the selected units there |
-| ⌨ button | Show or hide the on-screen keyboard |
-| `D` `ENT` `ESC` `SPC` | Hotkeys: special ability, chat, menu, jump to event |
-| `EDIT` | Text input through the Android keyboard (player names, chat) |
+| ⌨ button | Show or hide the Android keyboard (player names, chat, save names) |
+| `D` `ENT` `ESC` `SPC` | Default hotkey buttons: special ability, chat, menu, jump to event |
+| `EDIT` | Set up the hotkey buttons: add any key (numbers, F1–F12, Ctrl groups `C1`…`C0`, Shift / Ctrl / Alt), remove one with its ✕, choose the left or right side; `DONE` saves |
+
+The buttons are see-through so the map shows behind them. With *Wide screen* on they sit in one row at the top centre. Shift, Ctrl and Alt buttons toggle: tap once to hold the key (the button lights up), tap again to release it.
 
 The phone's volume keys keep working, and the screen stays on while the game runs.
 
@@ -118,7 +121,7 @@ The game logic itself is capped at 30 fps, like on PC. Rendering runs on its own
 - **Online play** — the original GameSpy servers were shut down in 2014. Support for the community C&C:Online servers is planned.
 - **LAN play** is new and largely untested.
 - The game runs at **30 fps**, as on PC. An experimental 60 fps mode (`/sdcard/ra3_fps60`) exists but is not usable yet: the game's engine ties its logic and effects to the frame rate.
-- The game's interface is not scaled for small screens yet.
+- The game's own menus stay 16:9 in *Wide screen* mode (the sides show a blurred picture); only battles use the whole screen.
 
 Found something else? Please [open an issue](https://github.com/blackorange-sketch/RA3-Native/issues) with your device model and the `ra3_native.log` file.
 
