@@ -52,7 +52,7 @@ struct FxParam
 	void* shareGroup = nullptr;   // shared (effect pool) parameters: the group of same-named copies
 	uint64_t shareVer = 0;        // version of the group value this copy holds
 };
-struct FxState { uint32_t op = 0, index = 0, vo = 0, typeCls = 0, typeType = 0; };
+struct FxState { uint32_t op = 0, index = 0, vo = 0, typeCls = 0, typeType = 0; mutable int res = -2; /* FxRes index, -1 none, -2 not looked up */ };
 struct FxPass
 {
 	std::string name;

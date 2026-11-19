@@ -791,7 +791,8 @@ static void applyShaderState(FxInfo& fx, const FxPass& ps, uint32_t tech, uint32
 	}
 	// value: constant at vo, or a parameter reference
 	uint32_t value = fx.u32(fx.base + st.vo);
-	int ri = resOf(fx, tech, pass, si);
+	if (st.res == -2) st.res = resOf(fx, tech, pass, si);   // per state, not a hash lookup per pass
+	int ri = st.res;
 	if (ri >= 0)
 	{
 		const FxRes& r = fx.res[ri];
