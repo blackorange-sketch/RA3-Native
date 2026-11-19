@@ -117,11 +117,9 @@ The game logic itself is capped at 30 fps, like on PC. Rendering runs on its own
 
 ## Known issues
 
-- **Some laser weapons are invisible** (for example the King Oni's eye lasers). The effect is drawn but not visible; it is being investigated.
 - **Online play** — the original GameSpy servers were shut down in 2014. Support for the community C&C:Online servers is planned.
 - **LAN play** is new and largely untested.
 - The game runs at **30 fps**, as on PC. An experimental 60 fps mode (`/sdcard/ra3_fps60`) exists but is not usable yet: the game's engine ties its logic and effects to the frame rate.
-- The game's own menus stay 16:9 in *Wide screen* mode (the sides show a blurred picture); only battles use the whole screen.
 
 Found something else? Please [open an issue](https://github.com/blackorange-sketch/RA3-Native/issues) with your device model and the `ra3_native.log` file.
 
