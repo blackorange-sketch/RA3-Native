@@ -200,6 +200,7 @@ int launch(const std::string& gameFile)
 	if (!pe::load(gameFile.c_str(), img, err)) fatal("PE load failed: %s", err.c_str());
 	imageBase = img.base;
 	imageEntry = img.base + img.entry;
+	for (auto& sec : img.sections) if (sec.flags & 0x80000000u) imageWritable.push_back({img.base + sec.va, sec.vsize});
 	tls = {img.tlsStart, img.tlsEnd, img.tlsZeroFill, 0};
 	log("loaded %s, entry %08x, %u imports", gameFile.c_str(), imageEntry, img.importCount);
 
