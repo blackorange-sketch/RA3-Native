@@ -88,10 +88,10 @@ struct FxInfo
 	std::unordered_map<uint64_t, void*> shCache;
 	std::unordered_map<const void*, std::vector<int>> ctabIdx;
 	// embedded pre-shader of a shader: its parameter indices and the last inputs/outputs (most draws reuse them)
-	struct PresCache { const void* pp = nullptr; std::vector<int> pidx; std::vector<double> in; std::vector<std::pair<uint32_t, double>> f, b; bool ok = false, valid = false; };
+	struct PresCache { const void* pp = nullptr; const void* blob = nullptr; std::vector<int> pidx; std::vector<double> in; std::vector<std::pair<uint32_t, double>> f, b; bool ok = false, valid = false; };
 	std::unordered_map<const void*, PresCache> presCache;
 	// shader picked from an array by a pre-shader (usage 2): parameter indices, last inputs and the pick
-	struct DynSel { const void* pp = nullptr; std::vector<int> pidx; std::vector<double> in; void* sh = nullptr; bool valid = false; };
+	struct DynSel { const void* pp = nullptr; bool none = false; std::vector<int> pidx; std::vector<double> in; void* sh = nullptr; bool valid = false; };
 	std::unordered_map<uint64_t, DynSel> dynSel;
 	std::unordered_map<uint64_t, int> resIdx;
 	std::unordered_map<const void*, void*> codeCache;   // shader bytecode in this effect -> translated shader

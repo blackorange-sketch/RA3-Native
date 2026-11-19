@@ -714,18 +714,25 @@ static int resOf(FxInfo& fx, uint32_t tech, uint32_t pass, uint32_t si)
 // inputs are compared with the last ones instead of re-resolving (names, std::function, interpreter) per pass.
 static bool dynPick(FxInfo& fx, uint64_t key, uint32_t tech, uint32_t pass, uint32_t si, ShaderObj*& out)
 {
-	int ri = resOf(fx, tech, pass, si);
-	if (ri < 0 || fx.res[ri].usage != 2) return false;
-	const FxRes& r = fx.res[ri];
-	if (r.size < 8) return false;
-	const uint8_t* d = fx.blob.data() + r.off;
-	uint32_t nl;
-	memcpy(&nl, d, 4);
-	if (4ull + nl > r.size) return false;
-	const fxrt::PresProg& prog = fxrt::presProg(d + 4 + nl, r.size - 4 - nl);
-	if (!prog.ok) return false;
 	FxInfo::DynSel& ds = fx.dynSel[key];
-	if (ds.pp != &prog) { ds = FxInfo::DynSel(); ds.pp = &prog; for (auto& c : prog.ctab) ds.pidx.push_back(fxrt::findParam(fx, c.name)); }
+	if (ds.none) return false;
+	if (!ds.pp)   // first use of this pass state: find its pre-shader once
+	{
+		int ri = resOf(fx, tech, pass, si);
+		const FxRes* r = ri >= 0 && fx.res[ri].usage == 2 && fx.res[ri].size >= 8 ? &fx.res[ri] : nullptr;
+		const fxrt::PresProg* prog0 = nullptr;
+		if (r)
+		{
+			const uint8_t* d = fx.blob.data() + r->off;
+			uint32_t nl;
+			memcpy(&nl, d, 4);
+			if (4ull + nl <= r->size) prog0 = &fxrt::presProg(d + 4 + nl, r->size - 4 - nl);
+		}
+		if (!prog0 || !prog0->ok) { ds.none = true; return false; }
+		ds.pp = prog0;
+		for (auto& c : prog0->ctab) ds.pidx.push_back(fxrt::findParam(fx, c.name));
+	}
+	const fxrt::PresProg& prog = *(const fxrt::PresProg*)ds.pp;
 	static thread_local std::vector<double> in;
 	static thread_local std::vector<uint32_t> regs;
 	in.assign(prog.nIn, 0.0);
@@ -867,8 +874,13 @@ void fxApplyPass(Obj* o)
 			// inputs are packed from the effect parameters (indices cached per shader); when they equal the last
 			// ones the outputs are reused: most draws of a frame see the same time and atlas values
 			FxInfo::PresCache& pc = fx->presCache[sh];
-			const fxrt::PresProg& prog = fxrt::presProg(sh->info.pres.data(), sh->info.pres.size());
-			if (pc.pp != &prog) { pc = FxInfo::PresCache(); pc.pp = &prog; for (auto& c : prog.ctab) pc.pidx.push_back(fxrt::findParam(*fx, c.name)); }
+			if (pc.blob != sh->info.pres.data())   // parsed program looked up once per shader (presProg hashes the blob)
+			{
+				const fxrt::PresProg& prog0 = fxrt::presProg(sh->info.pres.data(), sh->info.pres.size());
+				pc = FxInfo::PresCache(); pc.pp = &prog0; pc.blob = sh->info.pres.data();
+				for (auto& c : prog0.ctab) pc.pidx.push_back(fxrt::findParam(*fx, c.name));
+			}
+			const fxrt::PresProg& prog = *(const fxrt::PresProg*)pc.pp;
 			static thread_local std::vector<double> in;
 			static thread_local std::vector<uint32_t> regs;
 			in.assign(prog.nIn, 0.0);
