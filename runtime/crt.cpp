@@ -444,8 +444,10 @@ IMP_C(DLL, _unlock) {}
 IMP_C(DLL, _onexit) { SET(ARG(0)); }
 IMP_C(DLL, __dllonexit) { SET(ARG(0)); }
 IMP_C(DLL, _cexit) {}
-IMP_C(DLL, exit) { log("exit(%d)", (int)ARG(0)); exit((int)ARG(0)); }
-IMP_C(DLL, _exit) { log("_exit(%d)", (int)ARG(0)); exit((int)ARG(0)); }
+// _exit, not exit: static destructors and atexit handlers running while the game's other threads are still busy
+// could hang and leave the process alive in the background
+IMP_C(DLL, exit) { log("exit(%d)", (int)ARG(0)); fflush(nullptr); _exit((int)ARG(0)); }
+IMP_C(DLL, _exit) { log("_exit(%d)", (int)ARG(0)); fflush(nullptr); _exit((int)ARG(0)); }
 IMP_C(DLL, _amsg_exit) { fatal("_amsg_exit(%u)", ARG(0)); }
 IMP_C(DLL, _initterm)
 {
