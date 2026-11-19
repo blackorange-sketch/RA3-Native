@@ -172,6 +172,7 @@ void start(void (*threadInit)())
 {
 	std::thread([threadInit] {
 		gRenderThread = pthread_self();
+		pthread_setname_np(pthread_self(), "ra3-render");
 		setpriority(PRIO_PROCESS, 0, -10);
 		gRenderTid = (int)syscall(SYS_gettid);
 		rt::log("GL: render thread tid %d", gRenderTid.load());

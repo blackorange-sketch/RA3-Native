@@ -124,6 +124,10 @@ void threadMain(ThreadObj* t)
 	uint32_t low, top = newGuestStack(low);
 	tctx.cpu = &cpu;
 	tctx.tid = t->tid;
+	{
+		char nm[16]; snprintf(nm, sizeof nm, "g%u-%06x", t->tid, t->fn & 0xffffff);   // shows in the thread CPU monitor
+		pthread_setname_np(pthread_self(), nm);
+	}
 	tctx.stackTop = top;
 	tctx.teb = makeTeb(low, top, t->tid);
 	traceRegister(t->tid);

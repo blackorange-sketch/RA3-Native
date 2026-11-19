@@ -18,6 +18,7 @@
 #include <sys/syscall.h>
 #include <pthread.h>
 #include <chrono>
+#include <dirent.h>
 
 #include "rt.h"
 
@@ -227,4 +228,65 @@ void startForThisThread()
 }
 }
 
-void profStart() { prof::startForThisThread(); }
+// Per-thread CPU use every 60 s (also while the app is in the background, when the game thread is parked): which
+// threads keep the phone busy. Only with the log file enabled.
+static void threadMonitor()
+{
+	std::map<int, std::pair<uint64_t, std::string>> last;
+	long hz = sysconf(_SC_CLK_TCK);
+	if (hz <= 0) hz = 100;
+	for (;;)
+	{
+		std::this_thread::sleep_for(std::chrono::seconds(60));
+		std::map<int, std::pair<uint64_t, std::string>> now;
+		if (DIR* d = opendir("/proc/self/task"))
+		{
+			while (dirent* e = readdir(d))
+			{
+				int tid = atoi(e->d_name);
+				if (tid <= 0) continue;
+				char path[64], buf[512];
+				snprintf(path, sizeof path, "/proc/self/task/%d/stat", tid);
+				FILE* f = fopen(path, "r");
+				if (!f) continue;
+				size_t n = fread(buf, 1, sizeof buf - 1, f);
+				fclose(f);
+				buf[n] = 0;
+				char* lp = strchr(buf, '(');
+				char* rp = strrchr(buf, ')');
+				if (!lp || !rp) continue;
+				std::string name(lp + 1, rp);
+				unsigned long ut = 0, st = 0;
+				// fields after the name: state ppid pgrp session tty tpgid flags minflt cminflt majflt cmajflt utime stime
+				if (sscanf(rp + 2, "%*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %lu %lu", &ut, &st) != 2) continue;
+				now[tid] = {(uint64_t)(ut + st), name};
+			}
+			closedir(d);
+		}
+		std::vector<std::pair<uint64_t, std::string>> v;
+		uint64_t total = 0;
+		for (auto& kv : now)
+		{
+			auto it = last.find(kv.first);
+			uint64_t dt = kv.second.first - (it != last.end() ? it->second.first : 0);
+			if (it == last.end() && !last.empty()) dt = 0;   // new thread: no baseline yet
+			total += dt;
+			if (dt) v.push_back({dt, kv.second.second + "/" + std::to_string(kv.first)});
+		}
+		last = std::move(now);
+		std::sort(v.rbegin(), v.rend());
+		std::string line;
+		for (size_t i = 0; i < v.size() && i < 8; i++)
+		{
+			char b[96]; snprintf(b, sizeof b, " %s %.0f%%", v[i].second.c_str(), 100.0 * v[i].first / hz / 60.0);
+			line += b;
+		}
+		rt::log("threads: %.0f%% of one core over 60 s%s:%s", 100.0 * total / hz / 60.0, ::rt::background() ? " (app in background)" : "", line.c_str());
+	}
+}
+
+void profStart()
+{
+	prof::startForThisThread();
+	if (!::rt::config.logFile.empty()) std::thread(threadMonitor).detach();
+}
