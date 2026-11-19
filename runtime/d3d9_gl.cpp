@@ -31,7 +31,7 @@
 
 #include "gfx.h"
 #include "glrec.h"
-namespace rt { extern bool gFps60; }
+namespace rt { extern bool gFps60; uint64_t limiterCpuUs(); }
 
 using namespace rt;
 
@@ -2098,6 +2098,14 @@ void present()
 	{
 		double n = gFrameNo - f0, wall = (t - start) / 1000.0;
 		uint64_t lim = rt::limiterWaitUs();
+		// CPU time this thread actually used per frame (wall time includes sleeps), and inside the limiter's wait loop
+		static uint64_t cpu0 = 0;
+		timespec ts; clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+		uint64_t cpuNow = (uint64_t)ts.tv_sec * 1000000ull + ts.tv_nsec / 1000;
+		double cpuMs = cpu0 ? (cpuNow - cpu0) / 1000.0 / n : 0.0;
+		cpu0 = cpuNow;
+		double limCpu = rt::limiterCpuUs() / 1000.0 / n;
+		log("perf: thread CPU %.2f ms per frame (%.2f of it in the limiter loop)", cpuMs, limCpu);
 		double other = wall - (gTDraw + gTUpload + gTPresent + lim) / 1000.0;
 		log("perf: %.1f fps; per frame ms: total %.2f = game/other %.2f + draws %.2f (%.0f calls) + texture uploads %.2f (%.1f) + present %.2f (swap %.2f, waiting for render thread %.2f) + limiter wait %.2f; render thread busy %.2f",
 			n / (wall / 1000.0), wall / n, other / n, gTDraw / 1000.0 / n, gNDraws / n, gTUpload / 1000.0 / n, gNUploads / n, gTPresent / 1000.0 / n, gTSwap.load() / 1000.0 / n, gTWaitRender / 1000.0 / n, lim / 1000.0 / n,

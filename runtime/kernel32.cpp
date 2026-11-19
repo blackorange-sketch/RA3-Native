@@ -294,18 +294,20 @@ IMP_STD(K, GetProcessAffinityMask, 3) { guest::store<uint32_t>(ARG(1), 0xff); gu
 namespace rt { bool gFps60 = false, gFps60b = false; }
 using rt::gFps60b;
 using rt::gFps60;
-static std::atomic<uint64_t> gLimWait{0}, gLimWaitTotal{0};
+static std::atomic<uint64_t> gLimWait{0}, gLimWaitTotal{0}, gLimCpu{0};
 static uint32_t gLimObj = 0;   // the game object that owns the frame limiter
-namespace rt { uint64_t limiterWaitUs() { return gLimWait.exchange(0); } uint64_t limiterWaitTotalUs() { return gLimWaitTotal.load(); } }
+namespace rt { uint64_t limiterCpuUs() { return gLimCpu.exchange(0); } uint64_t limiterWaitUs() { return gLimWait.exchange(0); } uint64_t limiterWaitTotalUs() { return gLimWaitTotal.load(); } }
 static void limiterHeadroom(CPU* c)
 {
 	if (guest::load<uint32_t>(c->r[ESP] + 12) != 0x629863u) return;
 	{
 		// time spent in the limiter's wait loop: spans between consecutive calls belong to one wait
-		static uint64_t prev = 0;
+		static uint64_t prev = 0, prevCpu = 0;
 		uint64_t t = (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-		if (prev && t - prev < 3000) { gLimWait += t - prev; gLimWaitTotal += t - prev; }
-		prev = t;
+		timespec ts; clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+		uint64_t cpu = (uint64_t)ts.tv_sec * 1000000ull + ts.tv_nsec / 1000;
+		if (prev && t - prev < 3000) { gLimWait += t - prev; gLimWaitTotal += t - prev; gLimCpu += cpu - prevCpu; }
+		prev = t; prevCpu = cpu;
 	}
 	uint32_t obj = c->r[EDI];
 	if (obj > 0x400000 && obj < 0x30000000) gLimObj = obj;
