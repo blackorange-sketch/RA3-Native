@@ -34,10 +34,33 @@ uint32_t pebAddr;
 std::map<uint32_t, std::pair<uint32_t, uint32_t>> gWaiting;
 std::map<uint32_t, uint32_t> gWaitEsp, gWaitTop;   // tid -> (handle, timeout) of threads currently blocked in WaitForSingleObject
 std::atomic<uint64_t> gReadCalls{0}, gReadBytes{0}, gWaitCalls{0}, gReadUs{0};
-std::mutex waitMu;               // one lock + condvar for all waitable objects: simple and correct
-std::condition_variable waitCv;
-int gWaiters = 0; // threads blocked in waitCv (guarded by waitMu)
-inline void wakeWaiters() { if (gWaiters) waitCv.notify_all(); }
+std::mutex waitMu;               // one lock for all waitable objects
+// Each blocked thread waits on its own condition variable and lists the objects it waits for: a SetEvent wakes only
+// the threads waiting for that object. (One shared condvar + notify_all woke every waiting thread on every
+// SetEvent: the game's five job workers each burned a few % of a core re-checking and going back to sleep.)
+struct Waiter { std::condition_variable cv; const void* const* objs; int n; };
+std::vector<Waiter*> gWaitList;   // guarded by waitMu
+int gWaiters = 0; // threads blocked (guarded by waitMu)
+inline void wakeWaiters(const void* obj)
+{
+	for (Waiter* w : gWaitList)
+		for (int i = 0; i < w->n; i++)
+			if (w->objs[i] == obj) { w->cv.notify_one(); break; }
+}
+// blocks until pred() or the timeout (0xffffffff: none); caller holds waitMu. Returns pred()'s last result.
+template <class P> bool waitOn(std::unique_lock<std::mutex>& l, const void* const* objs, int n, uint32_t ms, P pred)
+{
+	Waiter me;
+	me.objs = objs; me.n = n;
+	gWaitList.push_back(&me);
+	gWaiters++;
+	bool r;
+	if (ms == 0xffffffffu) { me.cv.wait(l, pred); r = true; }
+	else r = me.cv.wait_for(l, std::chrono::milliseconds(ms), pred);
+	gWaiters--;
+	gWaitList.erase(std::find(gWaitList.begin(), gWaitList.end(), &me));
+	return r;
+}
 
 uint32_t bump(uint32_t size)
 {
@@ -141,7 +164,7 @@ void threadMain(ThreadObj* t)
 	t->exitCode = r;
 	t->signaled = true;
 	t->done = true;
-	wakeWaiters();
+	wakeWaiters(t);
 }
 
 std::string winTimeBase;
@@ -347,7 +370,7 @@ IMP_STD(K, CreateEventA, 4)
 	SET(newHandle(w, KEvent));
 }
 IMP_STD(K, OpenEventA, 3) { SET(0); setLastError(2); }
-IMP_STD(K, SetEvent, 1) { if (auto* w = asWaitable(ARG(0))) { std::lock_guard<std::mutex> l(waitMu); w->signaled = true; w->sets++; wakeWaiters(); } SET(1); }
+IMP_STD(K, SetEvent, 1) { if (auto* w = asWaitable(ARG(0))) { std::lock_guard<std::mutex> l(waitMu); w->signaled = true; w->sets++; wakeWaiters(w); } SET(1); }
 IMP_STD(K, ResetEvent, 1) { if (auto* w = asWaitable(ARG(0))) { std::lock_guard<std::mutex> l(waitMu); w->signaled = false; } SET(1); }
 static void createMutex(CPU* c, int initialOwnerArg)
 {
@@ -363,7 +386,7 @@ IMP_STD(K, ReleaseMutex, 1)
 	if (auto* w = (Waitable*)getHandle(ARG(0), KMutex))
 	{
 		std::lock_guard<std::mutex> l(waitMu);
-		if (w->owner == thisThread().tid && --w->depth == 0) { w->owner = 0; wakeWaiters(); }
+		if (w->owner == thisThread().tid && --w->depth == 0) { w->owner = 0; wakeWaiters(w); }
 	}
 	SET(1);
 }
@@ -382,7 +405,7 @@ IMP_STD(K, ReleaseSemaphore, 3)
 	if (ARG(2)) guest::store<int32_t>(ARG(2), w->count);
 	w->count += (int)ARG(1);
 	w->sets++;
-	wakeWaiters();
+	wakeWaiters(w);
 	SET(1);
 }
 IMP_STD(K, WaitForSingleObject, 2)
@@ -396,9 +419,10 @@ IMP_STD(K, WaitForSingleObject, 2)
 	gWaiting[tid] = {ARG(0), ms};
 	gWaitEsp[tid] = c->r[ESP];
 	gWaitTop[tid] = thisThread().stackTop;
-	gWaiters++;
-	if (ms == 0xffffffff) { waitCv.wait(l, [&] { return waitReady(w, tid); }); gWaiters--; gWaiting.erase(tid); SET(0); }
-	else { bool r = waitCv.wait_for(l, std::chrono::milliseconds(ms), [&] { return waitReady(w, tid); }); gWaiters--; gWaiting.erase(tid); SET(r ? 0 : 0x102); }
+	const void* obj = w;
+	bool r = waitOn(l, &obj, 1, ms, [&] { return waitReady(w, tid); });
+	gWaiting.erase(tid);
+	SET(r ? 0 : 0x102);
 }
 void dumpWaiters()
 {
@@ -1042,7 +1066,7 @@ uint32_t eventCreate(bool manual, bool initial)
 	return newHandle(w, KEvent);
 }
 uint32_t getLastError() { return tctx.teb ? guest::load<uint32_t>(tctx.teb + 0x34) : 0; }
-void eventSet(uint32_t h) { if (auto* w = asWaitable(h)) { std::lock_guard<std::mutex> l(waitMu); w->signaled = true; w->sets++; wakeWaiters(); } }
+void eventSet(uint32_t h) { if (auto* w = asWaitable(h)) { std::lock_guard<std::mutex> l(waitMu); w->signaled = true; w->sets++; wakeWaiters(w); } }
 void eventReset(uint32_t h) { if (auto* w = asWaitable(h)) { std::lock_guard<std::mutex> l(waitMu); w->signaled = false; } }
 // index of the signalled object (all: 0 once all are), -1 on timeout
 int waitHandles(const uint32_t* hs, int n, bool all, uint32_t ms)
@@ -1061,11 +1085,9 @@ int waitHandles(const uint32_t* hs, int n, bool all, uint32_t ms)
 		for (int i = 0; i < n; i++) if (ws[i] && waitReady(ws[i], tid)) { hit = i; return true; }
 		return false;
 	};
+	std::vector<const void*> objs(ws.begin(), ws.end());
 	std::unique_lock<std::mutex> l(waitMu);
-	gWaiters++;
-	if (ms == 0xffffffffu) waitCv.wait(l, ready);
-	else waitCv.wait_for(l, std::chrono::milliseconds(ms), ready);
-	gWaiters--;
+	waitOn(l, objs.data(), (int)objs.size(), ms, ready);
 	return hit;
 }
 }
