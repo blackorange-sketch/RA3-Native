@@ -147,6 +147,17 @@ void load()
 namespace hud
 {
 void setScreen(int sw, int sh) { std::lock_guard<std::mutex> g(mu); scrW = sw; scrH = sh; load(); buildPages(); }
+void reserves(int sw, int sh, int& left, int& right)
+{
+	std::lock_guard<std::mutex> g(mu);
+	if (btns.empty()) load();
+	int u = std::max(48, sh / 12), col = u / 3 + u * 3 / 2 + u / 4;
+	bool r = false;
+	for (auto& b : btns) if (b.side) r = true;
+	left = col;   // the keyboard button is always on the left
+	right = r ? col : 0;
+	(void)sw;
+}
 
 bool onTouch(int action, int idx, int count, const float* xs, const float* ys, std::vector<KeyEv>& out)
 {

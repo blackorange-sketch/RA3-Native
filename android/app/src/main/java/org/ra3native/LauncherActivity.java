@@ -190,6 +190,7 @@ public class LauncherActivity extends Activity {
         showUiScale();
 
         toggleRow(opts, "CUTSCENES", "Intro, briefings and campaign videos", "cutscenes", true);
+        toggleRow(opts, "WIDE SCREEN", "Use the full width of the screen (beside the buttons) instead of 16:9", "wide_screen", false);
         toggleRow(opts, "FAST SHADERS", "Lower precision in pixel shaders: faster on Mali and weaker GPUs, rare visual glitches", "fast_shaders", false);
         toggleRow(opts, "LOG FILE", "Writes /sdcard/ra3_native.log for bug reports", "log", logDefault());
 
@@ -569,6 +570,7 @@ public class LauncherActivity extends Activity {
         cfg.append("cutscenes=").append(prefs.getBoolean("cutscenes", true) ? 1 : 0).append('\n');
         cfg.append("log=").append(prefs.getBoolean("log", logDefault()) ? 1 : 0).append('\n');
         cfg.append("ui_scale=").append(prefs.getInt("ui_scale", 110)).append('\n');
+        cfg.append("wide_screen=").append(prefs.getBoolean("wide_screen", false) ? 1 : 0).append('\n');
         cfg.append("fast_shaders=").append(prefs.getBoolean("fast_shaders", false) ? 1 : 0).append('\n');
         if (!gamePath.isEmpty()) cfg.append("gamepath=").append(gamePath).append('\n');
         try (FileOutputStream o = new FileOutputStream(new File(getFilesDir(), "launcher.cfg"))) {

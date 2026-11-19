@@ -27,7 +27,8 @@ struct Config
 	bool playMovies = true;              // cutscenes and videos
 	bool fps60 = false;                  // experimental 60 fps cap
 	float uiScale = 1.f;                 // in-game interface size (HUD panels in the screen corners)
-	bool fastShaders = false;            // pixel shaders in mediump (launcher option for Mali / weaker GPUs)
+	bool fastShaders = false;
+	bool wideScreen = false;             // launcher: game picture as wide as the screen allows (Options.ini resolution patched)            // pixel shaders in mediump (launcher option for Mali / weaker GPUs)
 };
 std::string commandLine();               // the game's command line (language config)
 extern Config config;

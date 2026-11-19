@@ -2247,6 +2247,17 @@ static void presentImpl()
 	double sa = (double)sw / sh, ba = (double)backW / backH;
 	int vw = sw, vh = sh, vx = 0, vy = 0;
 	if (sa > ba) { vw = (int)(sh * ba); vx = (sw - vw) / 2; } else { vh = (int)(sw / ba); vy = (sh - vh) / 2; }
+	{
+		// a wide picture must not slide under the button columns: fit it into the screen between them
+		int rl = 0, rr = 0;
+		hud::reserves(sw, sh, rl, rr);
+		if (vx < rl || vx + vw > sw - rr)
+		{
+			int aw = sw - rl - rr;
+			vw = std::min(aw, (int)(sh * ba)); vh = (int)(vw / ba);
+			vx = rl + (aw - vw) / 2; vy = (sh - vh) / 2;
+		}
+	}
 	input::setView(vx, vy, vw, vh, (int)backW, (int)backH);
 	glViewport(vx, vy, vw, vh);
 	glUseProgram(gBlitProg);

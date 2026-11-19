@@ -13,6 +13,7 @@
 #include <jni.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <strings.h>
 
 #include <atomic>
 #include <algorithm>
@@ -27,6 +28,7 @@
 
 #include "font8x16.h"
 #include "launch.h"
+#include "hud.h"
 
 namespace
 {
@@ -328,6 +330,69 @@ void draw(ANativeWindow* w)
 
 ANativeWindow* window = nullptr;
 
+
+// Wide screen (launcher option): RA3 widens its view (Hor+) for any resolution set in a profile's Options.ini, but its
+// menu only offers standard aspect ratios. Each start, the Resolution of every profile is set to the screen's aspect
+// ratio minus the button columns (same height); with the option off a wide value goes back to 16:9.
+static void patchProfileResolutions()
+{
+	int sw = gfx::width(), sh = gfx::height();
+	if (sw <= 0 || sh <= 0) { if (window) { sw = ANativeWindow_getWidth(window); sh = ANativeWindow_getHeight(window); } }
+	if (sw <= 0 || sh <= 0) return;
+	if (sh > sw) std::swap(sw, sh);
+	int rl = 0, rr = 0;
+	hud::reserves(sw, sh, rl, rr);
+	double wide = (double)(sw - rl - rr) / sh;
+	std::string root = rt::config.dataRoot + "/users/player/documents/red alert 3/profiles";
+	DIR* d = opendir(root.c_str());
+	if (!d) return;
+	while (dirent* e = readdir(d))
+	{
+		if (e->d_name[0] == '.') continue;
+		std::string dir = root + "/" + e->d_name;
+		DIR* pd = opendir(dir.c_str());
+		if (!pd) continue;
+		std::string file;
+		while (dirent* f = readdir(pd)) if (strcasecmp(f->d_name, "options.ini") == 0) file = dir + "/" + f->d_name;
+		closedir(pd);
+		if (file.empty()) continue;
+		FILE* in = fopen(file.c_str(), "rb");
+		if (!in) continue;
+		std::string text, out;
+		char buf[4096];
+		size_t n;
+		while ((n = fread(buf, 1, sizeof buf, in)) > 0) text.append(buf, n);
+		fclose(in);
+		bool changed = false;
+		size_t pos = 0;
+		while (pos < text.size())
+		{
+			size_t eol = text.find('\n', pos);
+			std::string line = text.substr(pos, eol == std::string::npos ? std::string::npos : eol - pos);
+			pos = eol == std::string::npos ? text.size() : eol + 1;
+			int w = 0, h = 0;
+			char key[16] = {};
+			if (sscanf(line.c_str(), " %15[A-Za-z] = %d %d", key, &w, &h) == 3 && strcasecmp(key, "Resolution") == 0 && w > 0 && h > 0)
+			{
+				double a = rt::config.wideScreen ? wide : 16.0 / 9.0;
+				int nw = ((int)(h * a + 0.5)) & ~1;
+				bool wider = (double)w / h > 16.0 / 9.0 + 0.01;
+				if ((rt::config.wideScreen && nw != w && nw > w * 1.0) || (!rt::config.wideScreen && wider))
+				{
+					rt::log("wide screen: %s: Resolution %d %d -> %d %d", e->d_name, w, h, nw, h);
+					std::string cr = !line.empty() && line.back() == '\r' ? "\r" : "";
+					line = "Resolution = " + std::to_string(nw) + " " + std::to_string(h) + cr;
+					changed = true;
+				}
+			}
+			out += line;
+			if (eol != std::string::npos) out += '\n';
+		}
+		if (changed) if (FILE* o = fopen(file.c_str(), "wb")) { fwrite(out.data(), 1, out.size(), o); fclose(o); }
+	}
+	closedir(d);
+}
+
 void startGame(const std::string& game)
 {
 	std::string dir = game.substr(0, game.rfind('/'));
@@ -335,7 +400,8 @@ void startGame(const std::string& game)
 	rt::config.gameRoot = leaf == "data" ? dir.substr(0, dir.rfind('/')) : dir;
 	pushLine("game: " + game);
 	pushLine("game root: " + rt::config.gameRoot);
-	rt::log("launcher: language %s, cutscenes %d, log %d, fast shaders %d", rt::config.language.c_str(), (int)rt::config.playMovies, (int)!rt::config.logFile.empty(), (int)rt::config.fastShaders);
+	rt::log("launcher: language %s, cutscenes %d, log %d, fast shaders %d, wide screen %d", rt::config.language.c_str(), (int)rt::config.playMovies, (int)!rt::config.logFile.empty(), (int)rt::config.fastShaders, (int)rt::config.wideScreen);
+	patchProfileResolutions();
 	status = "running";
 	started = true;
 	rt::spawnHostThread([game] {
@@ -457,6 +523,7 @@ void android_main(android_app* app)
 			else if (k == "log") { if (v != "1") rt::config.logFile.clear(); }
 			else if (k == "fps60") rt::config.fps60 = v == "1";
 			else if (k == "fast_shaders") rt::config.fastShaders = v == "1";
+			else if (k == "wide_screen") rt::config.wideScreen = v == "1";
 			else if (k == "ui_scale") { int pc = atoi(v.c_str()); if (pc >= 100 && pc <= 200) rt::config.uiScale = pc / 100.f; }
 			else if (k == "gamepath" && !v.empty())
 			{
