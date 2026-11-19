@@ -1422,7 +1422,9 @@ static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, 
 		if (a0 >= vx + 0.50f * W && b0 >= vy + 0.86f * H) return 4;
 		bool l = a1 <= vx + 0.40f * W, r = a0 >= vx + 0.75f * W;
 		if (!(l || r)) return 0;
-		bool t = b1 <= vy + (r ? 0.66f : 0.45f) * H, b = b0 >= vy + (r ? 0.70f : 0.55f) * H;
+		// left: the special powers column under the portrait grows downwards with every new power (it used to fall
+		// out of the top-left zone from the fourth button on)
+		bool t = b1 <= vy + (r ? 0.66f : 0.75f) * H, b = b0 >= vy + (r ? 0.70f : 0.78f) * H;
 		if (!(t || b)) return 0;
 		return 1 + (r ? 1 : 0) + (b ? 2 : 0);
 	};
