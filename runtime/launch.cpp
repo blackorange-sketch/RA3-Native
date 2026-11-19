@@ -202,6 +202,14 @@ int launch(const std::string& gameFile)
 	imageBase = img.base;
 	imageEntry = img.base + img.entry;
 	for (auto& sec : img.sections) imageSections.push_back({img.base + sec.va, sec.vsize});
+	if (config.wideScreen)
+		for (uint32_t q = 0x00af9780; q < 0x00afa560; q += 32)
+		{
+			// wide screen research: the graphics options handlers (resolution list)
+			char t[120]; int k = snprintf(t, sizeof t, "code %08x:", q);
+			for (int j = 0; j < 32; j++) k += snprintf(t + k, sizeof t - k, "%02x", guest::load<uint8_t>(q + j));
+			log("%s", t);
+		}
 	tls = {img.tlsStart, img.tlsEnd, img.tlsZeroFill, 0};
 	log("loaded %s, entry %08x, %u imports", gameFile.c_str(), imageEntry, img.importCount);
 
