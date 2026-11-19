@@ -4,6 +4,7 @@
 #include <capstone/capstone.h>
 
 #include <algorithm>
+#include <memory>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -308,6 +309,71 @@ unsigned entryFlagNeed(uint32_t t)
 	}
 	cache[t] = need;
 	return need;
+}
+
+
+// ---- RA3_HOOKS: functions whose wrapper calls ra3_hook_after (never inlined) -------------------------------
+const std::set<uint32_t>& hookSet()
+{
+	static const std::set<uint32_t> h = [] {
+		std::set<uint32_t> h;
+		if (const char* e = getenv("RA3_HOOKS")) for (const char* p = e; *p;) { h.insert((uint32_t)strtoul(p, (char**)&p, 16)); if (*p == ',') p++; }
+		if (const char* e = getenv("RA3_GATES")) for (const char* p = e; *p;) { h.insert((uint32_t)strtoul(p, (char**)&p, 16)); while (*p && *p != ',') p++; if (*p == ',') p++; }
+		return h;
+	}();
+	return h;
+}
+
+// ---- tiny leaf functions, inlined at direct call sites ----------------------------------------------------
+// A straight-line function of at most kInlineMax instructions ending in ret (no branches, calls or flag inputs)
+// is emitted in place of the call: the call itself (saving all registers to the CPU struct and loading them
+// back, on both sides) costs more than such a body. Its stack layout is kept (the return address is stored).
+constexpr int kInlineMax = 12;
+struct Leaf { std::vector<Ins> body; uint32_t pop = 0; };
+const Leaf* leafBody(uint32_t t)
+{
+	static std::map<uint32_t, std::unique_ptr<Leaf>> cache;
+	if (auto it = cache.find(t); it != cache.end()) return it->second.get();
+	std::unique_ptr<Leaf> lf;
+	if (gReader && !hookSet().count(t) && !getenv("RA3_NO_INLINE"))
+	{
+		auto cand = std::make_unique<Leaf>();
+		cs_insn* insn = cs_malloc(cs);
+		uint32_t pc = t;
+		bool ok = false;
+		unsigned written = 0;
+		for (int n = 0; n <= kInlineMax && gReader->isCode(pc); n++)
+		{
+			uint8_t buf[16] = {};
+			size_t avail = 0;
+			for (; avail < 15 && gReader->read(pc + avail, buf + avail, 1); avail++) {}
+			const uint8_t* p = buf;
+			size_t left = avail;
+			uint64_t a = pc;
+			if (!cs_disasm_iter(cs, &p, &left, &a, insn)) break;
+			Ins in;
+			in.va = pc; in.id = insn->id; in.mn = insn->mnemonic; in.ops = insn->op_str; in.size = insn->size; in.next = pc + insn->size;
+			in.x = insn->detail->x86;
+			flagRW(in);
+			if (in.id == X86_INS_RET) { cand->pop = in.x.op_count ? (uint32_t)in.x.operands[0].imm : 0; ok = n > 0; break; }
+			bool branch = isJcc(in.id) || in.id == X86_INS_JMP || in.id == X86_INS_CALL || in.id == X86_INS_LOOP || in.id == X86_INS_LOOPE
+				|| in.id == X86_INS_LOOPNE || in.id == X86_INS_JECXZ || in.id == X86_INS_JCXZ || in.id == X86_INS_INT3 || in.id == X86_INS_UD2
+				|| in.id == X86_INS_HLT || in.id == X86_INS_INT;
+			if (branch || (in.rd & ~written)) break;   // flags read before written would come from the caller
+			written |= in.wr;
+			cand->body.push_back(in);
+			pc = in.next;
+		}
+		cs_free(insn, 1);
+		if (ok)
+		{
+			// flag liveness inside the body: nothing is live after the ret (flags are dead across calls)
+			unsigned out = 0;
+			for (auto it = cand->body.rbegin(); it != cand->body.rend(); ++it) { it->liveOut = out; out = it->rd | (out & ~it->wr); }
+			lf = std::move(cand);
+		}
+	}
+	return (cache[t] = std::move(lf)).get();
 }
 
 // ---- code generation of a single instruction -------------------------------------------------
@@ -1176,7 +1242,24 @@ struct Gen
 				else if (funcs && !funcs->count(target))
 					e.line(fmt("esp -= 4; S32(esp, %s); SAVE(); call_target(c, 0x%08xu); LOAD();", hex(in.next).c_str(), target));
 				else
-					e.line(fmt("esp -= 4; S32(esp, %s); SAVE(); f_%08x(c); LOAD();", hex(in.next).c_str(), target));
+				{
+					bool done = false;
+					if (const Leaf* lf = target != entry ? leafBody(target) : nullptr)
+					{
+						std::string sbody;
+						size_t u = unsup.size();
+						for (Ins bi : lf->body) gen(bi, sbody);
+						if (unsup.size() == u && sbody.find("unsupported(") == std::string::npos && sbody.find("return") == std::string::npos)
+						{
+							e.line(fmt("/* inlined f_%08x */ esp -= 4; S32(esp, %s);", target, hex(in.next).c_str()));
+							e.o += sbody;
+							e.line("esp += " + std::to_string(4 + lf->pop) + ";");
+							done = true;
+						}
+						else unsup.resize(u);
+					}
+					if (!done) e.line(fmt("esp -= 4; S32(esp, %s); SAVE(); f_%08x(c); LOAD();", hex(in.next).c_str(), target));
+				}
 			}
 			else if (setjmpSlot && t.type == X86_OP_MEM && t.mem.base == X86_REG_INVALID && t.mem.index == X86_REG_INVALID && (uint32_t)t.mem.disp == setjmpSlot)
 			{
@@ -1345,11 +1428,7 @@ Result liftFunction(Reader& r, uint32_t entry, const Options& opt)
 		res.instructions++;
 	}
 
-	static const std::set<uint32_t> hooks = [] {
-		std::set<uint32_t> h;
-		if (const char* e = getenv("RA3_HOOKS")) for (const char* p = e; *p;) { h.insert((uint32_t)strtoul(p, (char**)&p, 16)); if (*p == ',') p++; }
-		return h;
-	}();
+	const std::set<uint32_t>& hooks = hookSet();
 	// RA3_GATES=addr:pop[:eax],...: the runtime may skip a call (ra3_gate returns true): eax = the given value (default 0),
 	// return popping `pop` argument bytes
 	static const std::map<uint32_t, std::pair<uint32_t, uint32_t>> gates = [] {
