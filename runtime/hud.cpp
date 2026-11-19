@@ -99,9 +99,7 @@ void text(const hud::DrawRect& rect, const std::string& s, R box, float r, float
 int unit() { return std::max(40, scrH / 15); }   // buttons: a bit smaller than they were (scrH / 12)
 // Wide screen: one horizontal row centred at the top (keyboard, EDIT, then the buttons), between the game's top-left
 // panel and the minimap; otherwise columns at the screen edges.
-// In menus the row would cover titles: there the buttons stay in the left column (menus leave the screen edges free).
-std::atomic<bool> gInGame{false};
-bool topRow() { return rt::config.wideScreen && gInGame.load(std::memory_order_relaxed); }
+bool topRow() { return rt::config.wideScreen; }
 R slotRect(int slot, int nslots)
 {
 	int u = unit(); int w = u * 3 / 2, h = u * 3 / 4, gap = u / 6;
@@ -248,7 +246,6 @@ bool onTouch(int action, int idx, int count, const float* xs, const float* ys, s
 	return false;
 }
 
-void setInGame(bool v) { gInGame.store(v, std::memory_order_relaxed); }
 // frame as four edges, then the fill: a full-size frame under a see-through fill would tint it grey
 static void box(const DrawRect& rect, const R& r, float fr, float fg, float fb, float r2, float g2, float b2)
 {

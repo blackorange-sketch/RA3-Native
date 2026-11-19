@@ -2282,6 +2282,24 @@ static void presentImpl()
 	static GLint blitLoc = glGetUniformLocation(gBlitProg, "t");   // once: a query waits for the render thread
 	glUniform1i(blitLoc, 0);
 	glDrawArrays(GL_TRIANGLES, 0, 3);
+	{
+		// Menus are Flash movies laid out for 16:9: on a wider picture the parts parked off the stage (the sliding
+		// submenus, the edges of the backdrop) come into view. Outside a battle, black out everything beyond the
+		// centred 16:9 area. Battle vs. menu with half a second of hysteresis.
+		static int streak = 0; static bool inGame = false;
+		bool now = gUiWorldDraws >= 50;
+		streak = now != inGame ? streak + 1 : 0;
+		if (streak >= 15) { inGame = now; streak = 0; }
+		int cw = vh * 16 / 9;
+		if (!inGame && vw > cw + 4)
+		{
+			int cx = vx + (vw - cw) / 2;
+			glEnable(GL_SCISSOR_TEST);
+			glScissor(vx, 0, cx - vx, sh); glClear(GL_COLOR_BUFFER_BIT);
+			glScissor(cx + cw, 0, vx + vw - cx - cw, sh); glClear(GL_COLOR_BUFFER_BIT);
+			glDisable(GL_SCISSOR_TEST);
+		}
+	}
 	// the status/log overlay is only for the very start (nothing rendered yet); once the game has drawn anything, empty frames
 	// (loading screens) must not flash it
 	static bool everDrew = false;
@@ -2290,13 +2308,6 @@ static void presentImpl()
 	{
 		// on-screen keyboard button: drawn with scissored clears (no shader needed)
 		input::setScreen(sw, sh);
-		{
-			// battle vs. menu, with half a second of hysteresis (loading screens and short menu overlays don't flip it)
-			static int streak = 0; static bool inGame = false;
-			bool now = gUiWorldDraws >= 50;
-			streak = now != inGame ? streak + 1 : 0;
-			if (streak >= 15) { inGame = now; streak = 0; hud::setInGame(inGame); }
-		}
 		int kx, ky, kw, kh;
 		input::kbButtonRect(kx, ky, kw, kh);
 		glViewport(0, 0, sw, sh);
