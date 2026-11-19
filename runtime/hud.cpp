@@ -1,3 +1,4 @@
+#include <atomic>
 #include "hud.h"
 
 #include <algorithm>
@@ -98,7 +99,9 @@ void text(const hud::DrawRect& rect, const std::string& s, R box, float r, float
 int unit() { return std::max(40, scrH / 15); }   // buttons: a bit smaller than they were (scrH / 12)
 // Wide screen: one horizontal row centred at the top (keyboard, EDIT, then the buttons), between the game's top-left
 // panel and the minimap; otherwise columns at the screen edges.
-bool topRow() { return rt::config.wideScreen; }
+// In menus the row would cover titles: there the buttons stay in the left column (menus leave the screen edges free).
+std::atomic<bool> gInGame{false};
+bool topRow() { return rt::config.wideScreen && gInGame.load(std::memory_order_relaxed); }
 R slotRect(int slot, int nslots)
 {
 	int u = unit(); int w = u * 3 / 2, h = u * 3 / 4, gap = u / 6;
@@ -245,6 +248,14 @@ bool onTouch(int action, int idx, int count, const float* xs, const float* ys, s
 	return false;
 }
 
+void setInGame(bool v) { gInGame.store(v, std::memory_order_relaxed); }
+// frame as four edges, then the fill: a full-size frame under a see-through fill would tint it grey
+static void box(const DrawRect& rect, const R& r, float fr, float fg, float fb, float r2, float g2, float b2)
+{
+	rect(r.x, r.y, r.w, 2, fr, fg, fb); rect(r.x, r.y + r.h - 2, r.w, 2, fr, fg, fb);
+	rect(r.x, r.y + 2, 2, r.h - 4, fr, fg, fb); rect(r.x + r.w - 2, r.y + 2, 2, r.h - 4, fr, fg, fb);
+	rect(r.x + 2, r.y + 2, r.w - 4, r.h - 4, r2, g2, b2);
+}
 void draw(const DrawRect& rect)
 {
 	std::lock_guard<std::mutex> g(mu);
@@ -261,17 +272,15 @@ void draw(const DrawRect& rect)
 		text(rect, std::to_string(shown), {scrW - w - 6, 6, w, h}, shown >= 28 ? 0.45f : 0.95f, shown >= 28 ? 0.95f : (shown >= 20 ? 0.85f : 0.35f), 0.35f);
 	}
 	R e = editRect();
-	rect(e.x, e.y, e.w, e.h, editing ? 0.95f : 0.6f, editing ? 0.75f : 0.6f, editing ? 0.1f : 0.65f);
-	rect(e.x + 2, e.y + 2, e.w - 4, e.h - 4, 0.12f, 0.12f, 0.14f);
+	box(rect, e, editing ? 0.95f : 0.6f, editing ? 0.75f : 0.6f, editing ? 0.1f : 0.65f, 0.12f, 0.12f, 0.14f);
 	text(rect, editing ? "DONE" : "EDIT", {e.x + 2, e.y + 2, e.w - 4, e.h - 4}, 0.9f, 0.9f, 0.92f);
 	for (auto& en : layout())
 	{
 		const Btn& b = btns[en.first]; const R& r = en.second;
 		bool on = en.first == pressed;
 		int m = modIdx(b.vk);
-		if (m >= 0 && latched[m]) { rect(r.x, r.y, r.w, r.h, 1.f, 0.78f, 0.1f); rect(r.x + 2, r.y + 2, r.w - 4, r.h - 4, 0.55f, 0.38f, 0.02f); text(rect, b.label, {r.x + 2, r.y + 2, r.w - 4, r.h - 4}, 1.f, 1.f, 1.f); continue; }
-		rect(r.x, r.y, r.w, r.h, 0.75f, 0.75f, 0.78f);
-		rect(r.x + 2, r.y + 2, r.w - 4, r.h - 4, on ? 0.55f : 0.12f, on ? 0.55f : 0.12f, on ? 0.6f : 0.14f);
+		if (m >= 0 && latched[m]) { box(rect, r, 1.f, 0.78f, 0.1f, 0.55f, 0.38f, 0.02f); text(rect, b.label, {r.x + 2, r.y + 2, r.w - 4, r.h - 4}, 1.f, 1.f, 1.f); continue; }
+		box(rect, r, 0.75f, 0.75f, 0.78f, on ? 0.55f : 0.12f, on ? 0.55f : 0.12f, on ? 0.6f : 0.14f);
 		text(rect, b.label, {r.x + 2, r.y + 2, r.w - 4, r.h - 4}, 0.95f, 0.95f, 0.97f);
 		if (editing)
 		{

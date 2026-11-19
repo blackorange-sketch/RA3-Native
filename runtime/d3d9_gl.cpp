@@ -2290,6 +2290,13 @@ static void presentImpl()
 	{
 		// on-screen keyboard button: drawn with scissored clears (no shader needed)
 		input::setScreen(sw, sh);
+		{
+			// battle vs. menu, with half a second of hysteresis (loading screens and short menu overlays don't flip it)
+			static int streak = 0; static bool inGame = false;
+			bool now = gUiWorldDraws >= 50;
+			streak = now != inGame ? streak + 1 : 0;
+			if (streak >= 15) { inGame = now; streak = 0; hud::setInGame(inGame); }
+		}
 		int kx, ky, kw, kh;
 		input::kbButtonRect(kx, ky, kw, kh);
 		glViewport(0, 0, sw, sh);
@@ -2301,13 +2308,14 @@ static void presentImpl()
 		bool opaque = hud::editingNow();
 		auto rect = [&](int x, int y, int w, int h, float r, float g, float b) {
 			float lum = 0.3f * r + 0.59f * g + 0.11f * b;
-			float a = opaque ? 1.f : lum < 0.2f ? 0.38f : lum < 0.6f ? 0.7f : 0.9f;
+			float a = opaque ? 1.f : lum < 0.2f ? 0.3f : lum < 0.6f ? 0.6f : 0.9f;
 			float x0 = 2.f * x / sw - 1.f, x1 = 2.f * (x + w) / sw - 1.f, y0 = 1.f - 2.f * (y + h) / sh, y1 = 1.f - 2.f * y / sh;
 			glUniform4f(gRectLoc, x0, y0, x1, y1);
 			glUniform4f(gRectColLoc, r, g, b, a);
 			glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 		};
-		rect(kx, ky, kw, kh, 0.75f, 0.75f, 0.78f);
+		rect(kx, ky, kw, 2, 0.75f, 0.75f, 0.78f); rect(kx, ky + kh - 2, kw, 2, 0.75f, 0.75f, 0.78f);
+		rect(kx, ky + 2, 2, kh - 4, 0.75f, 0.75f, 0.78f); rect(kx + kw - 2, ky + 2, 2, kh - 4, 0.75f, 0.75f, 0.78f);
 		rect(kx + 2, ky + 2, kw - 4, kh - 4, 0.12f, 0.12f, 0.14f);
 		int pad = kh / 8, rows = 3, cols = 7, cw = (kw - 4 - pad * 2) / cols, rh = (kh - 4 - pad * 2) / rows;
 		for (int r = 0; r < rows; r++)

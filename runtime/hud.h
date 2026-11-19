@@ -14,7 +14,9 @@ bool onTouch(int action, int idx, int count, const float* xs, const float* ys, s
 void draw(const DrawRect& rect);
 // Screen width taken by the button columns on the left and right (wide screen mode keeps the game picture out of them).
 void reserves(int sw, int sh, int& left, int& right);
-bool editingNow();   // the button editor is open
+bool editingNow();
+// a battle is on screen (wide screen: buttons in the top row; menus: left column)
+void setInGame(bool v);   // the button editor is open
 // Wide screen: the keyboard button's place in the top row (false: the default top-left corner).
 bool kbRect(int& x, int& y, int& w, int& h);
 }
