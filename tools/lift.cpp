@@ -1444,9 +1444,10 @@ Result liftFunction(Reader& r, uint32_t entry, const Options& opt)
 			}
 		return g;
 	}();
-	bool hooked = hooks.count(entry) != 0;
+	// hookSet() also lists the gates (neither is inlined); a gate is not a hook
 	auto gate = gates.find(entry);
-	bool gated = gate != gates.end() && !hooked;
+	bool gated = gate != gates.end();
+	bool hooked = hooks.count(entry) != 0 && !gated;
 	std::string head = fmt("void f_%08x%s(CPU* c)\n{\n", entry, (hooked || gated) ? "_real" : "");
 	head += "\tuint32_t eax = c->r[0], ecx = c->r[1], edx = c->r[2], ebx = c->r[3], esp = c->r[4], ebp = c->r[5], esi = c->r[6], edi = c->r[7];\n";
 	head += "\tuint8_t cf = 0, pf = 0, af = 0, zf = 0, sf = 0, of = 0, df = (uint8_t)c->df;\n";
