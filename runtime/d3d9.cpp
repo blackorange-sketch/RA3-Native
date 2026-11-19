@@ -155,7 +155,8 @@ ShaderObj* getShader(const uint8_t* code, size_t n)
 static constexpr uint32_t kMaxObjs = 1u << 20;
 static std::atomic<Obj*> objTable[kMaxObjs];
 static std::atomic<uint32_t> objCount{1};
-static std::atomic<uint32_t> gObjGen{1};   // bumped by every new object (invalidates cached misses in objectAt)
+static std::atomic<uint32_t> gObjGen{1};
+constexpr uint32_t kObjMagic = 0x5233d0b7u;   // bumped by every new object (invalidates cached misses in objectAt)
 static std::atomic<uint32_t> objLo{0xffffffffu}, objHi{0};   // address range of object blocks (committed heap)
 Obj* objectAtSlow(uint32_t addr);
 Obj* objectAt(uint32_t addr)
@@ -179,6 +180,11 @@ Obj* objectAtSlow(uint32_t addr)
 {
 	if (addr >= objLo.load(std::memory_order_relaxed) && addr <= objHi.load(std::memory_order_relaxed))
 	{
+		if (guest::load<uint32_t>(addr + 24) == (addr ^ kObjMagic))
+		{
+			Obj* o = (Obj*)(uintptr_t)guest::load<uint64_t>(addr + 16);
+			if (o && o->addr == addr) return o;
+		}
 		uint32_t idx = guest::load<uint32_t>(addr + 12);
 		if (idx && idx < kMaxObjs)
 		{
@@ -214,7 +220,11 @@ Obj* newObj(Iface i)
 	buildVtable(defs[i]);
 	auto* o = new Obj;
 	o->iface = i;
-	o->addr = gmalloc(16);
+	// block: vtable, refcount, iface, table index, then the host Obj* and a check word (addr ^ kObjMagic), so
+	// objectAt resolves a guest pointer with two loads from the block itself instead of a table walk
+	o->addr = gmalloc(32);
+	guest::store<uint64_t>(o->addr + 16, (uint64_t)(uintptr_t)o);
+	guest::store<uint32_t>(o->addr + 24, o->addr ^ kObjMagic);
 	guest::store<uint32_t>(o->addr, defs[i].vtable);
 	guest::store<uint32_t>(o->addr + 4, 1);
 	guest::store<uint32_t>(o->addr + 8, i);
