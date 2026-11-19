@@ -511,4 +511,11 @@ void android_main(android_app* app)
 			}
 		}
 	}
+	// The activity is gone (closed from the recent apps list, or finished by the system). The game's threads would
+	// otherwise keep running in a process without a window, using CPU and battery for hours: end the process.
+	if (started)
+	{
+		rt::log("activity destroyed: exiting");
+		_exit(0);
+	}
 }
