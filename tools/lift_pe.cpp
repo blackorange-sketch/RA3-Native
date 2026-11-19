@@ -130,7 +130,7 @@ int main(int argc, char** argv)
 			fclose(f);
 		}
 		FILE* t = fopen((d + "/lifted_table.cpp").c_str(), "w");
-		fprintf(t, "#include \"lifted_decl.h\"\nstruct LiftedEntry { uint32_t addr; LiftedFn fn; };\nextern const LiftedEntry lifted_table[] = {\n");
+		fprintf(t, "#include \"lifted_decl.h\"\nextern const LiftedEntry lifted_table[] = {\n");
 		for (uint32_t e : order) fprintf(t, "\t{0x%08xu, f_%08x},\n", e, e);
 		fprintf(t, "};\nextern const unsigned lifted_count = %zu;\n", order.size());
 		fclose(t);

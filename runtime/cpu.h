@@ -1,6 +1,7 @@
 // CPU state and helpers used by lifted code. Lifted functions keep registers in C locals and
 // spill them into CPU around calls; the guest stack lives in guest memory.
 #pragma once
+#include <atomic>
 #include <cstdint>
 
 #include "guest.h"
@@ -41,6 +42,12 @@ using LiftedFn = void (*)(CPU*);
 
 // Indirect call/jump target resolution: lifted functions and import stubs.
 void call_target(CPU* c, uint32_t guestAddr);
+struct LiftedEntry { uint32_t addr; LiftedFn fn; };
+extern const LiftedEntry lifted_table[];
+// per call site inline cache: {table index << 32 | guest address} of the last lifted target of that site
+void call_target_ic(CPU* c, uint32_t guestAddr, std::atomic<uint64_t>* ic);
+#define ICALL(t_) do { static std::atomic<uint64_t> ic_; uint32_t ta_ = (t_); uint64_t e_ = ic_.load(std::memory_order_relaxed); \
+	if ((uint32_t)e_ == ta_ && ta_) lifted_table[e_ >> 32].fn(c); else call_target_ic(c, ta_, &ic_); } while (0)
 [[noreturn]] void unsupported(CPU* c, uint32_t va, const char* what);
 
 #define G8(a)  (::guest::load<uint8_t>(a))

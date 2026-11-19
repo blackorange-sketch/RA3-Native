@@ -14,8 +14,6 @@
 
 #include "rt.h"
 
-struct LiftedEntry { uint32_t addr; LiftedFn fn; };
-extern const LiftedEntry lifted_table[];
 extern const unsigned lifted_count;
 
 namespace rt
@@ -388,6 +386,23 @@ std::string hostPath(const std::string& win)
 
 namespace rt
 {
+}
+// ---- per-site inline cache miss: find the lifted function, remember it at the call site, call it
+void call_target_ic(CPU* c, uint32_t addr, std::atomic<uint64_t>* ic)
+{
+	unsigned lo = 0, hi = lifted_count;
+	while (lo < hi)
+	{
+		unsigned mid = (lo + hi) / 2;
+		if (lifted_table[mid].addr < addr) lo = mid + 1; else hi = mid;
+	}
+	if (addr && lo < lifted_count && lifted_table[lo].addr == addr)
+	{
+		ic->store((uint64_t)lo << 32 | addr, std::memory_order_relaxed);
+		lifted_table[lo].fn(c);
+		return;
+	}
+	call_target(c, addr);   // import stubs and the error path
 }
 // ---- dispatcher: every guest call that is not a direct call to a lifted function comes through here
 void call_target(CPU* c, uint32_t addr)
