@@ -1433,6 +1433,10 @@ static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, 
 	// tooltips of the lower build rows reach well below the middle of the screen
 	bool attached = !c && gUiColLeft < 1e8f && x1 >= gUiColLeft - 0.04f * W && x0 < gUiColLeft && x1 <= gUiColLeft + 0.20f * W && y1 <= vy + 0.90f * H;
 	if (attached) c = 2;
+	// a tooltip of the unit panel / command bar opens above it and reaches down onto it: it moves with that panel
+	// (otherwise its texts, lying on the scaled command bar, moved while the box stayed)
+	bool attachedLow = !c && x0 >= vx + 0.50f * W && y0 >= vy + 0.60f * H && y1 >= vy + 0.88f * H;
+	if (attachedLow) { c = 4; attached = true; }
 	if (c == 2 && !attached) gUiCurColLeft = std::min(gUiCurColLeft, x0);
 	// unit markers, health bars and names come first in a frame: only what follows the first big corner panel is HUD
 	if (!gUiHud && c && (x1 - x0) * (y1 - y0) >= 0.01f * W * H) gUiHud = true;

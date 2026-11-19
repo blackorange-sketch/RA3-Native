@@ -76,12 +76,14 @@
 | Gesture | Action |
 |---|---|
 | Tap | Left click — select, give orders, press buttons |
-| Long press (½ s) | Right click |
+| Long press (0.6 s) | Right click |
 | Hold, then drag | Selection box |
 | Quick swipe | Scroll the map |
 | Two-finger tap | Right click (cancel / deselect) |
 | Pinch | Zoom |
 | Two-finger drag | Rotate the camera |
+| Minimap: tap / drag | Move the camera there / along the finger |
+| Minimap: long press | Send the selected units there |
 | ⌨ button | Show or hide the on-screen keyboard |
 | `D` `ENT` `ESC` `SPC` | Hotkeys: special ability, chat, menu, jump to event |
 | `EDIT` | Text input through the Android keyboard (player names, chat) |
