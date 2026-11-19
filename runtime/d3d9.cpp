@@ -156,7 +156,19 @@ static constexpr uint32_t kMaxObjs = 1u << 20;
 static std::atomic<Obj*> objTable[kMaxObjs];
 static std::atomic<uint32_t> objCount{1};
 static std::atomic<uint32_t> objLo{0xffffffffu}, objHi{0};   // address range of object blocks (committed heap)
+Obj* objectAtSlow(uint32_t addr);
 Obj* objectAt(uint32_t addr)
+{
+	// most calls are made on the same object as the previous one (the device, the current effect): objects are
+	// never deleted and never change address, so a per-thread one-entry cache is always valid
+	static thread_local uint32_t lastA = 0;
+	static thread_local Obj* lastO = nullptr;
+	if (addr == lastA && addr) return lastO;
+	Obj* o = objectAtSlow(addr);
+	if (o) { lastA = addr; lastO = o; }
+	return o;
+}
+Obj* objectAtSlow(uint32_t addr)
 {
 	if (addr >= objLo.load(std::memory_order_relaxed) && addr <= objHi.load(std::memory_order_relaxed))
 	{

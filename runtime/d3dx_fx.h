@@ -73,6 +73,7 @@ struct FxRes   // a state value that is not a plain constant
 };
 struct FxInfo
 {
+	~FxInfo();   // drops itself as the source of shared parameters (d3d9_fx.cpp)
 	std::vector<FxParam> params;
 	std::vector<FxTech> techs;
 	uint32_t current = 0;

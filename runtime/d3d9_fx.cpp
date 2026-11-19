@@ -148,10 +148,18 @@ PRef refOf(Obj* o, uint32_t h)
 // parameter. Copied lazily: a write records its source and bumps the group version; an effect brings its copies
 // up to date when one of its passes is applied.
 static std::mutex gShareMu;
-struct ShareGroup { std::weak_ptr<FxInfo> srcW; FxInfo* srcFx = nullptr; FxParam* src = nullptr; uint64_t ver = 0; };
+// srcFx/src are cleared by ~FxInfo, so no weak_ptr is needed (assigning one on every write of a shared parameter
+// from another effect cost two atomic reference count updates)
+struct ShareGroup { FxInfo* srcFx = nullptr; FxParam* src = nullptr; uint64_t ver = 0; };
 static std::unordered_map<std::string, ShareGroup> gShareGroups;   // shared parameter name -> latest source
 static uint64_t gShareVer = 0;
 }   // anonymous namespace (reopened below)
+FxInfo::~FxInfo()
+{
+	for (auto& p : params)
+		if (ShareGroup* g = (ShareGroup*)p.shareGroup)
+			if (g->srcFx == this) { g->srcFx = nullptr; g->src = nullptr; }
+}
 void fxRegister(const std::shared_ptr<FxInfo>& fx)
 {
 	std::lock_guard<std::mutex> l(gShareMu);
@@ -179,7 +187,7 @@ PRef refOfSet(Obj* o, uint32_t h)
 		syncParam(*r.p);
 		ShareGroup* g = (ShareGroup*)r.p->shareGroup;
 		FxInfo* fx = F(o);
-		if (g->srcFx != fx || g->src != r.p) { g->srcW = o->fx; g->srcFx = fx; g->src = r.p; }
+		if (g->srcFx != fx || g->src != r.p) { g->srcFx = fx; g->src = r.p; }
 		g->ver = ++gShareVer;
 		r.p->shareVer = g->ver;
 	}
@@ -190,7 +198,7 @@ static void syncParam(FxParam& q)
 	ShareGroup* g = (ShareGroup*)q.shareGroup;
 	if (!g || q.shareVer == g->ver) return;
 	q.shareVer = g->ver;
-	if (!g->src || g->src == &q || g->srcW.expired()) return;
+	if (!g->src || g->src == &q) return;
 	if (q.val.size() == g->src->val.size()) q.val = g->src->val;
 	q.texObj = g->src->texObj;
 }
@@ -209,7 +217,7 @@ static void syncShared(FxInfo& fx)
 		ShareGroup* g = (ShareGroup*)q.shareGroup;
 		if (!g || q.shareVer == g->ver) continue;
 		q.shareVer = g->ver;
-		if (!g->src || g->src == &q || g->srcW.expired()) continue;
+		if (!g->src || g->src == &q) continue;
 		if (q.val.size() == g->src->val.size()) q.val = g->src->val;
 		q.texObj = g->src->texObj;
 	}
