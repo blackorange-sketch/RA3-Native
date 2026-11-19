@@ -1,5 +1,6 @@
 // Included at the top of generated C files.
 #pragma once
+#define RA3_LIFTED_TU 1
 #include "cpu.h"
 #include "fpu.h"
 
