@@ -335,7 +335,7 @@ void startGame(const std::string& game)
 	rt::config.gameRoot = leaf == "data" ? dir.substr(0, dir.rfind('/')) : dir;
 	pushLine("game: " + game);
 	pushLine("game root: " + rt::config.gameRoot);
-	rt::log("launcher: language %s, cutscenes %d, 60 fps %d, log %d", rt::config.language.c_str(), (int)rt::config.playMovies, (int)rt::config.fps60, (int)!rt::config.logFile.empty());
+	rt::log("launcher: language %s, cutscenes %d, log %d, fast shaders %d", rt::config.language.c_str(), (int)rt::config.playMovies, (int)!rt::config.logFile.empty(), (int)rt::config.fastShaders);
 	status = "running";
 	started = true;
 	rt::spawnHostThread([game] {
@@ -456,6 +456,7 @@ void android_main(android_app* app)
 			else if (k == "cutscenes") rt::config.playMovies = v == "1";
 			else if (k == "log") { if (v != "1") rt::config.logFile.clear(); }
 			else if (k == "fps60") rt::config.fps60 = v == "1";
+			else if (k == "fast_shaders") rt::config.fastShaders = v == "1";
 			else if (k == "ui_scale") { int pc = atoi(v.c_str()); if (pc >= 100 && pc <= 200) rt::config.uiScale = pc / 100.f; }
 			else if (k == "gamepath" && !v.empty())
 			{

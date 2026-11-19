@@ -10,6 +10,8 @@
 #include <string>
 #include <vector>
 
+#include "rt.h"
+
 namespace d3d
 {
 struct CtabConst
@@ -637,7 +639,10 @@ inline bool translate(const uint8_t* bytes, size_t n, ShaderInfo& si)
 // are declared as plain zero-initialised globals so that the program links.
 inline std::string compose(const ShaderInfo& si, const std::set<std::string>* vsOuts = nullptr)
 {
-	std::string s = "#version 300 es\nprecision highp float;\nprecision highp int;\nprecision highp sampler2D;\nprecision highp samplerCube;\nprecision highp sampler3D;\n";
+	// "fast shaders" (launcher): pixel shader arithmetic in mediump (fp16 on Mali and most mobile GPUs: about twice the
+	// throughput); the interpolated inputs stay highp so texture coordinates keep their precision
+	bool fast = !si.isVs && ::rt::config.fastShaders;
+	std::string s = std::string("#version 300 es\nprecision ") + (fast ? "mediump" : "highp") + " float;\nprecision highp int;\nprecision highp sampler2D;\nprecision highp samplerCube;\nprecision highp sampler3D;\n";
 	s += si.decls;
 	if (!si.isVs)
 	{
@@ -645,7 +650,7 @@ inline std::string compose(const ShaderInfo& si, const std::set<std::string>* vs
 		for (auto& n : si.psIns)
 		{
 			if (!done.insert(n).second) continue;
-			if (!vsOuts || vsOuts->count(n)) s += "in vec4 " + n + ";\n";
+			if (!vsOuts || vsOuts->count(n)) s += "in highp vec4 " + n + ";\n";
 			else s += "vec4 " + n + " = " + (n == "v_color0" || n == "v_color1" ? "vec4(1.0)" : "vec4(0.0)") + ";\n";
 		}
 	}

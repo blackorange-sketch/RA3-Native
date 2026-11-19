@@ -1,0 +1,1 @@
+etcpak (https://github.com/wolfpld/etcpak) at 3d716e1550023dc5ff8b602636af8b76584e0b66, BSD 3-clause (LICENSE.txt). Only the ETC1/ETC2 encoder sources are vendored; used to transcode DXT textures to ETC2 on GPUs without S3TC.

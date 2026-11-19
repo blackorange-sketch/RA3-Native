@@ -14,6 +14,7 @@
 // OpenGL ES 3 back end of the Direct3D 9 layer: resource upload, programs built from translated D3D9 shaders,
 // render state mapping, draw calls, render targets and presentation. Android only; elsewhere everything is a no-op.
 #include "d3d9.h"
+#include "etc2.h"
 
 #ifdef __ANDROID__
 #include <EGL/egl.h>
@@ -219,6 +220,41 @@ void expandLevel(uint32_t fmt, const uint8_t* src, uint32_t w, uint32_t h, std::
 
 GLenum targetOf(const Obj* o) { return o->iface == ICube ? GL_TEXTURE_CUBE_MAP : o->iface == IVolume ? GL_TEXTURE_3D : GL_TEXTURE_2D; }
 
+
+// ---- ETC2 transcoding (GPUs without S3TC): DXT is decoded and re-encoded to ETC2 once, then read from a disk cache
+// (<app data>/texcache, one file per texture keyed by its contents). ETC2 is supported by every GLES 3 GPU and needs
+// a quarter (RGB) or half (RGBA) of the memory of the decoded RGB565/RGBA8 textures used before.
+// /sdcard/ra3_noetc: decode only (the previous behaviour); /sdcard/ra3_nos3tc: take this path on S3TC GPUs too (tests).
+static std::string gTexDir;
+static uint64_t hashBytes(const uint8_t* p, size_t n, uint64_t h)
+{
+	const uint64_t m = 0x9E3779B97F4A7C15ull;
+	size_t i = 0;
+	for (; i + 8 <= n; i += 8) { uint64_t v; memcpy(&v, p + i, 8); h = (h ^ v) * m; h ^= h >> 29; }
+	for (; i < n; i++) { h = (h ^ p[i]) * m; }
+	return h ^ (h >> 31);
+}
+static bool readWhole(const std::string& path, std::vector<uint8_t>& out)
+{
+	FILE* f = fopen(path.c_str(), "rb");
+	if (!f) return false;
+	fseek(f, 0, SEEK_END);
+	long n = ftell(f);
+	fseek(f, 0, SEEK_SET);
+	out.resize(n > 0 ? (size_t)n : 0);
+	bool ok = n > 0 && fread(out.data(), 1, (size_t)n, f) == (size_t)n;
+	fclose(f);
+	return ok;
+}
+static void writeWhole(const std::string& path, const std::vector<uint8_t>& data)
+{
+	std::string tmp = path + ".tmp";
+	FILE* f = fopen(tmp.c_str(), "wb");
+	if (!f) return;
+	bool ok = fwrite(data.data(), 1, data.size(), f) == data.size();
+	ok = fclose(f) == 0 && ok;
+	if (ok) rename(tmp.c_str(), path.c_str()); else remove(tmp.c_str());
+}
 static void uploadTextureImpl(Obj* o);
 void uploadTexture(Obj* o)
 {
@@ -264,7 +300,52 @@ static void uploadTextureImpl(Obj* o)
 		static int nl = 0;
 		if (nl++ < 8) log("GL: no S3TC: decoding %ux%u DXT%c texture on the CPU (%s, from level %u)", o->w, o->h, (char)(o->fmt >> 24), to565 ? "RGB565" : "RGBA8", skip);
 	}
-	if (!(o->rtTex && !o->data))
+	static const bool noEtc = access("/sdcard/ra3_noetc", F_OK) == 0;
+	if (soft && !noEtc && o->data && o->iface != IVolume && !gTexDir.empty())
+	{
+		bool alpha = !to565;
+		uint32_t fmt = alpha ? etc2::kRgba8 : etc2::kRgb8;
+		uint64_t key = hashBytes((const uint8_t*)&o->fmt, 4, 0x45544332u ^ ((uint64_t)o->w << 32) ^ ((uint64_t)o->h << 16) ^ ((uint64_t)skip << 8) ^ (alpha ? 1 : 0));
+		size_t expect = 0;
+		for (uint32_t f = 0; f < o->faces; f++)
+			for (uint32_t l = skip; l < o->levels; l++)
+			{
+				uint32_t w = std::max(1u, o->w >> l), h = std::max(1u, o->h >> l);
+				key = hashBytes((const uint8_t*)guest::host(o->data + o->levelOff[f * o->levels + l]), levelBytes(o->fmt, w, h), key);
+				expect += etc2::levelBytes(w, h, alpha);
+			}
+		char name[40];
+		snprintf(name, sizeof name, "/%016llx.etc2", (unsigned long long)key);
+		std::string path = gTexDir + name;
+		std::vector<uint8_t> blob;
+		bool cached = readWhole(path, blob) && blob.size() == expect;
+		if (!cached)
+		{
+			blob.clear();
+			blob.reserve(expect);
+			std::vector<uint8_t> rgba;
+			for (uint32_t f = 0; f < o->faces; f++)
+				for (uint32_t l = skip; l < o->levels; l++)
+				{
+					uint32_t w = std::max(1u, o->w >> l), h = std::max(1u, o->h >> l);
+					expandLevel(o->fmt, (const uint8_t*)guest::host(o->data + o->levelOff[f * o->levels + l]), w, h, rgba);
+					etc2::encode(rgba.data(), w, h, alpha, blob);
+				}
+			writeWhole(path, blob);
+		}
+		static int nl = 0;
+		if (nl++ < 8) log("GL: no S3TC: %ux%u DXT%c as ETC2 %s (%s, from level %u)", o->w, o->h, (char)(o->fmt >> 24), alpha ? "RGBA8" : "RGB8", cached ? "cached" : "transcoded", skip);
+		size_t off = 0;
+		for (uint32_t f = 0; f < o->faces; f++)
+			for (uint32_t l = skip; l < o->levels; l++)
+			{
+				uint32_t w = std::max(1u, o->w >> l), h = std::max(1u, o->h >> l), sz = etc2::levelBytes(w, h, alpha);
+				GLenum tgt = o->iface == ICube ? GL_TEXTURE_CUBE_MAP_POSITIVE_X + f : target;
+				glCompressedTexImage2D(tgt, l, fmt, w, h, 0, sz, blob.data() + off);
+				off += sz;
+			}
+	}
+	else if (!(o->rtTex && !o->data))
 	{
 		std::vector<uint8_t> tmp;
 		for (uint32_t f = 0; f < o->faces; f++)
@@ -297,6 +378,15 @@ static void uploadTextureImpl(Obj* o)
 							for (size_t i = 0; i < n; i++) { const uint8_t* q = &tmp[i * 4]; d16[i] = (uint16_t)(((q[0] >> 3) << 11) | ((q[1] >> 2) << 5) | (q[2] >> 3)); }
 							glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
 							glTexImage2D(tgt, l, GL_RGB565, w, h, 0, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, tmp.data());
+						}
+						else if (soft && o->fmt == 0x33545844)
+						{
+							// DXT3 keeps 4-bit alpha anyway: RGBA4444 halves the memory of RGBA8 (DXT5's smooth alpha would band)
+							size_t n = (size_t)w * h;
+							uint16_t* d16 = (uint16_t*)tmp.data();
+							for (size_t i = 0; i < n; i++) { const uint8_t* q = &tmp[i * 4]; d16[i] = (uint16_t)(((q[0] >> 4) << 12) | ((q[1] >> 4) << 8) | ((q[2] >> 4) << 4) | (q[3] >> 4)); }
+							glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
+							glTexImage2D(tgt, l, GL_RGBA4, w, h, 0, GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4, tmp.data());
 						}
 						else glTexImage2D(tgt, l, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, tmp.data());
 					}
@@ -983,7 +1073,9 @@ bool init()
 	gInit = true;
 	if (!gfx::ready() || !gfx::ownedByGame()) { log("GL: no context for the game thread - drawing disabled"); return false; }
 	const char* ext = (const char*)glGetString(GL_EXTENSIONS);
-	gHasS3tc = ext && strstr(ext, "GL_EXT_texture_compression_s3tc");
+	gHasS3tc = ext && strstr(ext, "GL_EXT_texture_compression_s3tc") && access("/sdcard/ra3_nos3tc", F_OK) != 0;
+	gTexDir = rt::config.dataRoot + "/texcache";
+	mkdir(gTexDir.c_str(), 0755);
 	initBinCache();
 	{
 		GLint maj = 0, mnr = 0; glGetIntegerv(GL_MAJOR_VERSION, &maj); glGetIntegerv(GL_MINOR_VERSION, &mnr);

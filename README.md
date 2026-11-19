@@ -54,7 +54,7 @@
 ## Requirements
 
 - **Android 10 or newer, 64-bit (arm64)** with OpenGL ES 3.2. Developed and tested on a Snapdragon 8 Gen 2; other recent Snapdragon devices should work.
-- **Mali / PowerVR GPUs** — experimental: these GPUs cannot read the game's DXT textures, so they are decoded on the CPU at load time (and large textures are loaded at half resolution to save memory). Reports from Mali devices are very welcome.
+- **Mali / PowerVR GPUs** — experimental: these GPUs cannot read the game's DXT textures, so they are converted to ETC2 on the first load and kept in a cache, which makes the first start of each map noticeably slower. Large textures are loaded at half resolution to save memory, and the *Fast shaders* launcher option can speed up the GPU. Reports from Mali devices are very welcome.
 - **Red Alert 3, patch 1.12** — the full game folder (about 8.7 GB), copied to the phone's internal storage.
 - About **4 GB of free RAM** recommended.
 
@@ -98,6 +98,7 @@ The phone's volume keys keep working, and the screen stays on while the game run
 | Cutscenes | On | Intro, briefings and campaign videos |
 | Log file | Off in releases, on in nightly builds | Writes `/sdcard/ra3_native.log` — turn it on and attach the file to bug reports |
 | HUD size | 110% | Enlarges the minimap, build menu and other corner panels (100–200% in 10% steps) |
+| Fast shaders | off | Lower precision in pixel shaders: faster on Mali and weaker GPUs, occasional visual glitches |
 
 ## Performance
 
@@ -155,6 +156,8 @@ Empty files with these names in `/sdcard` change the runtime's behaviour:
 | `ra3_frame` | Full trace of two frames (and render-target dumps into `/sdcard/ra3_dump/` if that folder exists) |
 | `ra3_fps60` | Experimental 60 fps cap (effects and game speed are still wrong) |
 | `ra3_fulltex` | Mali / PowerVR: load large textures at full resolution (uses about 4× more memory) |
+| `ra3_noetc` | Mali / PowerVR: decode textures on the CPU instead of converting them to ETC2 |
+| `ra3_nos3tc` | Test the Mali texture path (ETC2 conversion) on a GPU that supports DXT |
 
 Remove them again for normal play — some of them slow the game down.
 
