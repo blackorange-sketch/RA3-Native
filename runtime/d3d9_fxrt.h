@@ -251,18 +251,14 @@ inline const PresProg& presProg(const uint8_t* blob, size_t n)
 	return pp;
 }
 // `fill` provides the input register file (4 doubles per register) for the CTAB constants.
-inline bool runPreshader(const uint8_t* blob, size_t n, const std::function<void(const d3d::CtabConst&, double*, size_t)>& fill, PresOut& res)
+// Executes a parsed pre-shader on a prepared input register file (pp.nIn doubles).
+inline bool execPreshader(const PresProg& pp, const std::vector<double>& in, PresOut& res)
 {
-	const PresProg& pp = presProg(blob, n);
-	if (!pp.ok) return false;
-	static thread_local std::vector<double> in, tmp, oF, oB;
-	in.assign(pp.nIn, 0.0); tmp.assign(pp.nTmp, 0.0); oF.assign(pp.nOut, 0.0); oB.assign(pp.nB, 0.0);
+	if (!pp.ok || in.size() < pp.nIn) return false;
+	static thread_local std::vector<double> tmp, oF, oB;
+	tmp.assign(pp.nTmp, 0.0); oF.assign(pp.nOut, 0.0); oB.assign(pp.nB, 0.0);
 	const std::vector<double>& lit = pp.lit;
 	const uint8_t* fxlcP = pp.fxlcP; size_t fxlcN = pp.fxlcN;
-	for (auto& c : pp.ctab)
-	{
-		if (c.regIndex * 4 + 4 * std::max(1u, c.regCount) <= in.size()) fill(c, &in[c.regIndex * 4], 4 * std::max(1u, c.regCount));
-	}
 	auto fu = [&](size_t q) { uint32_t v = 0; if (q + 4 <= fxlcN) memcpy(&v, fxlcP + q, 4); return v; };
 	uint32_t cnt = fu(0);
 	size_t q = 4;
@@ -340,6 +336,16 @@ inline bool runPreshader(const uint8_t* blob, size_t n, const std::function<void
 		for (uint32_t j = 0; j < comps; j++) wr(ot, oi + j, outv[j]);
 	}
 	return true;
+}
+inline bool runPreshader(const uint8_t* blob, size_t n, const std::function<void(const d3d::CtabConst&, double*, size_t)>& fill, PresOut& res)
+{
+	const PresProg& pp = presProg(blob, n);
+	if (!pp.ok) return false;
+	static thread_local std::vector<double> in;
+	in.assign(pp.nIn, 0.0);
+	for (auto& c : pp.ctab)
+		if (c.regIndex * 4 + 4 * std::max(1u, c.regCount) <= in.size()) fill(c, &in[c.regIndex * 4], 4 * std::max(1u, c.regCount));
+	return execPreshader(pp, in, res);
 }
 inline bool evalPreshader(const uint8_t* blob, size_t n, const std::function<void(const d3d::CtabConst&, double*, size_t)>& fill, double& result)
 {

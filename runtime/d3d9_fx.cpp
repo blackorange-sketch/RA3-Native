@@ -710,6 +710,49 @@ static int resOf(FxInfo& fx, uint32_t tech, uint32_t pass, uint32_t si)
 	fx.resIdx[key] = found;
 	return found;
 }
+// Shader chosen from an array by a pre-shader: the pick only changes when the pre-shader's inputs do, so the
+// inputs are compared with the last ones instead of re-resolving (names, std::function, interpreter) per pass.
+static bool dynPick(FxInfo& fx, uint64_t key, uint32_t tech, uint32_t pass, uint32_t si, ShaderObj*& out)
+{
+	int ri = resOf(fx, tech, pass, si);
+	if (ri < 0 || fx.res[ri].usage != 2) return false;
+	const FxRes& r = fx.res[ri];
+	if (r.size < 8) return false;
+	const uint8_t* d = fx.blob.data() + r.off;
+	uint32_t nl;
+	memcpy(&nl, d, 4);
+	if (4ull + nl > r.size) return false;
+	const fxrt::PresProg& prog = fxrt::presProg(d + 4 + nl, r.size - 4 - nl);
+	if (!prog.ok) return false;
+	FxInfo::DynSel& ds = fx.dynSel[key];
+	if (ds.pp != &prog) { ds = FxInfo::DynSel(); ds.pp = &prog; for (auto& c : prog.ctab) ds.pidx.push_back(fxrt::findParam(fx, c.name)); }
+	static thread_local std::vector<double> in;
+	static thread_local std::vector<uint32_t> regs;
+	in.assign(prog.nIn, 0.0);
+	for (size_t i = 0; i < prog.ctab.size(); i++)
+	{
+		const CtabConst& c = prog.ctab[i];
+		size_t nd = 4 * std::max(1u, c.regCount);
+		if (c.regIndex * 4 + nd > in.size() || ds.pidx[i] < 0) continue;
+		const FxParam& pp = fx.params[ds.pidx[i]];
+		regs.assign(nd, 0);
+		fxrt::packToRegs(pp.ty, pp.val.data(), pp.val.size(), 2, 0, regs.data(), (uint32_t)(nd / 4));
+		for (size_t k = 0; k < nd; k++) { float f; memcpy(&f, &regs[k], 4); in[c.regIndex * 4 + k] = f; }
+	}
+	if (ds.valid && ds.in == in) { out = (ShaderObj*)ds.sh; return true; }
+	ShaderObj* sh = nullptr;
+	fxrt::ShaderRef ref;
+	if (fxrt::resolveShader(fx, tech, pass, si, ref))
+	{
+		auto ci = fx.codeCache.find(ref.code);
+		if (ci != fx.codeCache.end()) sh = (ShaderObj*)ci->second;
+		else { sh = getShader(ref.code, ref.size); fx.codeCache[ref.code] = sh; }
+	}
+	ds.in = in; ds.sh = sh; ds.valid = true;
+	out = sh;
+	return true;
+}
+
 static void applyShaderState(FxInfo& fx, const FxPass& ps, uint32_t tech, uint32_t pass, uint32_t si)
 {
 	const FxState& st = ps.sts[si];
@@ -720,6 +763,7 @@ static void applyShaderState(FxInfo& fx, const FxPass& ps, uint32_t tech, uint32
 		auto it = fx.shCache.find(key);
 		ShaderObj* sh = nullptr;
 		if (it != fx.shCache.end()) sh = (ShaderObj*)it->second;
+		else if (ShaderObj* ds; dynPick(fx, key, tech, pass, si, ds)) sh = ds;
 		else
 		{
 			fxrt::ShaderRef ref;
@@ -820,26 +864,45 @@ void fxApplyPass(Obj* o)
 		{
 			// embedded pre-shader: constants computed from effect parameters (time, atlas layout, ...) that the
 			// shader reads but its own constant table does not list
-			std::function<void(const CtabConst&, double*, size_t)> fill = [&](const CtabConst& c, double* dst, size_t nd) {
-				int k = fxrt::findParam(*fx, c.name);
-				if (k < 0) return;
+			// inputs are packed from the effect parameters (indices cached per shader); when they equal the last
+			// ones the outputs are reused: most draws of a frame see the same time and atlas values
+			FxInfo::PresCache& pc = fx->presCache[sh];
+			const fxrt::PresProg& prog = fxrt::presProg(sh->info.pres.data(), sh->info.pres.size());
+			if (pc.pp != &prog) { pc = FxInfo::PresCache(); pc.pp = &prog; for (auto& c : prog.ctab) pc.pidx.push_back(fxrt::findParam(*fx, c.name)); }
+			static thread_local std::vector<double> in;
+			static thread_local std::vector<uint32_t> regs;
+			in.assign(prog.nIn, 0.0);
+			for (size_t ci2 = 0; ci2 < prog.ctab.size(); ci2++)
+			{
+				const CtabConst& c = prog.ctab[ci2];
+				size_t nd = 4 * std::max(1u, c.regCount);
+				if (c.regIndex * 4 + nd > in.size()) continue;
+				int k = pc.pidx[ci2];
+				if (k < 0) continue;
 				const FxParam& pp = fx->params[k];
-				if (pp.ty.cls == 4 || pp.val.empty()) return;
-				std::vector<uint32_t> regs(nd, 0);
+				if (pp.ty.cls == 4 || pp.val.empty()) continue;
+				double* dst = &in[c.regIndex * 4];
+				regs.assign(nd, 0);
 				fxrt::packToRegs(pp.ty, pp.val.data(), pp.val.size(), 2, 0, regs.data(), (uint32_t)(nd / 4));
 				for (size_t i = 0; i < nd; i++) { float f; memcpy(&f, &regs[i], 4); dst[i] = f; }
 				// GPU particles: the shader turns Time into a frame clock with a fixed 30 (frames per second) while the
 				// game stamps each particle's birth with the frame clock of the current cap. Above 30 fps the clocks
 				// drift apart (particles born "in the future", effects stretched or overbright): scale Time to match.
-				if (c.name == "Time" && ::rt::gFps60 && nd)
+				if (::rt::gFps60 && c.name == "Time")
 				{
 					if (fx->gpuParticle < 0) fx->gpuParticle = fxrt::findParam(*fx, "Physics") >= 0 && fxrt::findParam(*fx, "Update") >= 0 ? 1 : 0;
 					uint32_t cap = guest::load<uint32_t>(0xcaf9d4);
 					if (fx->gpuParticle == 1 && cap > 30 && cap <= 240) dst[0] *= cap / 30.0;
 				}
-			};
-			fxrt::PresOut po;
-			bool okp = fxrt::runPreshader(sh->info.pres.data(), sh->info.pres.size(), fill, po);
+			}
+			if (!pc.valid || pc.in != in)
+			{
+				fxrt::PresOut out;
+				pc.ok = fxrt::execPreshader(prog, in, out);
+				pc.in = in; pc.f = std::move(out.f); pc.b = std::move(out.b); pc.valid = true;
+			}
+			bool okp = pc.ok;
+			struct { const std::vector<std::pair<uint32_t, double>>& f; const std::vector<std::pair<uint32_t, double>>& b; } po{pc.f, pc.b};
 			float* fregs = stage == 0 ? dev.vsF : dev.psF;
 			int32_t* bregs = stage == 0 ? dev.vsB : dev.psB;
 			uint32_t maxF = stage == 0 ? 256 : 224;
