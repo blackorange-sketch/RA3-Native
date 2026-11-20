@@ -136,7 +136,8 @@ float corrX = 0, corrY = 0;        // extra cursor pixels from the resting-finge
 int64_t fingerMovedAt = 0;
 struct CmdHist { int64_t t; float cx, cy; };
 std::deque<CmdHist> cmdHist;       // cumulative cursor pixels over time (the camera follows about a quarter second later)
-float ratio = -2.f;                // screen motion of the grabbed point per cursor pixel (negative: the camera follows the cursor); learned after each drag
+float ratioX = -2.f, ratioY = -2.f; // screen motion of the grabbed point per cursor pixel, per axis (negative: the camera follows the cursor); learned while dragging
+float lastPX = 0, lastPY = 0; int64_t lastCorrAt = 0;
 bool project(const float* w, float& px, float& py)
 {
 	float cx = w[0] * vp[0] + w[1] * vp[4] + w[2] * vp[8] + vp[12], cy = w[0] * vp[1] + w[1] * vp[5] + w[2] * vp[9] + vp[13];
@@ -167,7 +168,7 @@ void panBegin(float sx, float sy)
 		fingerBX = (sx - vx) * bw / std::max(1, vw); fingerBY = (sy - vy) * bh / std::max(1, vh);
 		if (unproject(fingerBX, fingerBY, anchorW) && project(anchorW, p0X, p0Y))
 		{
-			dragActive = true; 			fingerSX = fingerBX; fingerSY = fingerBY; sumCX = sumCY = 0; corrX = corrY = 0; cmdHist.clear(); fingerMovedAt = nowMs();
+			dragActive = true; 			fingerSX = fingerBX; fingerSY = fingerBY; sumCX = sumCY = 0; corrX = corrY = 0; cmdHist.clear(); lastPX = p0X; lastPY = p0Y; lastCorrAt = nowMs(); fingerMovedAt = nowMs();
 		}
 		static int nl = 0;
 		if (nl++ < 6) log("input: drag the map from %.0f,%.0f -> ground %.1f,%.1f (%s)", fingerBX, fingerBY, anchorW[0], anchorW[1], dragActive ? "follows the finger" : "no ground, plain pan");
@@ -219,13 +220,13 @@ void dragTick()
 	{
 		dragActive = false;
 		static int nl = 0;
-		if (nl++ < 20) log("input: drag the map ended: %.2f screen pixels per cursor pixel", ratio);
+		if (nl++ < 20) log("input: drag the map ended: %.2f,%.2f screen pixels per cursor pixel", ratioX, ratioY);
 		return;
 	}
-	// The game moves the camera a few frames after the cursor moves, so following the measured point would overshoot.
-	// Instead the cursor is sent exactly what the finger has moved (converted with the learned ratio); once the finger
-	// rests and the camera has caught up, the remaining error is corrected gently.
-	// learn the ratio while dragging: where the point is now against the cursor pixels sent ~250 ms ago
+	// The game moves the camera about a quarter second after the cursor moves, so chasing the measured point would
+	// overshoot and circle. The cursor is sent what the finger has moved, converted per axis with the learned ratios
+	// (a tilted camera moves the picture differently up/down than sideways); when the finger rests and the camera has
+	// stopped, half of the remaining error is corrected in one step, then it waits for the camera again.
 	float px, py;
 	bool havePt = project(anchorW, px, py);
 	if (havePt)
@@ -234,21 +235,21 @@ void dragTick()
 		for (auto it = cmdHist.rbegin(); it != cmdHist.rend(); ++it) if (now - it->t >= 250) { h = &*it; break; }
 		if (h)
 		{
-			float c2 = h->cx * h->cx + h->cy * h->cy;
-			if (c2 > 900.f)
-			{
-				float obs = ((px - p0X) * h->cx + (py - p0Y) * h->cy) / c2;
-				if (obs < -0.5f && obs > -8.f) ratio = ratio * 0.9f + obs * 0.1f;
-			}
+			// per axis: picture shift so far against the cursor pixels sent a quarter second ago
+			if (fabsf(h->cx) > 40.f) { float o = (px - p0X) / h->cx; if (o < -0.4f && o > -8.f) ratioX = ratioX * 0.9f + o * 0.1f; }
+			if (fabsf(h->cy) > 40.f) { float o = (py - p0Y) / h->cy; if (o < -0.4f && o > -8.f) ratioY = ratioY * 0.9f + o * 0.1f; }
 		}
 		static int nl = 0;
-		if (nl++ < 80) log("input: drag tick point %.0f,%.0f finger %.0f,%.0f sent %.0f,%.0f ratio %.2f", px, py, fingerBX, fingerBY, sumCX, sumCY, ratio);
+		if (nl++ < 80) log("input: drag tick point %.0f,%.0f finger %.0f,%.0f sent %.0f,%.0f ratio %.2f,%.2f", px, py, fingerBX, fingerBY, sumCX, sumCY, ratioX, ratioY);
+		bool still = fabsf(px - lastPX) < 1.5f && fabsf(py - lastPY) < 1.5f;
+		lastPX = px; lastPY = py;
+		if (still && now - fingerMovedAt > 400 && now - lastCorrAt > 400)
+		{
+			float ex = fingerBX - px, ey = fingerBY - py;
+			if (fabsf(ex) + fabsf(ey) > 6.f) { corrX += 0.5f * ex / ratioX; corrY += 0.5f * ey / ratioY; lastCorrAt = now; }
+		}
 	}
-	if (now - fingerMovedAt > 300)
-	{
-		if (havePt) { corrX += 0.1f * (fingerBX - px) / ratio; corrY += 0.1f * (fingerBY - py) / ratio; }
-	}
-	float wantX = (fingerBX - fingerSX) / ratio + corrX, wantY = (fingerBY - fingerSY) / ratio + corrY;
+	float wantX = (fingerBX - fingerSX) / ratioX + corrX, wantY = (fingerBY - fingerSY) / ratioY + corrY;
 	float cx = wantX - sumCX, cy = wantY - sumCY;
 	float lim = bw / 10.f, len = sqrtf(cx * cx + cy * cy);
 	if (len > lim) { cx *= lim / len; cy *= lim / len; }
