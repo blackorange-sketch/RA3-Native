@@ -3,6 +3,12 @@
 #include "glrec.h"
 #include "rt.h"
 #include <chrono>
+#include <algorithm>
+#include <dlfcn.h>
+#include <string>
+#include <time.h>
+#include <unordered_map>
+#include <vector>
 #include <cstdlib>
 #include <sys/resource.h>
 #include <sys/syscall.h>
@@ -69,6 +75,41 @@ void publishLocked()   // producer lock held
 	cur = nullptr;
 }
 
+// /sdcard/ra3_prof: wall time of every recorded command, by command type (its run function), logged every 30 s.
+// The render thread mostly WAITS inside the driver (busy ~9 ms per frame for ~2.5 ms of CPU), which CPU sampling
+// cannot see; this shows which GL calls block.
+inline uint64_t nsNow() { timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (uint64_t)ts.tv_sec * 1000000000ull + ts.tv_nsec; }
+void cmdTime(void (*run)(void*), uint64_t ns)
+{
+	struct Acc { uint64_t ns = 0, n = 0, maxNs = 0; };
+	static std::unordered_map<void (*)(void*), Acc> acc;
+	static uint64_t since = nsNow();
+	Acc& e = acc[run];
+	e.ns += ns; e.n++; if (ns > e.maxNs) e.maxNs = ns;
+	uint64_t now = nsNow();
+	if (now - since < 30000000000ull) return;
+	double secs = (now - since) / 1e9;
+	since = now;
+	std::vector<std::pair<uint64_t, void (*)(void*)>> v;
+	uint64_t all = 0;
+	for (auto& kv : acc) { v.push_back({kv.second.ns, kv.first}); all += kv.second.ns; }
+	std::sort(v.rbegin(), v.rend());
+	Dl_info me{};
+	dladdr((void*)&cmdTime, &me);
+	rt::log("prof render cmds: %.1f ms per second inside commands, %zu kinds (offset: ms/s, calls/s, longest us)", all / 1e6 / secs, v.size());
+	std::string line;
+	for (size_t i = 0; i < v.size() && i < 30; i++)
+	{
+		const Acc& e2 = acc[v[i].second];
+		char b[80];
+		snprintf(b, sizeof b, " %zx:%.2f/%.0f/%.0f", (size_t)((uintptr_t)v[i].second - (uintptr_t)me.dli_fbase), e2.ns / 1e6 / secs, e2.n / secs, e2.maxNs / 1e3);
+		line += b;
+		if ((i + 1) % 6 == 0) { rt::log("prof render cmds:%s", line.c_str()); line.clear(); }
+	}
+	if (!line.empty()) rt::log("prof render cmds:%s", line.c_str());
+	acc.clear();
+}
+
 void renderLoop()
 {
 	for (;;)
@@ -92,12 +133,23 @@ void renderLoop()
 		}
 		uint64_t t0 = nowUs();
 		size_t off = 0;
-		while (off < c->used)
-		{
-			Cmd* cmd = (Cmd*)(c->buf + off);
-			off += cmd->total;
-			cmd->run(cmd + 1);
-		}
+		static const bool timed = access("/sdcard/ra3_prof", F_OK) == 0;
+		if (!timed)
+			while (off < c->used)
+			{
+				Cmd* cmd = (Cmd*)(c->buf + off);
+				off += cmd->total;
+				cmd->run(cmd + 1);
+			}
+		else
+			while (off < c->used)
+			{
+				Cmd* cmd = (Cmd*)(c->buf + off);
+				off += cmd->total;
+				uint64_t a = nsNow();
+				cmd->run(cmd + 1);
+				cmdTime(cmd->run, nsNow() - a);
+			}
 		busyUs += nowUs() - t0;
 		bool wake;
 		{
