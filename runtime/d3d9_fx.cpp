@@ -753,6 +753,8 @@ static void packConst(const FxInfo& fx, const CtabConst& c, ShaderObj* sh, bool 
 		// commits change a few parameters, and repacking all of them every time was the biggest cost of a draw
 		RegTag* tags = isVs ? gTagV : gTagP;
 		static const bool noSkip = access("/sdcard/ra3_nopackskip", F_OK) == 0;   // A/B check: repack every time
+		static const bool noSkipLogged = (log("fx: unchanged constants %s", noSkip ? "repacked every time (ra3_nopackskip)" : "skipped"), true);
+		(void)noSkipLogged;
 		bool same = !fullPack && !noSkip;
 		for (uint32_t r = c.regIndex; same && r < end; r++) same = tags[r].p == &p && tags[r].ver == p.ver && tags[r].at == c.regIndex;
 		if (same) return;
