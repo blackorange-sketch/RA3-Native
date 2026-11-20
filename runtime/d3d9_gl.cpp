@@ -728,15 +728,16 @@ static void saveProgramBinary(uint64_t key, GLuint prog)
 }
 static Prog* finishProgram(Prog& p, ShaderObj* vs, ShaderObj* ps, bool cached);
 
-Prog* getProgram(ShaderObj* vs, ShaderObj* ps)
+Prog* getProgram(ShaderObj* vs, ShaderObj* ps, bool precise)
 {
 	uint64_t key = vs->hash * 1000003ull ^ (ps->hash + 0x9e3779b97f4a7c15ull + (vs->hash << 6));
+	if (precise) key ^= 0x5bd1e9955bd1e995ull;
 	auto it = gProgs.find(key);
 	if (it != gProgs.end()) return it->second.failed ? nullptr : &it->second;
 	Prog& p = gProgs[key];
 	p.failed = true;
 	if (!vs->ok || !ps->ok || !vs->info.isVs || ps->info.isVs) return nullptr;
-	std::string vsrc = shdr::compose(vs->info), psrc = shdr::compose(ps->info, &vs->info.outputs);
+	std::string vsrc = shdr::compose(vs->info), psrc = shdr::compose(ps->info, &vs->info.outputs, precise);
 	uint64_t bkey = binKey(vsrc, psrc);
 	if (loadProgramBinary(bkey, p)) return finishProgram(p, vs, ps, true);
 	GLuint v = compileStage(GL_VERTEX_SHADER, vsrc, "vertex");
@@ -1689,7 +1690,11 @@ static void drawImpl(const DrawCall& dc)
 		return;
 	}
 	uint64_t t0 = profNow();
-	Prog* p = getProgram(vs, ps);
+	// fast shaders: a pixel shader that samples one of the game's own render targets keeps full precision
+	bool precise = false;
+	if (rt::config.fastShaders)
+		for (int i = 0; i < 16 && !precise; i++) if (ps->info.samplerType[i] && dev.tex[i] && (dev.tex[i]->usage & 3)) precise = true;
+	Prog* p = getProgram(vs, ps, precise);
 	if (!p) { gHNoProg++; static int nf = 0; if (nf++ < 10) log("d3d9: draw skipped: no program for vs %016llx ps %016llx", (unsigned long long)vs->hash, (unsigned long long)ps->hash); return; }
 	healthStates();
 	if (dev.rs[7] && !gUiNested) gUiWorldDraws++;   // ZENABLE

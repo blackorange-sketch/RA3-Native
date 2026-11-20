@@ -637,11 +637,13 @@ inline bool translate(const uint8_t* bytes, size_t n, ShaderInfo& si)
 
 // Complete GLSL source. For a pixel shader, `vsOuts` lists the varyings the matching vertex shader writes; the others
 // are declared as plain zero-initialised globals so that the program links.
-inline std::string compose(const ShaderInfo& si, const std::set<std::string>* vsOuts = nullptr)
+inline std::string compose(const ShaderInfo& si, const std::set<std::string>* vsOuts = nullptr, bool precise = false)
 {
 	// "fast shaders" (launcher): pixel shader arithmetic in mediump (fp16 on Mali and most mobile GPUs: about twice the
 	// throughput); the interpolated inputs stay highp so texture coordinates keep their precision
-	bool fast = !si.isVs && ::rt::config.fastShaders;
+	// `precise`: the pixel shader reads a picture the game rendered itself (linear depth for soft particles, the scene
+	// for water and post effects); in mediump the depth comparison of the explosions cut them off along straight lines
+	bool fast = !si.isVs && ::rt::config.fastShaders && !precise;
 	std::string s = std::string("#version 300 es\nprecision ") + (fast ? "mediump" : "highp") + " float;\nprecision highp int;\nprecision highp sampler2D;\nprecision highp samplerCube;\nprecision highp sampler3D;\n";
 	s += si.decls;
 	if (!si.isVs)
