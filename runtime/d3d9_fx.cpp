@@ -568,10 +568,12 @@ static void setMatrices(CPU* c, Obj* o, bool transpose, bool array, bool pointer
 			// the camera's view-projection for "drag the map" (perspective, drawn into the back buffer)
 			if (!transpose && !array && r.p->name.size() == 14 && r.p->name == "ViewProjection")
 			{
-				bool full = d3d::glr::targetIsBack();
-				static int nl = 0;
-				if (nl++ < 6) log("fx: ViewProjection set (screen-sized target %d, perspective %d)", (int)full, (int)(m[11] != 0.f));
-				if (full && m[11] != 0.f) input::setViewProj(m);
+				bool full = d3d::glr::targetIsBack(), persp = m[3] != 0.f || m[7] != 0.f || m[11] != 0.f;
+				static int nl = 0, np = 0;
+				if (nl++ < 4 || (persp && np++ < 4))
+					log("fx: ViewProjection set (screen-sized target %d, perspective %d) [%g %g %g %g] [%g %g %g %g] [%g %g %g %g] [%g %g %g %g]", (int)full, (int)persp,
+						m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15]);
+				if (full && persp) input::setViewProj(m);
 			}
 			if (verbose() && r.p->name == "ViewProjection")
 			{
