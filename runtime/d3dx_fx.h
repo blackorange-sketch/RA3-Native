@@ -2,6 +2,7 @@
 // passes with their states, the string/shader object table and the resource records (shaders, array selectors,
 // parameter references). Everything is bounds-checked; a malformed blob simply fails to parse.
 #pragma once
+#include <atomic>
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
@@ -35,6 +36,9 @@ struct FxType
 		return rows * cols;
 	}
 };
+// parameter value versions: one counter for all parameters, so a parameter created where a freed one lived never
+// matches the old one's version
+inline uint32_t fxNextVer() { static std::atomic<uint32_t> v{1}; return v.fetch_add(1, std::memory_order_relaxed) + 1; }
 struct FxParam
 {
 	std::string name, semantic;
@@ -44,6 +48,7 @@ struct FxParam
 	uint32_t dv = 0;          // default value offset (relative to base)
 	std::string str;          // string parameters: default value (resolved from the object table)
 	std::vector<uint32_t> val;   // current value, tightly packed (4 bytes per scalar); object params hold ids / unused
+	uint32_t ver = fxNextVer();  // new on every write of val, unique across all parameters (constant registers that already hold this version are not repacked)
 	bool skipConst = false;
 	mutable int8_t isViewProj = -1;   // named ViewProjection (the camera; looked up once)   // listed in D3DXCreateEffectEx's pSkipConstants: the application sets these registers itself
 	uint32_t texObj = 0;      // texture parameters: guest address of the bound texture object

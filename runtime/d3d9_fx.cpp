@@ -128,6 +128,12 @@ PRef refOf(Obj* o, uint32_t h)
 	PRef r;
 	FxInfo* fx = F(o);
 	if (!fx) return r;
+	// handle -> reference, cached per thread: the records and type tables are several dependent loads that missed
+	// the cache on every parameter write (thousands per frame)
+	struct RefCache { FxInfo* fx; uint32_t h; PRef r; };
+	static thread_local RefCache cache[256];
+	RefCache& ce = cache[(h >> 2) & 255];
+	if (ce.h == h && ce.fx == fx && ce.r.p >= fx->params.data() && ce.r.p < fx->params.data() + fx->params.size()) return ce.r;
 	if (const HRec* rc = getRec(h))
 	{
 		if (rc->kind != 1 || rc->fx != fx || rc->a >= fx->params.size()) return r;
@@ -135,6 +141,7 @@ PRef refOf(Obj* o, uint32_t h)
 		r.off = rc->b;
 		const FxType* const* t = rc->c ? gTypes.at(rc->c) : nullptr;
 		r.ty = t ? *t : &r.p->ty;
+		ce.fx = fx; ce.h = h; ce.r = r;
 		return r;
 	}
 	if (h)   // plain name
@@ -201,7 +208,7 @@ static void syncParam(FxParam& q)
 	if (!g || q.shareVer == g->ver) return;
 	q.shareVer = g->ver;
 	if (!g->src || g->src == &q) return;
-	if (q.val.size() == g->src->val.size()) q.val = g->src->val;
+	if (q.val.size() == g->src->val.size()) { q.val = g->src->val; q.ver = fxNextVer(); }
 	q.texObj = g->src->texObj;
 }
 // reads of a shared parameter see the latest value written through any effect
@@ -220,7 +227,7 @@ static void syncShared(FxInfo& fx)
 		if (!g || q.shareVer == g->ver) continue;
 		q.shareVer = g->ver;
 		if (!g->src || g->src == &q) continue;
-		if (q.val.size() == g->src->val.size()) q.val = g->src->val;
+		if (q.val.size() == g->src->val.size()) { q.val = g->src->val; q.ver = fxNextVer(); }
 		q.texObj = g->src->texObj;
 	}
 }
@@ -300,6 +307,14 @@ static uint32_t toLeaf(uint32_t leaf, uint32_t srcType, uint32_t v)   // convert
 static void writeVals(const PRef& r, const uint32_t* src, uint32_t n, uint32_t srcType)
 {
 	uint32_t leaf = leafType(r.ty);
+	r.p->ver = fxNextVer();
+	if (leaf == srcType && leaf == 3)
+	{
+		// floats into a float parameter: a plain copy
+		size_t room = r.p->val.size() > r.off ? r.p->val.size() - r.off : 0;
+		memcpy(r.p->val.data() + r.off, src, 4 * std::min<size_t>(n, room));
+		return;
+	}
 	for (uint32_t i = 0; i < n && r.off + i < r.p->val.size(); i++) r.p->val[r.off + i] = toLeaf(leaf, srcType, src[i]);
 }
 static void readVals(const PRef& r, uint32_t* dst, uint32_t n, uint32_t dstType)
@@ -324,6 +339,7 @@ static void putMatrix(const PRef& r, const float* m, bool transpose)
 		return;
 	}
 	uint32_t R = t->rows, C = t->cols, leaf = leafType(t);
+	r.p->ver = fxNextVer();
 	for (uint32_t row = 0; row < R; row++)
 		for (uint32_t col = 0; col < C; col++)
 		{
@@ -484,6 +500,7 @@ H("ID3DXEffect::SetValue")
 		}
 		uint32_t n = std::min(ARG(3) / 4, (uint32_t)r.p->val.size() - std::min<uint32_t>(r.off, (uint32_t)r.p->val.size()));
 		memcpy(r.p->val.data() + r.off, guest::host(ARG(2)), 4ull * n);
+		r.p->ver = fxNextVer();
 		if (ARG(3) == 64) noteViewProj(r.p->name, (const float*)guest::host(ARG(2)), "SetValue");
 		if (n) noteTime(c, r, guest::host(ARG(2)), "SetValue");
 	}
@@ -544,13 +561,22 @@ H("ID3DXEffect::SetVectorArray")
 	noteBad("SetVectorArray", ARG(1), r);
 	if (r.valid() && ARG(2))
 	{
-		uint32_t per = std::min(r.ty->scalars(), 4u), stride = r.ty->scalars();
-		for (uint32_t i = 0; i < ARG(3); i++)
+		uint32_t per = std::min(r.ty->scalars(), 4u), stride = r.ty->scalars(), cnt = ARG(3);
+		const uint8_t* src = (const uint8_t*)guest::host(ARG(2));
+		if (per == 4 && stride == 4 && leafType(r.ty) == 3)
 		{
-			PRef e = r;
-			e.off += i * stride;
-			writeVals(e, (const uint32_t*)guest::host(ARG(2) + 16 * i), per, 3);
+			// float4 array (bone matrices, light lists): one copy
+			size_t room = r.p->val.size() > r.off ? (r.p->val.size() - r.off) / 4 : 0;
+			memcpy(r.p->val.data() + r.off, src, 16 * std::min<size_t>(cnt, room));
+			r.p->ver = fxNextVer();
 		}
+		else
+			for (uint32_t i = 0; i < cnt; i++)
+			{
+				PRef e = r;
+				e.off += i * stride;
+				writeVals(e, (const uint32_t*)(src + 16 * i), per, 3);
+			}
 	}
 	SET(0);
 } END;
@@ -696,6 +722,9 @@ static std::string cstrAt(const FxInfo& fx, const FxRes& r)
 	return std::string(s, strnlen(s, r.size));
 }
 
+// which parameter version each float constant register holds (packConst); any other write clears the tag
+struct RegTag { const FxParam* p; uint32_t ver; uint32_t at; };
+RegTag gTagV[256], gTagP[224];
 static void packConst(const FxInfo& fx, const CtabConst& c, ShaderObj* sh, bool isVs, int k)
 {
 	if (k < 0) return;
@@ -719,7 +748,16 @@ static void packConst(const FxInfo& fx, const CtabConst& c, ShaderObj* sh, bool 
 	if (c.regSet == 2)
 	{
 		if (c.regIndex >= maxF) return;
-		fxrt::packToRegs(p.ty, p.val.data(), p.val.size(), 2, c.regIndex, (uint32_t*)fregs, std::min(maxF, c.regIndex + n));
+		uint32_t end = std::min(maxF, c.regIndex + n);
+		// registers that still hold this version of this parameter (packed at this place) are not repacked: most
+		// commits change a few parameters, and repacking all of them every time was the biggest cost of a draw
+		RegTag* tags = isVs ? gTagV : gTagP;
+		static const bool noSkip = access("/sdcard/ra3_nopackskip", F_OK) == 0;   // A/B check: repack every time
+		bool same = !fullPack && !noSkip;
+		for (uint32_t r = c.regIndex; same && r < end; r++) same = tags[r].p == &p && tags[r].ver == p.ver && tags[r].at == c.regIndex;
+		if (same) return;
+		fxrt::packToRegs(p.ty, p.val.data(), p.val.size(), 2, c.regIndex, (uint32_t*)fregs, end);
+		for (uint32_t r = c.regIndex; r < end; r++) tags[r] = {&p, p.ver, c.regIndex};
 	}
 	else if (c.regSet == 1)
 	{
@@ -962,7 +1000,8 @@ void fxApplyPass(Obj* o)
 			uint32_t maxF = stage == 0 ? 256 : 224;
 			if (okp)
 			{
-				for (auto& w : po.f) if (w.first < maxF * 4) fregs[w.first] = (float)w.second;
+				RegTag* tags = stage == 0 ? gTagV : gTagP;
+				for (auto& w : po.f) if (w.first < maxF * 4) { fregs[w.first] = (float)w.second; tags[w.first / 4] = {}; }
 				for (auto& w : po.b) if (w.first / 4 < 16) bregs[w.first / 4] = w.second != 0;
 			}
 			static int npl = 0;
@@ -1120,6 +1159,13 @@ H("ID3DXEffect::FindNextValidTechnique")
 H("ID3DXEffect::IsParameterUsed") { SET(1); } END;
 
 }   // anonymous
+// the application wrote float constant registers itself (SetVertex/PixelShaderConstantF, device reset)
+void fxRegsTouched(bool vs, uint32_t start, uint32_t count)
+{
+	RegTag* tags = vs ? gTagV : gTagP;
+	uint32_t maxF = vs ? 256 : 224;
+	for (uint32_t r = start; r < maxF && r - start < count; r++) tags[r] = {};
+}
 }   // namespace d3d
 
 namespace d3d

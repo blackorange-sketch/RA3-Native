@@ -139,8 +139,9 @@ static void setConstF(float* regs, uint32_t maxReg, uint32_t start, uint32_t src
 	for (uint32_t i = 0; i < count && start + i < maxReg; i++)
 		for (int k = 0; k < 4; k++) regs[(start + i) * 4 + k] = guest::load<float>(src + 16 * i + 4 * k);
 }
-H("IDirect3DDevice9::SetVertexShaderConstantF") { setConstF(dev.vsF, 256, ARG(1), ARG(2), ARG(3)); SET(0); } END;
-H("IDirect3DDevice9::SetPixelShaderConstantF") { setConstF(dev.psF, 224, ARG(1), ARG(2), ARG(3)); SET(0); } END;
+void fxRegsTouched(bool vs, uint32_t start, uint32_t count);
+H("IDirect3DDevice9::SetVertexShaderConstantF") { setConstF(dev.vsF, 256, ARG(1), ARG(2), ARG(3)); fxRegsTouched(true, ARG(1), ARG(3)); SET(0); } END;
+H("IDirect3DDevice9::SetPixelShaderConstantF") { setConstF(dev.psF, 224, ARG(1), ARG(2), ARG(3)); fxRegsTouched(false, ARG(1), ARG(3)); SET(0); } END;
 H("IDirect3DDevice9::SetVertexShaderConstantI") { for (uint32_t i = 0; i < ARG(3) && ARG(1) + i < 16; i++) for (int k = 0; k < 4; k++) dev.vsI[(ARG(1) + i) * 4 + k] = guest::load<int32_t>(ARG(2) + 16 * i + 4 * k); SET(0); } END;
 H("IDirect3DDevice9::SetPixelShaderConstantI") { for (uint32_t i = 0; i < ARG(3) && ARG(1) + i < 16; i++) for (int k = 0; k < 4; k++) dev.psI[(ARG(1) + i) * 4 + k] = guest::load<int32_t>(ARG(2) + 16 * i + 4 * k); SET(0); } END;
 H("IDirect3DDevice9::SetVertexShaderConstantB") { for (uint32_t i = 0; i < ARG(3) && ARG(1) + i < 16; i++) dev.vsB[ARG(1) + i] = guest::load<int32_t>(ARG(2) + 4 * i); SET(0); } END;
