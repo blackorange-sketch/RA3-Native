@@ -483,6 +483,7 @@ H("ID3DXEffect::SetValue")
 		}
 		uint32_t n = std::min(ARG(3) / 4, (uint32_t)r.p->val.size() - std::min<uint32_t>(r.off, (uint32_t)r.p->val.size()));
 		memcpy(r.p->val.data() + r.off, guest::host(ARG(2)), 4ull * n);
+		if (ARG(3) == 64) noteViewProj(r.p->name, (const float*)guest::host(ARG(2)), "SetValue");
 		if (n) noteTime(c, r, guest::host(ARG(2)), "SetValue");
 	}
 	SET(0);
@@ -552,6 +553,17 @@ H("ID3DXEffect::SetVectorArray")
 	}
 	SET(0);
 } END;
+// the camera's view-projection for "drag the map" (perspective, drawn into a screen-sized target)
+static void noteViewProj(const std::string& name, const float* m, const char* how)
+{
+	if (name.size() != 14 || name != "ViewProjection") return;
+	bool full = d3d::glr::targetIsBack(), persp = m[3] != 0.f || m[7] != 0.f || m[11] != 0.f;
+	static int nl = 0, np = 0;
+	if (nl++ < 3 || (persp && np++ < 4))
+		log("fx: ViewProjection %s (screen-sized target %d, perspective %d) [%g %g %g %g] [%g %g %g %g] [%g %g %g %g] [%g %g %g %g]", how, (int)full, (int)persp,
+			m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15]);
+	if (full && persp) input::setViewProj(m);
+}
 static void setMatrices(CPU* c, Obj* o, bool transpose, bool array, bool pointers)
 {
 	PRef r = refOfSet(o, ARG(1));
@@ -566,15 +578,7 @@ static void setMatrices(CPU* c, Obj* o, bool transpose, bool array, bool pointer
 			const float* m = pointers ? (const float*)guest::host(guest::load<uint32_t>(ARG(2) + 4 * i)) : (const float*)guest::host(ARG(2) + 64 * i);
 			putMatrix(e, m, transpose);
 			// the camera's view-projection for "drag the map" (perspective, drawn into the back buffer)
-			if (!transpose && !array && r.p->name.size() == 14 && r.p->name == "ViewProjection")
-			{
-				bool full = d3d::glr::targetIsBack(), persp = m[3] != 0.f || m[7] != 0.f || m[11] != 0.f;
-				static int nl = 0, np = 0;
-				if (nl++ < 4 || (persp && np++ < 4))
-					log("fx: ViewProjection set (screen-sized target %d, perspective %d) [%g %g %g %g] [%g %g %g %g] [%g %g %g %g] [%g %g %g %g]", (int)full, (int)persp,
-						m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15]);
-				if (full && persp) input::setViewProj(m);
-			}
+			if (!transpose && !array) noteViewProj(r.p->name, m, "SetMatrix");
 			if (verbose() && r.p->name == "ViewProjection")
 			{
 				static int total = 0, nonzero = 0, shown = 0;
