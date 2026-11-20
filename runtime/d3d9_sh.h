@@ -37,6 +37,8 @@ struct ShaderInfo
 	bool usesFragCoord = false, usesFace = false, writesDepth = false;
 	int numC = 0;
 	bool relC = false;                   // reads float constants through a0 (relative addressing)
+	int numCDirect = 0;                  // highest register named directly (+1), also the base of relative reads
+	int relN = 0;                        // relC: registers reachable (constant table ranges, defs, direct uses); 0 not yet known
 	std::vector<std::pair<int, std::array<float, 4>>> defF;   // constants the shader defines itself (def c#)
 	std::vector<uint8_t> pres;           // embedded pre-shader ('PRES' comment), run before draws by the effect runtime
 	int psOutputs = 0;                   // PS: bitmask of oC registers written
@@ -155,6 +157,7 @@ struct Translator
 		{
 			if (!r.rel && defC.count(r.num)) { snprintf(b, sizeof b, "d%d", r.num); return b; }
 			si.numC = std::max(si.numC, r.num + 1);
+			si.numCDirect = std::max(si.numCDirect, r.num + 1);
 			if (r.rel) { si.numC = 256; si.relC = true; }
 			if (r.rel) snprintf(b, sizeof b, "%sc[%d + int(a0.%s)]", si.isVs ? "v" : "p", r.num, compName(r.relComp).c_str());
 			else snprintf(b, sizeof b, "%sc[%d]", si.isVs ? "v" : "p", r.num);
