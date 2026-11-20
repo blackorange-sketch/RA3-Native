@@ -1564,17 +1564,23 @@ static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, 
 		return std::max(1.f, std::min(gUiScale, 1.f / (gUiRightT + 1.f - gUiRightB) * 0.99f));
 	};
 	// only pieces of the column itself (not the command bar that opens to the left of the unit panel)
+	// The HUD panels keep their size relative to the screen HEIGHT: zone limits are written as shares of a 16:9 width
+	// measured from their own edge, so on a wider picture (wide screen mode) they stay at the panels instead of
+	// spreading over the battle (a tooltip left of the right column fell into the column's zone and was split)
+	const float W16 = std::min((float)W, H * 16.f / 9.f);
+	auto fromL = [&](float f) { return (float)vx + f * W16; };
+	auto fromR = [&](float f) { return (float)vx + W - (1.f - f) * W16; };
 	auto noteRight = [&](int c, float a0, float b0, float a1, float b1) {
-		if (a0 < vx + 0.75f * W) return;
+		if (a0 < fromR(0.75f)) return;
 		if (c == 2) gUiCurT = std::max(gUiCurT, (b1 - vy) / H);
-		if (c == 4 && a1 >= vx + 0.97f * W) gUiCurB = std::min(gUiCurB, (b0 - vy) / H);
+		if (c == 4 && a1 >= fromR(0.97f)) gUiCurB = std::min(gUiCurB, (b0 - vy) / H);
 	};
 	// corner of a rectangle: 0 none, else 1 + (right) + 2 * (bottom)
 	// corner zones; on the right the minimap column with the open build menu reaches two thirds down the screen
 	auto corner = [&](float a0, float b0, float a1, float b1) -> int {
 		// the unit panel's command bar opens to the left along the bottom edge
-		if (a0 >= vx + 0.50f * W && b0 >= vy + 0.86f * H) return 4;
-		bool l = a1 <= vx + 0.40f * W, r = a0 >= vx + 0.75f * W;
+		if (a0 >= fromR(0.50f) && b0 >= vy + 0.86f * H) return 4;
+		bool l = a1 <= fromL(0.40f), r = a0 >= fromR(0.75f);
 		if (!(l || r)) return 0;
 		// left: the special powers column under the portrait grows downwards with every new power (it used to fall
 		// out of the top-left zone from the fourth button on)
@@ -1587,11 +1593,11 @@ static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, 
 	int c = corner(x0, y0, x1, y1);
 	// a tooltip or popup that ends at the left edge of the right column belongs to it (it is anchored there);
 	// tooltips of the lower build rows reach well below the middle of the screen
-	bool attached = !c && gUiColLeft < 1e8f && x1 >= gUiColLeft - 0.04f * W && x0 < gUiColLeft && x1 <= gUiColLeft + 0.20f * W && y1 <= vy + 0.90f * H;
+	bool attached = !c && gUiColLeft < 1e8f && x1 >= gUiColLeft - 0.04f * W16 && x0 < gUiColLeft && x1 <= gUiColLeft + 0.20f * W16 && y1 <= vy + 0.90f * H;
 	if (attached) c = 2;
 	// a tooltip of the unit panel / command bar opens above it and reaches down onto it: it moves with that panel
 	// (otherwise its texts, lying on the scaled command bar, moved while the box stayed)
-	bool attachedLow = !c && x0 >= vx + 0.50f * W && y0 >= vy + 0.60f * H && y1 >= vy + 0.88f * H;
+	bool attachedLow = !c && x0 >= fromR(0.50f) && y0 >= vy + 0.60f * H && y1 >= vy + 0.88f * H;
 	if (attachedLow) { c = 4; attached = true; }
 	if (c == 2 && !attached) gUiCurColLeft = std::min(gUiCurColLeft, x0);
 	// unit markers, health bars and names come first in a frame: only what follows the first big corner panel is HUD
@@ -1614,7 +1620,7 @@ static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, 
 		float s = scaleOf(c);
 		addRect(x0, y0, x1, y1, ax, ay, s);
 		// a tooltip's text can start left of its box: texts get a wider catch area to the left of attached popups
-		if (gUiPieces.size() < 2000) gUiPieces.push_back({attached ? x0 - 0.15f * W : x0, y0, x1, y1, ax, ay, s});
+		if (gUiPieces.size() < 2000) gUiPieces.push_back({attached ? x0 - 0.15f * W16 : x0, y0, x1, y1, ax, ay, s});
 		axN = (c - 1) & 1 ? 1.f : -1.f; ayN = (c - 1) & 2 ? -1.f : 1.f;
 		return s - 1.f;
 	}
