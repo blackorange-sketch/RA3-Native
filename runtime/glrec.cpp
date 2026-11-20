@@ -8,6 +8,7 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
+void profThread(uint32_t guestTid);   // prof.cpp
 namespace d3d
 {
 namespace rec
@@ -176,6 +177,7 @@ void start(void (*threadInit)())
 		setpriority(PRIO_PROCESS, 0, -10);
 		gRenderTid = (int)syscall(SYS_gettid);
 		rt::log("GL: render thread tid %d", gRenderTid.load());
+		::profThread(1);   // sampled with /sdcard/ra3_prof (prof.cpp: tag 1 is the render thread)
 		threadInit();
 		renderLoop();
 	}).detach();

@@ -35,7 +35,10 @@ std::atomic<uint32_t> head{0};
 // other game threads (worker threads): pc + guest thread id, reported separately
 constexpr uint32_t N2 = 1u << 16;
 uintptr_t samples2[N2];
+uintptr_t ours2[N2];              // render thread: first return address inside libra3native.so (who called the driver)
 uint32_t tags2[N2];
+constexpr uint32_t kRenderTag = 1;   // the GL render thread (glrec.cpp)
+uintptr_t rStackLo = 0, rStackHi = 0, soLo = 0, soHi = 0;
 std::atomic<uint32_t> head2{0};
 bool gEnabled = false;
 
@@ -46,7 +49,23 @@ void onProf(int, siginfo_t* si, void* uctx)
 	if (int tag = si ? si->si_value.sival_int : 0)
 	{
 		uint32_t j = head2.fetch_add(1, std::memory_order_relaxed);
-		samples2[j & (N2 - 1)] = (uintptr_t)uc->uc_mcontext.pc;
+		uintptr_t pc = (uintptr_t)uc->uc_mcontext.pc, our = 0;
+		if ((uint32_t)tag == kRenderTag && !(pc >= soLo && pc < soHi))
+		{
+			// in the GL driver or libc: walk the frame records up to our own code
+			uintptr_t lr = (uintptr_t)uc->uc_mcontext.regs[30];
+			if (lr >= soLo && lr < soHi) our = lr;
+			uintptr_t fp = (uintptr_t)uc->uc_mcontext.regs[29];
+			for (int k = 0; k < 12 && !our; k++)
+			{
+				if (!(fp >= rStackLo && fp + 16 <= rStackHi) || (fp & 7)) break;
+				uintptr_t ra = ((uintptr_t*)fp)[1], next = ((uintptr_t*)fp)[0];
+				if (ra >= soLo && ra < soHi) our = ra;
+				fp = next > fp ? next : 0;
+			}
+		}
+		samples2[j & (N2 - 1)] = pc;
+		ours2[j & (N2 - 1)] = our;
 		tags2[j & (N2 - 1)] = (uint32_t)tag;
 		return;
 	}
@@ -208,11 +227,36 @@ void reporter()
 			if (n2 > N2) { tail2 = h2 - N2; n2 = N2; }
 			std::map<uint32_t, std::unordered_map<std::string, uint32_t>> per;
 			std::map<uint32_t, uint32_t> cnt;
+			std::unordered_map<uintptr_t, uint32_t> rOwn, rCaller;   // render thread: own code / our callers of the driver
 			for (uint32_t i = tail2; i != h2; i++)
 			{
 				uint32_t j = i & (N2 - 1);
 				per[tags2[j]][nameOf(samples2[j], cache)]++;
 				cnt[tags2[j]]++;
+				if (tags2[j] == kRenderTag)
+				{
+					if (samples2[j] >= soLo && samples2[j] < soHi) rOwn[samples2[j] - soLo]++;
+					else if (ours2[j]) rCaller[ours2[j] - soLo]++;
+				}
+			}
+			auto dumpOff = [](const char* what, std::unordered_map<uintptr_t, uint32_t>& m) {
+				std::vector<std::pair<uint32_t, uintptr_t>> v;
+				for (auto& kv : m) v.push_back({kv.second, kv.first});
+				std::sort(v.rbegin(), v.rend());
+				std::string line;
+				for (size_t i = 0; i < v.size() && i < 96; i++)
+				{
+					char b[40]; snprintf(b, sizeof b, " %zx:%u", (size_t)v[i].second, v[i].first);
+					line += b;
+					if ((i + 1) % 12 == 0) { rt::log("prof %s:%s", what, line.c_str()); line.clear(); }
+				}
+				if (!line.empty()) rt::log("prof %s:%s", what, line.c_str());
+			};
+			if (cnt.count(kRenderTag))
+			{
+				rt::log("prof render thread: %u samples, %zu in own code offsets, %zu driver/libc samples traced to callers", cnt[kRenderTag], rOwn.size(), rCaller.size());
+				dumpOff("render raw", rOwn);
+				dumpOff("render driver from", rCaller);
 			}
 			tail2 = h2;
 			Dl_info me{};
@@ -250,6 +294,23 @@ bool enabledNow()
 void startWorker(uint32_t tag)
 {
 	if (!enabledNow()) return;
+	if (tag == kRenderTag)
+	{
+		pthread_attr_t at;
+		if (pthread_getattr_np(pthread_self(), &at) == 0)
+		{
+			void* lo = nullptr; size_t sz = 0;
+			pthread_attr_getstack(&at, &lo, &sz);
+			rStackLo = (uintptr_t)lo; rStackHi = rStackLo + sz;
+			pthread_attr_destroy(&at);
+		}
+		Dl_info me{};
+		if (dladdr((void*)&startWorker, &me) && me.dli_fbase)
+		{
+			soLo = (uintptr_t)me.dli_fbase;
+			soHi = soLo + 0x10000000;   // text, rodata, data of the library (offsets are checked against the symbol list)
+		}
+	}
 	sigevent ev{};
 	ev.sigev_notify = SIGEV_THREAD_ID;
 	ev.sigev_signo = SIGPROF;
