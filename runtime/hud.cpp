@@ -14,7 +14,7 @@ namespace
 {
 const char* kCfg = "/sdcard/ra3_buttons.cfg";
 
-struct Btn { std::string label; int vk; bool ctrl; int side; };   // side 0 = left, 1 = right
+struct Btn { std::string label; int vk; bool ctrl; int side; float fx = -1.f, fy = -1.f; };   // side 0 = left, 1 = right; fx, fy: moved by hand (centre, share of the screen)
 struct R { int x, y, w, h; };
 
 std::mutex mu;
@@ -26,6 +26,9 @@ int addSide = 0;
 int page = 0;
 int pressed = -1, pressedPtr = -1;   // index of the held custom button, and the pointer index that holds it
 int flash = 0;                       // frames of "added" feedback
+float kbFX = -1.f, kbFY = -1.f, edFX = -1.f, edFY = -1.f;   // keyboard and EDIT buttons moved by hand (-1: default place)
+// the editor: a button held and dragged to a new place (-1 none, -2 keyboard, -3 EDIT, else the custom button)
+int dragWhat = -1; bool dragMoved = false; float grabDX = 0, grabDY = 0, downX = 0, downY = 0;
 // Shift / Ctrl / Alt buttons latch: a tap holds the key down (button lit) until the next tap on it, so it can be
 // combined with taps on the map (Shift = queue waypoints, Ctrl = force fire, Alt = formation / reverse move)
 bool latched[3];
@@ -106,6 +109,12 @@ int unit() { return baseUnit() * rt::config.buttonSize / 100; }   // buttons (la
 // Wide screen: one horizontal row centred at the top (keyboard, EDIT, then the buttons), between the game's top-left
 // panel and the minimap; otherwise columns at the screen edges.
 bool topRow() { return rt::config.wideScreen; }
+R placed(float fx, float fy, int w, int h)
+{
+	int x = (int)(fx * scrW) - w / 2, y = (int)(fy * scrH) - h / 2;
+	return {std::max(0, std::min(scrW - w, x)), std::max(0, std::min(scrH - h, y)), w, h};
+}
+int autoCount() { int n = 0; for (auto& b : btns) if (b.fx < 0) n++; return n; }
 R slotRect(int slot, int nslots)
 {
 	int u = unit(); int w = u * 3 / 2, h = u * 3 / 4, gap = u / 6;
@@ -114,26 +123,37 @@ R slotRect(int slot, int nslots)
 }
 R editRect()
 {
-	if (topRow()) return slotRect(1, 2 + (int)btns.size());
-	int u = unit(); int h = u * 3 / 4; return {u / 3, u / 3 + u + u / 4, u * 3 / 2, h};
+	int u = unit(); int h = u * 3 / 4;
+	if (edFX >= 0) return placed(edFX, edFY, u * 3 / 2, h);
+	if (topRow()) return slotRect(1, 2 + autoCount());
+	return {u / 3, u / 3 + u + u / 4, u * 3 / 2, h};
 }
 R btnRect(int side, int index)
 {
-	if (topRow()) return slotRect(2 + index, 2 + std::max((int)btns.size(), index + 1));   // index: position in the row
+	if (topRow()) return slotRect(2 + index, 2 + std::max(autoCount(), index + 1));   // index: position in the row
 	int u = unit(); int w = u * 3 / 2, h = u * 3 / 4, gap = u / 6;
 	if (side == 0) return {u / 3, editRect().y + (index + 1) * (h + gap), w, h};
 	return {scrW - u / 3 - w, u / 3 + index * (h + gap), w, h};
 }
 bool fits(const R& r) { if (topRow()) return r.x >= scrW * 18 / 100 && r.x + r.w <= scrW * 80 / 100; return r.y + r.h <= scrH - unit() / 4; }
+R kbR()
+{
+	int u = unit();
+	if (kbFX >= 0) return placed(kbFX, kbFY, u * 3 / 2, topRow() ? u * 3 / 4 : u);
+	if (topRow()) return slotRect(0, 2 + autoCount());
+	return {u / 3, u / 3, u * 3 / 2, u};
+}
 int countSide(int side) { int n = 0; for (auto& b : btns) if (b.side == side) n++; return n; }
 // index of the button within its side, for layout
 std::vector<std::pair<int, R>> layout()
 {
 	std::vector<std::pair<int, R>> v;
 	int cnt[2] = {0, 0};
+	int u = unit(), n = 0;
 	for (size_t i = 0; i < btns.size(); i++)
 	{
-		R r = topRow() ? btnRect(0, (int)i) : btnRect(btns[i].side, cnt[btns[i].side]++);
+		if (btns[i].fx >= 0) { v.push_back({(int)i, placed(btns[i].fx, btns[i].fy, u * 3 / 2, u * 3 / 4)}); continue; }
+		R r = topRow() ? btnRect(0, n++) : btnRect(btns[i].side, cnt[btns[i].side]++);
 		if (fits(r)) v.push_back({(int)i, r});
 	}
 	return v;
@@ -153,7 +173,8 @@ void save()
 {
 	FILE* f = fopen(kCfg, "w");
 	if (!f) { rt::log("hud: cannot write %s", kCfg); return; }
-	for (auto& b : btns) fprintf(f, "%c %d %d %s\n", b.side ? 'R' : 'L', b.vk, b.ctrl ? 1 : 0, b.label.c_str());
+	for (auto& b : btns) fprintf(f, "%c %d %d %s %.4f %.4f\n", b.side ? 'R' : 'L', b.vk, b.ctrl ? 1 : 0, b.label.c_str(), b.fx, b.fy);
+	fprintf(f, "K 0 0 KB %.4f %.4f\nE 0 0 EDIT %.4f %.4f\n", kbFX, kbFY, edFX, edFY);
 	fclose(f);
 }
 void load()
@@ -162,8 +183,19 @@ void load()
 	loaded = true;
 	FILE* f = fopen(kCfg, "r");
 	if (!f) return;
-	char side, lab[32]; int vk, ctrl;
-	while (fscanf(f, " %c %d %d %31s", &side, &vk, &ctrl, lab) == 4) btns.push_back({lab, vk, ctrl != 0, side == 'R' ? 1 : 0});
+	char line[160];
+	while (fgets(line, sizeof line, f))
+	{
+		// "L|R vk ctrl label [fx fy]"; "K"/"E": where the keyboard / EDIT buttons were moved
+		char side, lab[32]; int vk, ctrl; float fx = -1.f, fy = -1.f;
+		int n = sscanf(line, " %c %d %d %31s %f %f", &side, &vk, &ctrl, lab, &fx, &fy);
+		if (n < 4) continue;
+		if (n < 6) fx = fy = -1.f;
+		if (side == 'K') { kbFX = fx; kbFY = fy; continue; }
+		if (side == 'E') { edFX = fx; edFY = fy; continue; }
+		Btn b{lab, vk, ctrl != 0, side == 'R' ? 1 : 0}; b.fx = fx; b.fy = fy;
+		btns.push_back(b);
+	}
 	fclose(f);
 	rt::log("hud: %zu custom buttons loaded", btns.size());
 }
@@ -177,10 +209,9 @@ int buttonUnit() { return unit(); }
 bool mouseMode(int b) { std::lock_guard<std::mutex> g(mu); return b >= 0 && b < 2 && mouseLatched[b]; }
 bool kbRect(int& x, int& y, int& w, int& h)
 {
-	if (!topRow()) return false;
 	std::lock_guard<std::mutex> g(mu);
-	if (btns.empty()) load();
-	R r = slotRect(0, 2 + (int)btns.size());
+	load();
+	R r = kbR();
 	x = r.x; y = r.y; w = r.w; h = r.h;
 	return true;
 }
@@ -191,7 +222,7 @@ void reserves(int sw, int sh, int& left, int& right)
 	if (rt::config.wideScreen) { left = right = 0; (void)sw; return; }   // wide: the picture fills the screen, buttons on top
 	int u = std::max(40, sh / 15), col = u / 3 + u * 3 / 2 + u / 4;
 	bool r = false;
-	for (auto& b : btns) if (b.side) r = true;
+	for (auto& b : btns) if (b.side && b.fx < 0) r = true;
 	left = col;   // the keyboard button is always on the left
 	right = r ? col : 0;
 	(void)sw;
@@ -214,11 +245,38 @@ bool onTouch(int action, int idx, int count, const float* xs, const float* ys, s
 	}
 	if (editing)
 	{
+		// moving a button: hold it and drag (a tap on its red corner removes it, a tap on DONE closes the editor)
+		if (dragWhat != -1)
+		{
+			float mx = xs[0], my = ys[0];
+			if (action == 2 /* MOVE */)
+			{
+				if (fabsf(mx - downX) + fabsf(my - downY) > unit() / 4) dragMoved = true;
+				if (dragMoved)
+				{
+					float fx = (mx - grabDX) / scrW, fy = (my - grabDY) / scrH;
+					fx = std::max(0.f, std::min(1.f, fx)); fy = std::max(0.f, std::min(1.f, fy));
+					if (dragWhat == -2) { kbFX = fx; kbFY = fy; }
+					else if (dragWhat == -3) { edFX = fx; edFY = fy; }
+					else if (dragWhat >= 0 && dragWhat < (int)btns.size()) { btns[dragWhat].fx = fx; btns[dragWhat].fy = fy; }
+				}
+				return true;
+			}
+			if (isUp)
+			{
+				bool closeEditor = dragWhat == -3 && !dragMoved;
+				dragWhat = -1;
+				if (closeEditor) { editing = false; save(); }
+				return true;
+			}
+			return true;
+		}
 		if (!isDown) return true;   // the editor swallows everything
 		R p = panelRect();
-		// header: side / page / done
-		if (inside(cellRect(0, 0, 3), x, y)) { addSide ^= 1; return true; }
-		if (inside(cellRect(3, 0, 3), x, y)) { page = (page + 1) % (int)pages.size(); return true; }
+		// header: side / page / reset places / done
+		if (inside(cellRect(0, 0, 2), x, y)) { addSide ^= 1; return true; }
+		if (inside(cellRect(2, 0, 2), x, y)) { page = (page + 1) % (int)pages.size(); return true; }
+		if (inside(cellRect(4, 0, 2), x, y)) { kbFX = kbFY = edFX = edFY = -1.f; for (auto& b : btns) b.fx = b.fy = -1.f; return true; }
 		if (inside(cellRect(6, 0, 3), x, y)) { editing = false; save(); return true; }
 		if (inside(p, x, y))
 		{
@@ -226,15 +284,30 @@ bool onTouch(int action, int idx, int count, const float* xs, const float* ys, s
 			for (size_t i = 0; i < pg.size(); i++)
 			{
 				if (!inside(cellRect((int)i % kCols, 1 + (int)i / kCols), x, y)) continue;
-				R slot = topRow() ? slotRect(2 + (int)btns.size(), 3 + (int)btns.size()) : btnRect(addSide, countSide(addSide));
+				R slot = topRow() ? slotRect(2 + autoCount(), 3 + autoCount()) : btnRect(addSide, countSide(addSide));
 				if (fits(slot)) { btns.push_back({pg[i].label, pg[i].vk, pg[i].ctrl, addSide}); flash = 10; }
+				else
+				{
+					// no room in the default places: the new button goes to the middle of the screen, to be dragged
+					Btn b{pg[i].label, pg[i].vk, pg[i].ctrl, addSide}; b.fx = 0.5f; b.fy = 0.2f; btns.push_back(b); flash = 10;
+				}
 				return true;
 			}
 			return true;
 		}
-		for (auto& e : layout())
-			if (inside(e.second, x, y)) { btns.erase(btns.begin() + e.first); return true; }
-		if (inside(editRect(), x, y)) { editing = false; save(); }
+		auto grab = [&](int what, const R& r) { dragWhat = what; dragMoved = false; downX = x; downY = y; grabDX = x - (r.x + r.w / 2.f); grabDY = y - (r.y + r.h / 2.f); };
+		auto lay = layout();
+		for (auto it = lay.rbegin(); it != lay.rend(); ++it)
+		{
+			const R& r = it->second;
+			if (!inside(r, x, y)) continue;
+			int sq = r.h / 2;
+			if (x >= r.x + r.w - sq && y < r.y + sq) { btns.erase(btns.begin() + it->first); return true; }   // the red corner
+			grab(it->first, r);
+			return true;
+		}
+		if (inside(kbR(), x, y)) { grab(-2, kbR()); return true; }
+		if (inside(editRect(), x, y)) { grab(-3, editRect()); return true; }
 		return true;
 	}
 	if (isDown)
@@ -290,7 +363,7 @@ void draw(const DrawRect& rect)
 		text(rect, b.label, {r.x + 2, r.y + 2, r.w - 4, r.h - 4}, 0.95f, 0.95f, 0.97f);
 		if (editing)
 		{
-			int s = r.h / 3;
+			int s = r.h * 2 / 5;
 			rect(r.x + r.w - s, r.y, s, s, 0.85f, 0.15f, 0.15f);
 			text(rect, "X", {r.x + r.w - s, r.y, s, s}, 1.f, 1.f, 1.f);
 		}
@@ -300,11 +373,13 @@ void draw(const DrawRect& rect)
 		R p = panelRect();
 		rect(p.x, p.y, p.w, p.h, 0.7f, 0.7f, 0.75f);
 		rect(p.x + 3, p.y + 3, p.w - 6, p.h - 6, 0.06f, 0.06f, 0.08f);
-		R a = cellRect(0, 0, 3), b = cellRect(3, 0, 3), d = cellRect(6, 0, 3);
+		R a = cellRect(0, 0, 2), b = cellRect(2, 0, 2), rs = cellRect(4, 0, 2), d = cellRect(6, 0, 3);
 		rect(a.x, a.y, a.w, a.h, addSide ? 0.25f : 0.2f, addSide ? 0.45f : 0.6f, addSide ? 0.9f : 0.3f);
 		text(rect, addSide ? "RIGHT" : "LEFT", a, 1.f, 1.f, 1.f);
 		rect(b.x, b.y, b.w, b.h, 0.35f, 0.35f, 0.4f);
 		text(rect, page == 0 ? "KEYS 1" : "KEYS 2", b, 1.f, 1.f, 1.f);
+		rect(rs.x, rs.y, rs.w, rs.h, 0.45f, 0.2f, 0.2f);
+		text(rect, "RESET", rs, 1.f, 1.f, 1.f);   // every button back to its default place
 		rect(d.x, d.y, d.w, d.h, 0.8f, 0.55f, 0.1f);
 		text(rect, "DONE", d, 1.f, 1.f, 1.f);
 		auto& pg = pages[page];

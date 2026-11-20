@@ -88,7 +88,7 @@ A game on a USB drive must stay connected while you play, and maps load more slo
 | Minimap: long press | Send the selected units there |
 | ⌨ button | Show or hide the Android keyboard (player names, chat, save names) |
 | `D` `ENT` `ESC` `SPC` | Default hotkey buttons: special ability, chat, menu, jump to event |
-| `EDIT` | Set up the hotkey buttons: add any key (numbers, F1–F12, Ctrl groups `C1`…`C0`, Shift / Ctrl / Alt, `LMB` / `RMB` mouse modes), remove one with its ✕, choose the left or right side; `DONE` saves |
+| `EDIT` | Set up the hotkey buttons: add any key (numbers, F1–F12, Ctrl groups `C1`…`C0`, Shift / Ctrl / Alt, `LMB` / `RMB` mouse modes), remove one with its ✕, drag any button (also ⌨ and `EDIT`) to another place, `RESET` puts them all back, choose the left or right side for new ones; `DONE` saves |
 
 The buttons are see-through so the map shows behind them. With *Wide screen* on they sit in one row at the top centre. Shift, Ctrl and Alt buttons toggle: tap once to hold the key (the button lights up), tap again to release it. `RMB` lit: a tap is a right click (a long press a left click). `LMB` lit: a drag draws a selection box at once, without holding first.
 
