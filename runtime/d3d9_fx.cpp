@@ -131,8 +131,8 @@ PRef refOf(Obj* o, uint32_t h)
 	// handle -> reference, cached per thread: the records and type tables are several dependent loads that missed
 	// the cache on every parameter write (thousands per frame)
 	struct RefCache { FxInfo* fx; uint32_t h; PRef r; };
-	static thread_local RefCache cache[256];
-	RefCache& ce = cache[(h >> 2) & 255];
+	static thread_local RefCache cache[2048];   // handles are numbered in order: 256 entries thrashed between effects
+	RefCache& ce = cache[(h >> 2) & 2047];
 	if (ce.h == h && ce.fx == fx && ce.r.p >= fx->params.data() && ce.r.p < fx->params.data() + fx->params.size()) return ce.r;
 	if (const HRec* rc = getRec(h))
 	{
@@ -812,6 +812,19 @@ static int resOf(FxInfo& fx, uint32_t tech, uint32_t pass, uint32_t si)
 }
 // Shader chosen from an array by a pre-shader: the pick only changes when the pre-shader's inputs do, so the
 // inputs are compared with the last ones instead of re-resolving (names, std::function, interpreter) per pass.
+// versions of the parameters a pre-shader reads
+static bool verSame(const FxInfo& fx, const std::vector<int>& pidx, const std::vector<uint32_t>& vers)
+{
+	if (vers.size() != pidx.size()) return false;
+	for (size_t i = 0; i < pidx.size(); i++)
+		if (pidx[i] >= 0 && fx.params[pidx[i]].ver != vers[i]) return false;
+	return true;
+}
+static void verTake(const FxInfo& fx, const std::vector<int>& pidx, std::vector<uint32_t>& vers)
+{
+	vers.resize(pidx.size());
+	for (size_t i = 0; i < pidx.size(); i++) vers[i] = pidx[i] >= 0 ? fx.params[pidx[i]].ver : 0;
+}
 static bool dynPick(FxInfo& fx, uint64_t key, uint32_t tech, uint32_t pass, uint32_t si, ShaderObj*& out)
 {
 	FxInfo::DynSel& ds = fx.dynSel[key];
@@ -833,6 +846,9 @@ static bool dynPick(FxInfo& fx, uint64_t key, uint32_t tech, uint32_t pass, uint
 		for (auto& c : prog0->ctab) ds.pidx.push_back(fxrt::findParam(fx, c.name));
 	}
 	const fxrt::PresProg& prog = *(const fxrt::PresProg*)ds.pp;
+	// none of the input parameters written since the last pick: same pick (versions are unique per write)
+	if (ds.valid && verSame(fx, ds.pidx, ds.inVer)) { out = (ShaderObj*)ds.sh; return true; }
+	verTake(fx, ds.pidx, ds.inVer);
 	static thread_local std::vector<double> in;
 	static thread_local std::vector<uint32_t> regs;
 	in.assign(prog.nIn, 0.0);
@@ -898,10 +914,16 @@ static void applyShaderState(FxInfo& fx, const FxPass& ps, uint32_t tech, uint32
 		const FxRes& r = fx.res[ri];
 		if (r.usage == 1)
 		{
-			std::string path = cstrAt(fx, r);
-			PRef ref;
-			if (resolvePath(&fx, PRef(), path, ref) && ref.off < ref.p->val.size())
-				value = toLeaf(st.typeType, ref.ty->type, ref.p->val[ref.off]);
+			// the path is parsed once per state (it was a string build and parse on every pass)
+			if (!st.refDone)
+			{
+				st.refDone = true;
+				PRef ref;
+				if (resolvePath(&fx, PRef(), cstrAt(fx, r), ref) && ref.p >= fx.params.data() && ref.p < fx.params.data() + fx.params.size())
+				{ st.refP = (int)(ref.p - fx.params.data()); st.refOff = ref.off; st.refType = ref.ty->type; }
+			}
+			if (st.refP >= 0 && st.refOff < fx.params[st.refP].val.size())
+				value = toLeaf(st.typeType, st.refType, fx.params[st.refP].val[st.refOff]);
 		}
 	}
 	switch (info.cls)
@@ -937,14 +959,19 @@ void fxApplyPass(Obj* o)
 	{
 		ShaderObj* sh = stage == 0 ? dev.vs : dev.ps;
 		if (!sh || !sh->ok) continue;
-		auto ci = fx->ctabIdx.find(sh);
-		if (ci == fx->ctabIdx.end())
+		if (fx->lastSh[stage] != sh)
 		{
-			std::vector<int> v;
-			for (auto& c : sh->info.ctab) v.push_back(fxrt::findParam(*fx, c.name));
-			ci = fx->ctabIdx.emplace(sh, std::move(v)).first;
+			auto ci = fx->ctabIdx.find(sh);
+			if (ci == fx->ctabIdx.end())
+			{
+				std::vector<int> v;
+				for (auto& c : sh->info.ctab) v.push_back(fxrt::findParam(*fx, c.name));
+				ci = fx->ctabIdx.emplace(sh, std::move(v)).first;
+			}
+			fx->lastSh[stage] = sh; fx->lastIdx[stage] = &ci->second;   // map nodes keep their address
+			fx->lastPres[stage] = sh->info.pres.empty() ? nullptr : &fx->presCache[sh];
 		}
-		const std::vector<int>& pidx = ci->second;
+		const std::vector<int>& pidx = *fx->lastIdx[stage];
 		for (size_t cn = 0; cn < sh->info.ctab.size(); cn++)
 		{
 			const CtabConst& c = sh->info.ctab[cn];
@@ -979,7 +1006,7 @@ void fxApplyPass(Obj* o)
 			// shader reads but its own constant table does not list
 			// inputs are packed from the effect parameters (indices cached per shader); when they equal the last
 			// ones the outputs are reused: most draws of a frame see the same time and atlas values
-			FxInfo::PresCache& pc = fx->presCache[sh];
+			FxInfo::PresCache& pc = *fx->lastPres[stage];
 			if (pc.blob != sh->info.pres.data())   // parsed program looked up once per shader (presProg hashes the blob)
 			{
 				const fxrt::PresProg& prog0 = fxrt::presProg(sh->info.pres.data(), sh->info.pres.size());
@@ -989,8 +1016,11 @@ void fxApplyPass(Obj* o)
 			const fxrt::PresProg& prog = *(const fxrt::PresProg*)pc.pp;
 			static thread_local std::vector<double> in;
 			static thread_local std::vector<uint32_t> regs;
-			in.assign(prog.nIn, 0.0);
-			for (size_t ci2 = 0; ci2 < prog.ctab.size(); ci2++)
+			// inputs unchanged since the last run (no parameter it reads was written): outputs are still valid
+			bool same = pc.valid && !::rt::gFps60 && verSame(*fx, pc.pidx, pc.inVer);
+			if (!same) verTake(*fx, pc.pidx, pc.inVer);
+			if (!same) in.assign(prog.nIn, 0.0);
+			for (size_t ci2 = 0; !same && ci2 < prog.ctab.size(); ci2++)
 			{
 				const CtabConst& c = prog.ctab[ci2];
 				size_t nd = 4 * std::max(1u, c.regCount);
@@ -1013,7 +1043,7 @@ void fxApplyPass(Obj* o)
 					if (fx->gpuParticle == 1 && cap > 30 && cap <= 240) dst[0] *= cap / 30.0;
 				}
 			}
-			if (!pc.valid || pc.in != in)
+			if (!same && (!pc.valid || pc.in != in))
 			{
 				fxrt::PresOut out;
 				pc.ok = fxrt::execPreshader(prog, in, out);

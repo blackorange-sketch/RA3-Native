@@ -622,6 +622,13 @@ struct Prog
 	GLint bgraShadow = -1;
 };
 // Uploads registers [0, n) of `src` to a vec4 uniform array, sending only the range that differs from `shadow`.
+// one register: two 64-bit compares inline (a libc memcmp call per register was a large part of the draw cost)
+static inline bool eq16(const float* a, const float* b)
+{
+	uint64_t x[2], y[2];
+	memcpy(x, a, 16); memcpy(y, b, 16);
+	return ((x[0] ^ y[0]) | (x[1] ^ y[1])) == 0;
+}
 static void uploadVec4Range(GLint base, std::vector<GLint>& locs, std::vector<float>& shadow, const float* src, int n, GLuint prog, const char* name, bool valid)
 {
 	if (base < 0 || n <= 0) return;
@@ -629,9 +636,10 @@ static void uploadVec4Range(GLint base, std::vector<GLint>& locs, std::vector<fl
 	int lo = 0, hi = n - 1;
 	if (valid)
 	{
-		while (lo < n && memcmp(&shadow[lo * 4], src + lo * 4, 16) == 0) lo++;
+		const float* sh = shadow.data();
+		while (lo < n && eq16(sh + lo * 4, src + lo * 4)) lo++;
 		if (lo == n) return;
-		while (hi > lo && memcmp(&shadow[hi * 4], src + hi * 4, 16) == 0) hi--;
+		while (hi > lo && eq16(sh + hi * 4, src + hi * 4)) hi--;
 	}
 	if (lo > 0)
 	{

@@ -59,7 +59,15 @@ struct FxParam
 	void* shareGroup = nullptr;   // shared (effect pool) parameters: the group of same-named copies
 	uint64_t shareVer = 0;        // version of the group value this copy holds
 };
-struct FxState { uint32_t op = 0, index = 0, vo = 0, typeCls = 0, typeType = 0; mutable int res = -2; /* FxRes index, -1 none, -2 not looked up */ };
+struct FxState
+{
+	uint32_t op = 0, index = 0, vo = 0, typeCls = 0, typeType = 0;
+	mutable int res = -2;   // FxRes index, -1 none, -2 not looked up
+	// a state whose value is a parameter path ("Lights[2].Enabled"): resolved once (param index -1: unresolved)
+	mutable bool refDone = false;
+	mutable int refP = -1;
+	mutable uint32_t refOff = 0, refType = 0;
+};
 struct FxPass
 {
 	std::string name;
@@ -96,10 +104,15 @@ struct FxInfo
 	std::unordered_map<uint64_t, void*> shCache;
 	std::unordered_map<const void*, std::vector<int>> ctabIdx;
 	// embedded pre-shader of a shader: its parameter indices and the last inputs/outputs (most draws reuse them)
-	struct PresCache { const void* pp = nullptr; const void* blob = nullptr; std::vector<int> pidx; std::vector<double> in; std::vector<std::pair<uint32_t, double>> f, b; bool ok = false, valid = false; };
+	// inVer: versions of the input parameters the last inputs were packed from (unchanged: nothing to repack)
+	struct PresCache { const void* pp = nullptr; const void* blob = nullptr; std::vector<int> pidx; std::vector<double> in; std::vector<uint32_t> inVer; std::vector<std::pair<uint32_t, double>> f, b; bool ok = false, valid = false; };
+	// last shader looked up per stage (constant table indices, pre-shader cache): one map lookup less per pass
+	const void* lastSh[2] = {nullptr, nullptr};
+	const std::vector<int>* lastIdx[2] = {nullptr, nullptr};
+	PresCache* lastPres[2] = {nullptr, nullptr};
 	std::unordered_map<const void*, PresCache> presCache;
 	// shader picked from an array by a pre-shader (usage 2): parameter indices, last inputs and the pick
-	struct DynSel { const void* pp = nullptr; bool none = false; std::vector<int> pidx; std::vector<double> in; void* sh = nullptr; bool valid = false; };
+	struct DynSel { const void* pp = nullptr; bool none = false; std::vector<int> pidx; std::vector<double> in; std::vector<uint32_t> inVer; void* sh = nullptr; bool valid = false; };
 	std::unordered_map<uint64_t, DynSel> dynSel;
 	std::unordered_map<uint64_t, int> resIdx;
 	std::unordered_map<const void*, void*> codeCache;   // shader bytecode in this effect -> translated shader

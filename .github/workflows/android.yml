@@ -168,3 +168,11 @@ jobs:
           name: ra3-native-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
           retention-days: 1
+
+      # symbols of exactly this build, for profiles sent from an older nightly (the release asset is replaced)
+      - uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: ra3native-symbols
+          path: ra3native-symbols.txt
+          retention-days: 30
