@@ -558,6 +558,7 @@ H("ID3DXEffect::SetVectorArray")
 static void noteViewProj(const std::string& name, const float* m, const char* how)
 {
 	if (name.size() != 14 || name != "ViewProjection") return;
+	{ static int calls = 0; if (++calls == 200 || calls == 5000) log("fx: ViewProjection set %d times (last via %s)", calls, how); }
 	bool full = d3d::glr::targetIsBack(), persp = m[3] != 0.f || m[7] != 0.f || m[11] != 0.f;
 	static int nl = 0, np = 0;
 	if (nl++ < 3 || (persp && np++ < 4))
@@ -579,7 +580,11 @@ static void setMatrices(CPU* c, Obj* o, bool transpose, bool array, bool pointer
 			const float* m = pointers ? (const float*)guest::host(guest::load<uint32_t>(ARG(2) + 4 * i)) : (const float*)guest::host(ARG(2) + 64 * i);
 			putMatrix(e, m, transpose);
 			// the camera's view-projection for "drag the map" (perspective, drawn into the back buffer)
-			if (!transpose && !array) noteViewProj(r.p->name, m, "SetMatrix");
+			if (i == 0)
+			{
+				if (!transpose) noteViewProj(r.p->name, m, "SetMatrix");
+				else { float t[16]; for (int a = 0; a < 4; a++) for (int b = 0; b < 4; b++) t[a * 4 + b] = m[b * 4 + a]; noteViewProj(r.p->name, t, "SetMatrixTranspose"); }
+			}
 			if (verbose() && r.p->name == "ViewProjection")
 			{
 				static int total = 0, nonzero = 0, shown = 0;
