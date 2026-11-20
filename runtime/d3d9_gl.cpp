@@ -53,6 +53,14 @@ namespace
 {
 bool gInit = false, gOk = false;
 bool gAttrDirty = true;   // vertex attribute state of gVao changed outside setAttrib (present disables all arrays)
+// GL_ARRAY_BUFFER binding as last recorded (it is global state, not part of the VAO): setAttrib rebound the
+// same buffer before every attribute pointer, ~3700 binds per frame. ~0u: unknown.
+static GLuint gArrBuf = ~0u;
+static inline void bindBuf(GLenum target, GLuint b)
+{
+	if (target == GL_ARRAY_BUFFER) { if (gArrBuf == b) return; gArrBuf = b; }
+	glBindBuffer(target, b);
+}
 bool gFboDirty = true;   // framebuffer bindings/attachments changed outside bindTargets
 bool gTexBindDirty = true;   // a texture was bound outside bindSamplers: its binding cache is stale
 GLuint gVao = 0, gBackFbo = 0, gBackTex = 0, gBackDepth = 0, gDrawFbo = 0, gReadFbo = 0, gUpVbo = 0, gUpIbo = 0;
@@ -498,7 +506,7 @@ GLuint ensureBuffer(Obj* o, GLenum target)
 	{
 		uint64_t tu0 = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 		gUpMaxSize = std::max<uint64_t>(gUpMaxSize, o->size); if (o->usage & 0x200) gUpDyn++;
-		glBindBuffer(target, o->glBuf);
+		bindBuf(target, o->glBuf);
 		if (o->glVer && o->glSize == o->size && o->dirtyLo < o->dirtyHi)
 			{ glBufferSubData(target, o->dirtyLo, o->dirtyHi - o->dirtyLo, (const uint8_t*)guest::host(o->data) + o->dirtyLo); gUpBytes += o->dirtyHi - o->dirtyLo; gUpSub++; }
 		else
@@ -832,7 +840,7 @@ GLenum wrapMode(uint32_t a)
 static uint32_t gStKey[44];
 static bool gStValid = false;
 static GLuint gCurProg = 0; static bool gVaoBound = false;
-void invalidateGlState() { gStValid = false; gCurProg = 0; gVaoBound = false; gTexBindDirty = true; gFboDirty = true; gAttrDirty = true; }
+void invalidateGlState() { gArrBuf = ~0u; gStValid = false; gCurProg = 0; gVaoBound = false; gTexBindDirty = true; gFboDirty = true; gAttrDirty = true; }
 void applyState(uint32_t tw, uint32_t th)
 {
 	const uint32_t* rs = dev.rs;
@@ -1295,7 +1303,7 @@ static int64_t ringPut(GLenum target, GLuint& buf, uint32_t& pos, uint32_t cap, 
 	PRing& pr = (target == GL_ARRAY_BUFFER) ? gPV : gPI;
 	if (!buf)
 	{
-		glGenBuffers(1, &buf); glBindBuffer(target, buf);
+		glGenBuffers(1, &buf); bindBuf(target, buf);
 		if (!pr.tried)
 		{
 			// try the persistent path: the buffer name is replaced inside
@@ -1306,19 +1314,19 @@ static int64_t ringPut(GLenum target, GLuint& buf, uint32_t& pos, uint32_t cap, 
 				if (pBufStorage)
 				{
 					const GLbitfield fl = 0x0002 | 0x0040 | 0x0080;
-					GLuint nb; glGenBuffers(1, &nb); glBindBuffer(target, nb);
+					GLuint nb; glGenBuffers(1, &nb); bindBuf(target, nb);
 					rec::scall(pBufStorage, target, (GLsizeiptr)cap, (const void*)nullptr, fl);
 					uint8_t* p = (uint8_t*)glMapBufferRange(target, 0, cap, fl);
 					if (p && glGetError() == GL_NO_ERROR) { glDeleteBuffers(1, &buf); invalidateAttribCache(); buf = nb; pr.ptr = p; pr.ok = true; log("GL: persistent ring %u KB target %x", cap >> 10, target); }
-					else { glDeleteBuffers(1, &nb); log("GL: persistent mapping failed"); }
+					else { glDeleteBuffers(1, &nb); invalidateAttribCache(); log("GL: persistent mapping failed"); }
 				}
 			}
 			pr.tried = true;
 		}
-		if (!pr.ok) { glBindBuffer(target, buf); glBufferData(target, cap, nullptr, GL_STREAM_DRAW); }
+		if (!pr.ok) { bindBuf(target, buf); glBufferData(target, cap, nullptr, GL_STREAM_DRAW); }
 		pos = 0;
 	}
-	glBindBuffer(target, buf);
+	bindBuf(target, buf);
 	pos = (pos + 15) & ~15u;
 	if (pr.ok)
 	{
@@ -1420,7 +1428,7 @@ static void dumpBmp(const char* path, uint32_t w, uint32_t h, uint32_t sc = 2)
 struct AttrState { GLuint buf; GLint size; GLenum type; GLboolean norm; GLsizei stride; uintptr_t off; GLuint div; int8_t on; };   // on: 1 enabled, 0 disabled, -1 unknown
 static AttrState gAttr[16];
 static bool gAttrValid = false;
-void invalidateAttribCache() { gAttrDirty = true; }
+void invalidateAttribCache() { gAttrDirty = true; gArrBuf = ~0u; }
 static void setAttrib(int loc, GLuint buf, GLint size, GLenum type, bool norm, GLsizei stride, uintptr_t off, GLuint div)
 {
 	if (gAttrDirty) { gAttrValid = false; gAttrDirty = false; }
@@ -1429,7 +1437,7 @@ static void setAttrib(int loc, GLuint buf, GLint size, GLenum type, bool norm, G
 	if (a.on != 1) { glEnableVertexAttribArray(loc); a.on = 1; }
 	if (a.buf != buf || a.size != size || a.type != type || a.norm != (GLboolean)norm || a.stride != stride || a.off != off)
 	{
-		glBindBuffer(GL_ARRAY_BUFFER, buf);
+		bindBuf(GL_ARRAY_BUFFER, buf);
 		glVertexAttribPointer(loc, size, type, norm, stride, (const void*)off);
 		a.buf = buf; a.size = size; a.type = type; a.norm = norm; a.stride = stride; a.off = off;
 	}
@@ -2120,7 +2128,7 @@ static void drawImpl(const DrawCall& dc)
 	{
 		uint32_t nverts = dc.indexed ? dc.minIndex + dc.numVertices : (uint32_t)primVertices(dc.prim, dc.primCount);
 		upBytes = nverts * dc.upStride;
-		glBindBuffer(GL_ARRAY_BUFFER, gUpVbo);
+		bindBuf(GL_ARRAY_BUFFER, gUpVbo);
 		glBufferData(GL_ARRAY_BUFFER, upBytes, dc.upVerts, GL_STREAM_DRAW);
 		boundBuf = gUpVbo;
 	}
