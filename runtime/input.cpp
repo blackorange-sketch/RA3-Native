@@ -121,14 +121,62 @@ namespace
 constexpr float kPanGain = 0.35f;
 float panPX = 0, panPY = 0;
 int panVX = 0, panVY = 0;
-void panBegin(float sx, float sy) { panPX = sx; panPY = sy; panVX = curX; panVY = curY; }
+// "Drag the map" (launcher option): the ground point under the finger at touch-down stays under the finger. The
+// camera is moved with the right button like a mouse would (the game's own scrolling), and every frame the point is
+// projected with the camera's view-projection to see where it is: the cursor moves by the remaining distance divided
+// by the measured screen motion per cursor pixel (that ratio depends on the zoom and is learned while dragging).
+float vp[16]; bool vpValid = false; int64_t vpAt = 0;
+bool dragActive = false;
+float anchorW[3];                  // the grabbed ground point (world)
+float fingerBX = 0, fingerBY = 0;  // the finger in back buffer pixels
+float prevPX = 0, prevPY = 0, cmdX = 0, cmdY = 0; bool prevValid = false;
+float ratio = -2.f;                // screen motion of the grabbed point per cursor pixel (negative: the camera follows the cursor)
+bool project(const float* w, float& px, float& py)
+{
+	float cx = w[0] * vp[0] + w[1] * vp[4] + w[2] * vp[8] + vp[12], cy = w[0] * vp[1] + w[1] * vp[5] + w[2] * vp[9] + vp[13];
+	float cw = w[0] * vp[3] + w[1] * vp[7] + w[2] * vp[11] + vp[15];
+	if (cw <= 1e-4f) return false;
+	px = (cx / cw + 1.f) * 0.5f * bw; py = (1.f - cy / cw) * 0.5f * bh;
+	return true;
+}
+// the ground (plane z = 0) under a back buffer pixel
+bool unproject(float px, float py, float* w)
+{
+	float nx = px / bw * 2.f - 1.f, ny = 1.f - py / bh * 2.f, h = 0.f;
+	float a = vp[0] - nx * vp[3], b = vp[4] - nx * vp[7], e = -((vp[8] - nx * vp[11]) * h + (vp[12] - nx * vp[15]));
+	float c = vp[1] - ny * vp[3], d = vp[5] - ny * vp[7], f = -((vp[9] - ny * vp[11]) * h + (vp[13] - ny * vp[15]));
+	float det = a * d - b * c;
+	if (fabsf(det) < 1e-9f) return false;
+	w[0] = (e * d - b * f) / det; w[1] = (a * f - e * c) / det; w[2] = h;
+	float tx, ty;
+	return project(w, tx, ty) && fabsf(tx - px) < 2.f && fabsf(ty - py) < 2.f;
+}
+void panBegin(float sx, float sy)
+{
+	panPX = sx; panPY = sy; panVX = curX; panVY = curY;
+	dragActive = false;
+	if (rt::config.panInvert && vpValid && nowMs() - vpAt < 500)
+	{
+		fingerBX = (sx - vx) * bw / std::max(1, vw); fingerBY = (sy - vy) * bh / std::max(1, vh);
+		if (unproject(fingerBX, fingerBY, anchorW)) { dragActive = true; prevValid = false; cmdX = cmdY = 0; }
+		static int nl = 0;
+		if (nl++ < 6) log("input: drag the map from %.0f,%.0f -> ground %.1f,%.1f (%s)", fingerBX, fingerBY, anchorW[0], anchorW[1], dragActive ? "follows the finger" : "no ground, plain pan");
+	}
+}
+void panRelative(float dx, float dy, bool mid);
 // relative pan: the cursor moves kPanGain times faster than the finger; near an edge the right button is released and re-grabbed at the centre
 void panMove(float sx, float sy, bool mid = false)
 {
-	uint32_t dn = mid ? WM_MBUTTONDOWN : WM_RBUTTONDOWN, up = mid ? WM_MBUTTONUP : WM_RBUTTONUP, bit = mid ? 0x10u : 2u;
-	float dir = (!mid && rt::config.panInvert) ? -1.f : 1.f;   // launcher option: the map follows the finger
-	panVX += (int)(dir * (sx - panPX) * bw / std::max(1, vw) * kPanGain); panVY += (int)(dir * (sy - panPY) * bh / std::max(1, vh) * kPanGain);
+	if (!mid && dragActive) { fingerBX = (sx - vx) * bw / std::max(1, vw); fingerBY = (sy - vy) * bh / std::max(1, vh); panPX = sx; panPY = sy; return; }   // dragTick moves the camera
+	float dir = (!mid && rt::config.panInvert) ? -1.f : 1.f;   // no camera known (yet): plain inverted pan
+	panRelative(dir * (sx - panPX) * bw / std::max(1, vw) * kPanGain, dir * (sy - panPY) * bh / std::max(1, vh) * kPanGain, mid);
 	panPX = sx; panPY = sy;
+}
+// the cursor moves by dx, dy back buffer pixels with the button held (re-grabbed at the centre near an edge)
+void panRelative(float dx, float dy, bool mid)
+{
+	uint32_t dn = mid ? WM_MBUTTONDOWN : WM_RBUTTONDOWN, up = mid ? WM_MBUTTONUP : WM_RBUTTONUP, bit = mid ? 0x10u : 2u;
+	panVX += (int)lroundf(dx); panVY += (int)lroundf(dy);
 	int mx = bw / 8, my = bh / 8;
 	if (panVX < mx || panVX > bw - mx || panVY < my || panVY > bh - my)
 	{
@@ -148,6 +196,33 @@ void panMove(float sx, float sy, bool mid = false)
 namespace input
 {
 void setScreen(int sw, int sh) { scrW = sw; scrH = sh; hud::setScreen(sw, sh); }
+void setViewProj(const float* m) { std::lock_guard<std::mutex> g(mu); memcpy(vp, m, sizeof vp); vpValid = true; vpAt = nowMs(); }
+void dragTick()
+{
+	std::lock_guard<std::mutex> g(mu);
+	if (!dragActive) return;
+	if (dragMode != 2 || !rDown) { dragActive = false; static int nl = 0; if (nl++ < 10) log("input: drag the map ended, screen motion per cursor pixel %.2f", ratio); return; }
+	float px, py;
+	if (!project(anchorW, px, py)) return;
+	// learn how far the point moved on screen per cursor pixel of the last step
+	if (prevValid)
+	{
+		float c2 = cmdX * cmdX + cmdY * cmdY;
+		if (c2 > 4.f)
+		{
+			float obs = ((px - prevPX) * cmdX + (py - prevPY) * cmdY) / c2;
+			if (obs < -0.05f) ratio = ratio * 0.7f + std::max(-40.f, obs) * 0.3f;
+		}
+	}
+	float ex = fingerBX - px, ey = fingerBY - py;
+	{ static int nl = 0; if (nl++ < 40) log("input: drag tick point %.0f,%.0f finger %.0f,%.0f ratio %.2f", px, py, fingerBX, fingerBY, ratio); }
+	cmdX = 0.6f * ex / ratio; cmdY = 0.6f * ey / ratio;
+	float lim = bw / 12.f, len = sqrtf(cmdX * cmdX + cmdY * cmdY);
+	if (len > lim) { cmdX *= lim / len; cmdY *= lim / len; }
+	if (fabsf(cmdX) + fabsf(cmdY) < 0.5f) { cmdX = cmdY = 0; }
+	else panRelative(cmdX, cmdY, false);
+	prevPX = px; prevPY = py; prevValid = true;
+}
 void kbButtonRect(int& x, int& y, int& w, int& h) { if (hud::kbRect(x, y, w, h)) return; int u = hud::buttonUnit(); x = u / 3; y = u / 3; w = u * 3 / 2; h = u; }
 
 void modButtonRect(int idx, int& x, int& y, int& w, int& h) { int u = std::max(40, scrH / 15); w = u; h = u * 3 / 4; x = u / 3; y = u / 3 + u + u / 4 + idx * (h + u / 6); }

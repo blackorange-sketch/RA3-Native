@@ -11,6 +11,8 @@ namespace rt { extern bool gFps60; }
 #include "d3d9_int.h"
 #include "d3dx_fx.h"
 #include "gfx.h"
+namespace d3d { namespace glr { bool targetIsBack(); } }
+namespace input { void setViewProj(const float* m); }
 
 using namespace rt;
 
@@ -563,6 +565,8 @@ static void setMatrices(CPU* c, Obj* o, bool transpose, bool array, bool pointer
 			e.off += i * stride;
 			const float* m = pointers ? (const float*)guest::host(guest::load<uint32_t>(ARG(2) + 4 * i)) : (const float*)guest::host(ARG(2) + 64 * i);
 			putMatrix(e, m, transpose);
+			// the camera's view-projection for "drag the map" (perspective, drawn into the back buffer)
+			if (!transpose && !array && r.p->name.size() == 14 && m[11] != 0.f && r.p->name == "ViewProjection" && d3d::glr::targetIsBack()) input::setViewProj(m);
 			if (verbose() && r.p->name == "ViewProjection")
 			{
 				static int total = 0, nonzero = 0, shown = 0;

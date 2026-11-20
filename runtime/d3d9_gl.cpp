@@ -2366,6 +2366,7 @@ static void presentImpl()
 	{
 		// on-screen keyboard button: drawn with scissored clears (no shader needed)
 		input::setScreen(sw, sh);
+		input::dragTick();
 		int kx, ky, kw, kh;
 		input::kbButtonRect(kx, ky, kw, kh);
 		glViewport(0, 0, sw, sh);
@@ -2595,6 +2596,7 @@ void stretchRect(Obj* src, const int32_t* sr, Obj* dst, const int32_t* dr, uint3
 void destroy(Obj*) {}
 void rtSize(Obj* rt, uint32_t& w, uint32_t& h) { targetSize(rt, w, h); }
 uint32_t frameNo() { return gFrameNo; }
+bool targetIsBack() { return isBack(dev.rt0); }   // drawing into the back buffer (not a shadow map, reflection, ...)
 }   // namespace glr
 }   // namespace d3d
 
@@ -2612,6 +2614,7 @@ void resizeBackBuffer() {}
 void stretchRect(Obj*, const int32_t*, Obj*, const int32_t*, uint32_t) {}
 void rtSize(Obj*, uint32_t& w, uint32_t& h) { w = h = 0; }
 uint32_t frameNo() { return 0; }
+bool targetIsBack() { return false; }
 void uiUnmapImpl(int&, int&) {}
 void destroy(Obj*) {}
 }

@@ -17,6 +17,8 @@ void onChar(unsigned codeUnit);
 void onKey(bool down, int androidKey, int metaState);
 // Screen size, and the on-screen keyboard button rectangle (screen pixels, top-left origin).
 void setScreen(int sw, int sh);
+void setViewProj(const float* m);   // the battle camera (game thread)
+void dragTick();                    // once per frame (game thread): "drag the map" follows the finger
 void kbButtonRect(int& x, int& y, int& w, int& h);
 void modButtonRect(int idx, int& x, int& y, int& w, int& h);   // 0 = Ctrl (force attack), 1 = Alt (waypoint)
 bool modActive(int idx);
