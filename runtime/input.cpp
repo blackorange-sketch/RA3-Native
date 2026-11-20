@@ -135,7 +135,7 @@ int64_t fingerMovedAt = 0;
 struct CmdHist { int64_t t; float ox, oy; };
 std::deque<CmdHist> cmdHist;       // cursor offsets over time (the camera reacts about a quarter second later)
 float pressX = 0, pressY = 0;      // where the right button went down (the game scrolls by the cursor's offset from it)
-float speed = 4.4f;                // picture speed (pixels per second) per pixel of cursor offset; learned while dragging
+float speed = 10.f;                // picture speed (pixels per second) per pixel of cursor offset; learned while dragging
 float lastPX = 0, lastPY = 0; int64_t lastTickAt = 0;
 bool project(const float* w, float& px, float& py)
 {
@@ -167,7 +167,8 @@ void panBegin(float sx, float sy)
 		fingerBX = (sx - vx) * bw / std::max(1, vw); fingerBY = (sy - vy) * bh / std::max(1, vh);
 		if (unproject(fingerBX, fingerBY, anchorW) && project(anchorW, p0X, p0Y))
 		{
-			dragActive = true; fingerSX = fingerBX; fingerSY = fingerBY; cmdHist.clear(); lastPX = p0X; lastPY = p0Y; lastTickAt = nowMs(); fingerMovedAt = nowMs(); pressX = (float)curX; pressY = (float)curY;
+			dragActive = true; fingerSX = fingerBX; fingerSY = fingerBY; cmdHist.clear(); lastPX = p0X; lastPY = p0Y; lastTickAt = nowMs(); fingerMovedAt = nowMs();
+			pressX = (float)curX; pressY = (float)curY;   // the screen centre (see the right button press below)
 		}
 		static int nl = 0;
 		if (nl++ < 6) log("input: drag the map from %.0f,%.0f -> ground %.1f,%.1f (%s)", fingerBX, fingerBY, anchorW[0], anchorW[1], dragActive ? "follows the finger" : "no ground, plain pan");
@@ -225,12 +226,12 @@ void dragTick()
 	// The game scrolls while the right button is held: the camera's speed follows the cursor's offset from where the
 	// button went down. So the offset is set from how far the grabbed point is from the finger: far -> fast, under
 	// the finger -> zero, the camera stops. The speed per offset pixel depends on the zoom and is measured on the way
-	// (against the offset of a quarter second ago, the game's reaction time).
+	// (against the offset of a tenth of a second ago, the game's reaction time).
 	float px, py;
 	if (!project(anchorW, px, py)) return;
 	float dt = std::max(1, (int)(now - lastTickAt)) / 1000.f;
 	const CmdHist* h = nullptr;
-	for (auto it = cmdHist.rbegin(); it != cmdHist.rend(); ++it) if (now - it->t >= 250) { h = &*it; break; }
+	for (auto it = cmdHist.rbegin(); it != cmdHist.rend(); ++it) if (now - it->t >= 100) { h = &*it; break; }
 	if (h)
 	{
 		float o2 = h->ox * h->ox + h->oy * h->oy;
@@ -238,14 +239,14 @@ void dragTick()
 		{
 			float vx_ = (px - lastPX) / dt, vy_ = (py - lastPY) / dt;
 			float obs = -(vx_ * h->ox + vy_ * h->oy) / o2;   // the picture moves against the offset
-			if (obs > 0.5f && obs < 40.f) speed = speed * 0.92f + obs * 0.08f;
+			if (obs > 3.f && obs < 40.f) speed = speed * 0.92f + obs * 0.08f;
 		}
 	}
 	lastPX = px; lastPY = py; lastTickAt = now;
-	const float tau = 0.35f;                 // seconds to close the gap (longer than the game's reaction time: no overshoot)
+	const float tau = 0.2f;                  // seconds to close the gap (longer than the game's reaction time of about 0.1 s: no overshoot)
 	float k = 1.f / (tau * speed);
 	float ox = -(fingerBX - px) * k, oy = -(fingerBY - py) * k;
-	float lim = std::min(bw, bh) * 0.45f, len = sqrtf(ox * ox + oy * oy);
+	float lim = std::min(bw, bh) * 0.36f, len = sqrtf(ox * ox + oy * oy);
 	if (len > lim) { ox *= lim / len; oy *= lim / len; }
 	if (fabsf(fingerBX - px) + fabsf(fingerBY - py) < 4.f) ox = oy = 0;
 	{ static int nl = 0; if (nl++ < 80) log("input: drag tick point %.0f,%.0f finger %.0f,%.0f offset %.0f,%.0f speed %.2f", px, py, fingerBX, fingerBY, ox, oy, speed); }
@@ -325,7 +326,14 @@ void onTouch(int action, int idx, int count, const float* xs, const float* ys)
 				// minimap: the right button moves the camera there, held while the finger moves
 				if (onRadar) { dragMode = 3; rDown = true; push(WM_RBUTTONDOWN, mouseFlags(), xy(), 0); }
 				else if (now - downAt >= 250 || hud::mouseMode(0)) { dragMode = 1; lDown = true; push(WM_LBUTTONDOWN, mouseFlags(), xy(), 0); }
-				else { dragMode = 2; rDown = true; push(WM_RBUTTONDOWN, mouseFlags(), xy(), 0); panBegin(startX, startY); }
+				else
+				{
+					dragMode = 2; rDown = true;
+					// drag the map: the button goes down at the screen centre, so the cursor's offset (the game's scroll
+					// speed) has room in every direction and never reaches the edges, where the game edge-scrolls
+					if (rt::config.panInvert && vpValid && now - vpAt < 500) { curX = bw / 2; curY = bh / 2; push(WM_MOUSEMOVE, mouseFlags(), xy(), 0); }
+					push(WM_RBUTTONDOWN, mouseFlags(), xy(), 0); panBegin(startX, startY);
+				}
 				curX = cx; curY = cy;
 			}
 			if (dragMode == 2) panMove(xs[0], ys[0]);
