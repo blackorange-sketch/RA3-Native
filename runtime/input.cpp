@@ -131,13 +131,12 @@ float anchorW[3];                  // the grabbed ground point (world)
 float fingerBX = 0, fingerBY = 0;  // the finger in back buffer pixels
 float fingerSX = 0, fingerSY = 0;  // the finger at touch-down (back buffer pixels)
 float p0X = 0, p0Y = 0;            // the grabbed point on screen at touch-down
-float sumCX = 0, sumCY = 0;        // cursor pixels sent so far in this drag
-float corrX = 0, corrY = 0;        // extra cursor pixels from the resting-finger correction
 int64_t fingerMovedAt = 0;
-struct CmdHist { int64_t t; float cx, cy; };
-std::deque<CmdHist> cmdHist;       // cumulative cursor pixels over time (the camera follows about a quarter second later)
-float ratioX = -2.f, ratioY = -2.f; // screen motion of the grabbed point per cursor pixel, per axis (negative: the camera follows the cursor); learned while dragging
-float lastPX = 0, lastPY = 0; int64_t lastCorrAt = 0;
+struct CmdHist { int64_t t; float ox, oy; };
+std::deque<CmdHist> cmdHist;       // cursor offsets over time (the camera reacts about a quarter second later)
+float pressX = 0, pressY = 0;      // where the right button went down (the game scrolls by the cursor's offset from it)
+float speed = 4.4f;                // picture speed (pixels per second) per pixel of cursor offset; learned while dragging
+float lastPX = 0, lastPY = 0; int64_t lastTickAt = 0;
 bool project(const float* w, float& px, float& py)
 {
 	float cx = w[0] * vp[0] + w[1] * vp[4] + w[2] * vp[8] + vp[12], cy = w[0] * vp[1] + w[1] * vp[5] + w[2] * vp[9] + vp[13];
@@ -168,7 +167,7 @@ void panBegin(float sx, float sy)
 		fingerBX = (sx - vx) * bw / std::max(1, vw); fingerBY = (sy - vy) * bh / std::max(1, vh);
 		if (unproject(fingerBX, fingerBY, anchorW) && project(anchorW, p0X, p0Y))
 		{
-			dragActive = true; 			fingerSX = fingerBX; fingerSY = fingerBY; sumCX = sumCY = 0; corrX = corrY = 0; cmdHist.clear(); lastPX = p0X; lastPY = p0Y; lastCorrAt = nowMs(); fingerMovedAt = nowMs();
+			dragActive = true; fingerSX = fingerBX; fingerSY = fingerBY; cmdHist.clear(); lastPX = p0X; lastPY = p0Y; lastTickAt = nowMs(); fingerMovedAt = nowMs(); pressX = (float)curX; pressY = (float)curY;
 		}
 		static int nl = 0;
 		if (nl++ < 6) log("input: drag the map from %.0f,%.0f -> ground %.1f,%.1f (%s)", fingerBX, fingerBY, anchorW[0], anchorW[1], dragActive ? "follows the finger" : "no ground, plain pan");
@@ -220,42 +219,39 @@ void dragTick()
 	{
 		dragActive = false;
 		static int nl = 0;
-		if (nl++ < 20) log("input: drag the map ended: %.2f,%.2f screen pixels per cursor pixel", ratioX, ratioY);
+		if (nl++ < 20) log("input: drag the map ended: speed %.2f px/s per offset pixel", speed);
 		return;
 	}
-	// The game moves the camera about a quarter second after the cursor moves, so chasing the measured point would
-	// overshoot and circle. The cursor is sent what the finger has moved, converted per axis with the learned ratios
-	// (a tilted camera moves the picture differently up/down than sideways); when the finger rests and the camera has
-	// stopped, half of the remaining error is corrected in one step, then it waits for the camera again.
+	// The game scrolls while the right button is held: the camera's speed follows the cursor's offset from where the
+	// button went down. So the offset is set from how far the grabbed point is from the finger: far -> fast, under
+	// the finger -> zero, the camera stops. The speed per offset pixel depends on the zoom and is measured on the way
+	// (against the offset of a quarter second ago, the game's reaction time).
 	float px, py;
-	bool havePt = project(anchorW, px, py);
-	if (havePt)
+	if (!project(anchorW, px, py)) return;
+	float dt = std::max(1, (int)(now - lastTickAt)) / 1000.f;
+	const CmdHist* h = nullptr;
+	for (auto it = cmdHist.rbegin(); it != cmdHist.rend(); ++it) if (now - it->t >= 250) { h = &*it; break; }
+	if (h)
 	{
-		const CmdHist* h = nullptr;
-		for (auto it = cmdHist.rbegin(); it != cmdHist.rend(); ++it) if (now - it->t >= 250) { h = &*it; break; }
-		if (h)
+		float o2 = h->ox * h->ox + h->oy * h->oy;
+		if (o2 > 225.f && dt < 0.1f)
 		{
-			// per axis: picture shift so far against the cursor pixels sent a quarter second ago
-			if (fabsf(h->cx) > 40.f) { float o = (px - p0X) / h->cx; if (o < -0.4f && o > -8.f) ratioX = ratioX * 0.9f + o * 0.1f; }
-			if (fabsf(h->cy) > 40.f) { float o = (py - p0Y) / h->cy; if (o < -0.4f && o > -8.f) ratioY = ratioY * 0.9f + o * 0.1f; }
-		}
-		static int nl = 0;
-		if (nl++ < 80) log("input: drag tick point %.0f,%.0f finger %.0f,%.0f sent %.0f,%.0f ratio %.2f,%.2f", px, py, fingerBX, fingerBY, sumCX, sumCY, ratioX, ratioY);
-		bool still = fabsf(px - lastPX) < 1.5f && fabsf(py - lastPY) < 1.5f;
-		lastPX = px; lastPY = py;
-		if (still && now - fingerMovedAt > 400 && now - lastCorrAt > 400)
-		{
-			float ex = fingerBX - px, ey = fingerBY - py;
-			if (fabsf(ex) + fabsf(ey) > 6.f) { corrX += 0.5f * ex / ratioX; corrY += 0.5f * ey / ratioY; lastCorrAt = now; }
+			float vx_ = (px - lastPX) / dt, vy_ = (py - lastPY) / dt;
+			float obs = -(vx_ * h->ox + vy_ * h->oy) / o2;   // the picture moves against the offset
+			if (obs > 0.5f && obs < 40.f) speed = speed * 0.92f + obs * 0.08f;
 		}
 	}
-	float wantX = (fingerBX - fingerSX) / ratioX + corrX, wantY = (fingerBY - fingerSY) / ratioY + corrY;
-	float cx = wantX - sumCX, cy = wantY - sumCY;
-	float lim = bw / 10.f, len = sqrtf(cx * cx + cy * cy);
-	if (len > lim) { cx *= lim / len; cy *= lim / len; }
-	int ix = (int)lroundf(cx), iy = (int)lroundf(cy);
-	if (ix || iy) { panRelative((float)ix, (float)iy, false); sumCX += ix; sumCY += iy; }
-	cmdHist.push_back({now, sumCX, sumCY});
+	lastPX = px; lastPY = py; lastTickAt = now;
+	const float tau = 0.35f;                 // seconds to close the gap (longer than the game's reaction time: no overshoot)
+	float k = 1.f / (tau * speed);
+	float ox = -(fingerBX - px) * k, oy = -(fingerBY - py) * k;
+	float lim = std::min(bw, bh) * 0.45f, len = sqrtf(ox * ox + oy * oy);
+	if (len > lim) { ox *= lim / len; oy *= lim / len; }
+	if (fabsf(fingerBX - px) + fabsf(fingerBY - py) < 4.f) ox = oy = 0;
+	{ static int nl = 0; if (nl++ < 80) log("input: drag tick point %.0f,%.0f finger %.0f,%.0f offset %.0f,%.0f speed %.2f", px, py, fingerBX, fingerBY, ox, oy, speed); }
+	curX = std::max(0, std::min(bw - 1, (int)lroundf(pressX + ox))); curY = std::max(0, std::min(bh - 1, (int)lroundf(pressY + oy)));
+	push(WM_MOUSEMOVE, mouseFlags(), xy(), 0);
+	cmdHist.push_back({now, ox, oy});
 	while (cmdHist.size() > 64) cmdHist.pop_front();
 }
 void kbButtonRect(int& x, int& y, int& w, int& h) { if (hud::kbRect(x, y, w, h)) return; int u = hud::buttonUnit(); x = u / 3; y = u / 3; w = u * 3 / 2; h = u; }
