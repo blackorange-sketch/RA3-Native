@@ -134,7 +134,8 @@ float p0X = 0, p0Y = 0;            // the grabbed point on screen at touch-down
 float sumCX = 0, sumCY = 0;        // cursor pixels sent so far in this drag
 float corrX = 0, corrY = 0;        // extra cursor pixels from the resting-finger correction
 int64_t fingerMovedAt = 0;
-bool learnPending = false; int64_t learnAt = 0; float learnW[3], learnP0X, learnP0Y, learnCX, learnCY;
+struct CmdHist { int64_t t; float cx, cy; };
+std::deque<CmdHist> cmdHist;       // cumulative cursor pixels over time (the camera follows about a quarter second later)
 float ratio = -2.f;                // screen motion of the grabbed point per cursor pixel (negative: the camera follows the cursor); learned after each drag
 bool project(const float* w, float& px, float& py)
 {
@@ -166,8 +167,7 @@ void panBegin(float sx, float sy)
 		fingerBX = (sx - vx) * bw / std::max(1, vw); fingerBY = (sy - vy) * bh / std::max(1, vh);
 		if (unproject(fingerBX, fingerBY, anchorW) && project(anchorW, p0X, p0Y))
 		{
-			dragActive = true; learnPending = false;
-			fingerSX = fingerBX; fingerSY = fingerBY; sumCX = sumCY = 0; corrX = corrY = 0; fingerMovedAt = nowMs();
+			dragActive = true; 			fingerSX = fingerBX; fingerSY = fingerBY; sumCX = sumCY = 0; corrX = corrY = 0; cmdHist.clear(); fingerMovedAt = nowMs();
 		}
 		static int nl = 0;
 		if (nl++ < 6) log("input: drag the map from %.0f,%.0f -> ground %.1f,%.1f (%s)", fingerBX, fingerBY, anchorW[0], anchorW[1], dragActive ? "follows the finger" : "no ground, plain pan");
@@ -213,34 +213,40 @@ void dragTick()
 	int64_t now = nowMs();
 	if (!dragActive)
 	{
-		// half a second after a drag the camera has settled: how far did the point really move per cursor pixel?
-		if (learnPending && now >= learnAt)
-		{
-			learnPending = false;
-			float px, py, c2 = learnCX * learnCX + learnCY * learnCY;
-			if (c2 > 400.f && project(learnW, px, py))
-			{
-				float obs = ((px - learnP0X) * learnCX + (py - learnP0Y) * learnCY) / c2;
-				if (obs < -0.1f && obs > -40.f) ratio = ratio * 0.4f + obs * 0.6f;
-				static int nl = 0;
-				if (nl++ < 20) log("input: drag the map: measured %.2f, now %.2f screen pixels per cursor pixel", obs, ratio);
-			}
-		}
 		return;
 	}
 	if (dragMode != 2 || !rDown)
 	{
 		dragActive = false;
-		learnPending = true; learnAt = now + 500; memcpy(learnW, anchorW, sizeof learnW); learnP0X = p0X; learnP0Y = p0Y; learnCX = sumCX; learnCY = sumCY;
+		static int nl = 0;
+		if (nl++ < 20) log("input: drag the map ended: %.2f screen pixels per cursor pixel", ratio);
 		return;
 	}
 	// The game moves the camera a few frames after the cursor moves, so following the measured point would overshoot.
 	// Instead the cursor is sent exactly what the finger has moved (converted with the learned ratio); once the finger
 	// rests and the camera has caught up, the remaining error is corrected gently.
+	// learn the ratio while dragging: where the point is now against the cursor pixels sent ~250 ms ago
+	float px, py;
+	bool havePt = project(anchorW, px, py);
+	if (havePt)
+	{
+		const CmdHist* h = nullptr;
+		for (auto it = cmdHist.rbegin(); it != cmdHist.rend(); ++it) if (now - it->t >= 250) { h = &*it; break; }
+		if (h)
+		{
+			float c2 = h->cx * h->cx + h->cy * h->cy;
+			if (c2 > 900.f)
+			{
+				float obs = ((px - p0X) * h->cx + (py - p0Y) * h->cy) / c2;
+				if (obs < -0.5f && obs > -8.f) ratio = ratio * 0.9f + obs * 0.1f;
+			}
+		}
+		static int nl = 0;
+		if (nl++ < 80) log("input: drag tick point %.0f,%.0f finger %.0f,%.0f sent %.0f,%.0f ratio %.2f", px, py, fingerBX, fingerBY, sumCX, sumCY, ratio);
+	}
 	if (now - fingerMovedAt > 300)
 	{
-		float px, py;
-		if (project(anchorW, px, py)) { corrX += 0.1f * (fingerBX - px) / ratio; corrY += 0.1f * (fingerBY - py) / ratio; }
+		if (havePt) { corrX += 0.1f * (fingerBX - px) / ratio; corrY += 0.1f * (fingerBY - py) / ratio; }
 	}
 	float wantX = (fingerBX - fingerSX) / ratio + corrX, wantY = (fingerBY - fingerSY) / ratio + corrY;
 	float cx = wantX - sumCX, cy = wantY - sumCY;
@@ -248,6 +254,8 @@ void dragTick()
 	if (len > lim) { cx *= lim / len; cy *= lim / len; }
 	int ix = (int)lroundf(cx), iy = (int)lroundf(cy);
 	if (ix || iy) { panRelative((float)ix, (float)iy, false); sumCX += ix; sumCY += iy; }
+	cmdHist.push_back({now, sumCX, sumCY});
+	while (cmdHist.size() > 64) cmdHist.pop_front();
 }
 void kbButtonRect(int& x, int& y, int& w, int& h) { if (hud::kbRect(x, y, w, h)) return; int u = hud::buttonUnit(); x = u / 3; y = u / 3; w = u * 3 / 2; h = u; }
 
