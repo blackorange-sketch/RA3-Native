@@ -10,6 +10,7 @@
 #include <sys/statvfs.h>
 #include <thread>
 #include <unistd.h>
+#include <vector>
 
 #include "fastlock.h"
 #include "rt.h"
@@ -119,25 +120,44 @@ Waitable* asWaitable(uint32_t h)
 
 // ---- critical sections: the guest struct stores an index into a host mutex table
 using CsLock = rt::FastRecLock;   // guest critical sections (fastlock.h)
-CsLock* csTable[1 << 16];
+// DeleteCriticalSection returns the slot for reuse: the game creates and deletes sections all the time (one run
+// ran out of the 65536 slots three seconds after start)
+constexpr uint32_t kCsMax = 1u << 18;
+CsLock* csTable[kCsMax];
 std::atomic<uint32_t> csCount{1};
 std::mutex csInitMu;
+std::vector<uint32_t> csFree;
 CsLock* csGet(uint32_t cs)
 {
 	uint32_t idx = guest::load<uint32_t>(cs);
-	if (idx == 0 || idx >= (1u << 16) || !csTable[idx])
+	if (idx == 0 || idx >= kCsMax || !csTable[idx])
 	{
 		std::lock_guard<std::mutex> l(csInitMu);
 		idx = guest::load<uint32_t>(cs);
-		if (idx == 0 || idx >= (1u << 16) || !csTable[idx])
+		if (idx == 0 || idx >= kCsMax || !csTable[idx])
 		{
-			idx = csCount++;
-			if (idx >= (1u << 16)) fatal("critical section table full");
-			csTable[idx] = new CsLock;
+			if (!csFree.empty()) { idx = csFree.back(); csFree.pop_back(); }
+			else
+			{
+				idx = csCount++;
+				if (idx >= kCsMax) fatal("critical section table full");
+				csTable[idx] = new CsLock;
+				if ((idx & 0x3fff) == 0) log("kernel32: %u critical sections in use", idx);
+			}
 			guest::store<uint32_t>(cs, idx);
 		}
 	}
 	return csTable[idx];
+}
+void csDelete(uint32_t cs)
+{
+	std::lock_guard<std::mutex> l(csInitMu);
+	uint32_t idx = guest::load<uint32_t>(cs);
+	if (idx == 0 || idx >= kCsMax || !csTable[idx]) return;
+	guest::store<uint32_t>(cs, 0);
+	// a section still held by some thread is not handed out again
+	if (csTable[idx]->st.load(std::memory_order_acquire) != 0) return;
+	csFree.push_back(idx);
 }
 
 // ---- TLS slots (TlsAlloc)
@@ -469,7 +489,7 @@ IMP_STD(K, CloseHandle, 1)
 
 IMP_STD(K, InitializeCriticalSection, 1) { guest::store<uint32_t>(ARG(0), 0); csGet(ARG(0)); }
 IMP_STD(K, InitializeCriticalSectionAndSpinCount, 2) { guest::store<uint32_t>(ARG(0), 0); csGet(ARG(0)); SET(1); }
-IMP_STD(K, DeleteCriticalSection, 1) {}
+IMP_STD(K, DeleteCriticalSection, 1) { csDelete(ARG(0)); }
 IMP_STD(K, EnterCriticalSection, 1) { csGet(ARG(0))->lock(); }
 IMP_STD(K, LeaveCriticalSection, 1) { csGet(ARG(0))->unlock(); }
 IMP_STD(K, TryEnterCriticalSection, 1) { SET(csGet(ARG(0))->try_lock() ? 1 : 0); }
