@@ -30,6 +30,10 @@ int flash = 0;                       // frames of "added" feedback
 // combined with taps on the map (Shift = queue waypoints, Ctrl = force fire, Alt = formation / reverse move)
 bool latched[3];
 int modIdx(int vk) { return vk == 0x10 ? 0 : vk == 0x11 ? 1 : vk == 0x12 ? 2 : -1; }
+// LMB / RMB buttons latch a touch mode instead of a key: LMB = a drag draws a selection box at once (no hold),
+// RMB = a tap is a right click (and a long press a left click)
+bool mouseLatched[2];
+int mouseIdx(int vk) { return vk == 0x01 ? 0 : vk == 0x02 ? 1 : -1; }
 void releaseLatched(std::vector<hud::KeyEv>& out) { for (int i = 0; i < 3; i++) if (latched[i]) { latched[i] = false; out.push_back({0x10 + i, false, false}); } }
 
 struct Key { const char* label; int vk; bool ctrl; };
@@ -51,6 +55,7 @@ void buildPages()
 	for (int c = 0; c < 26; c++) { lt[c][0] = 'A' + c; lt[c][1] = 0; p2.push_back({lt[c], 'A' + c, false}); }
 	p2.push_back({"^", 0x26, false}); p2.push_back({"v", 0x28, false}); p2.push_back({"<", 0x25, false}); p2.push_back({">", 0x27, false});
 	p2.push_back({"+", 0xbb, false}); p2.push_back({"-", 0xbd, false}); p2.push_back({"HOM", 0x24, false}); p2.push_back({"END", 0x23, false});
+	p2.push_back({"LMB", 0x01, false}); p2.push_back({"RMB", 0x02, false});
 	pages.push_back(p1); pages.push_back(p2);
 }
 
@@ -169,6 +174,7 @@ namespace hud
 void setScreen(int sw, int sh) { std::lock_guard<std::mutex> g(mu); scrW = sw; scrH = sh; load(); buildPages(); }
 bool editingNow() { return editing; }
 int buttonUnit() { return unit(); }
+bool mouseMode(int b) { std::lock_guard<std::mutex> g(mu); return b >= 0 && b < 2 && mouseLatched[b]; }
 bool kbRect(int& x, int& y, int& w, int& h)
 {
 	if (!topRow()) return false;
@@ -239,6 +245,7 @@ bool onTouch(int action, int idx, int count, const float* xs, const float* ys, s
 			{
 				int m = modIdx(btns[e.first].vk);
 				if (m >= 0) { latched[m] = !latched[m]; out.push_back({btns[e.first].vk, latched[m], false}); return true; }
+				if (int mb = mouseIdx(btns[e.first].vk); mb >= 0) { mouseLatched[mb] = !mouseLatched[mb]; return true; }
 				pressed = e.first; pressedPtr = idx;
 				const Btn& b = btns[pressed];
 				out.push_back({b.vk, true, b.ctrl});
@@ -278,7 +285,7 @@ void draw(const DrawRect& rect)
 		const Btn& b = btns[en.first]; const R& r = en.second;
 		bool on = en.first == pressed;
 		int m = modIdx(b.vk);
-		if (m >= 0 && latched[m]) { box(rect, r, 1.f, 0.78f, 0.1f, 0.55f, 0.38f, 0.02f); text(rect, b.label, {r.x + 2, r.y + 2, r.w - 4, r.h - 4}, 1.f, 1.f, 1.f); continue; }
+		if ((m >= 0 && latched[m]) || (mouseIdx(b.vk) >= 0 && mouseLatched[mouseIdx(b.vk)])) { box(rect, r, 1.f, 0.78f, 0.1f, 0.55f, 0.38f, 0.02f); text(rect, b.label, {r.x + 2, r.y + 2, r.w - 4, r.h - 4}, 1.f, 1.f, 1.f); continue; }
 		box(rect, r, 0.75f, 0.75f, 0.78f, on ? 0.55f : 0.12f, on ? 0.55f : 0.12f, on ? 0.6f : 0.14f);
 		text(rect, b.label, {r.x + 2, r.y + 2, r.w - 4, r.h - 4}, 0.95f, 0.95f, 0.97f);
 		if (editing)

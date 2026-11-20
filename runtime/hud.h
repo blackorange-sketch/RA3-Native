@@ -15,7 +15,8 @@ void draw(const DrawRect& rect);
 // Screen width taken by the button columns on the left and right (wide screen mode keeps the game picture out of them).
 void reserves(int sw, int sh, int& left, int& right);
 bool editingNow();
-int buttonUnit();   // the on-screen buttons' size unit (launcher: button size)   // the button editor is open
+int buttonUnit();
+bool mouseMode(int b);   // 0: LMB button lit (drag selects at once), 1: RMB button lit (tap = right click)   // the on-screen buttons' size unit (launcher: button size)   // the button editor is open
 // Wide screen: the keyboard button's place in the top row (false: the default top-left corner).
 bool kbRect(int& x, int& y, int& w, int& h);
 }

@@ -2596,7 +2596,7 @@ void stretchRect(Obj* src, const int32_t* sr, Obj* dst, const int32_t* dr, uint3
 void destroy(Obj*) {}
 void rtSize(Obj* rt, uint32_t& w, uint32_t& h) { targetSize(rt, w, h); }
 uint32_t frameNo() { return gFrameNo; }
-bool targetIsBack() { return isBack(dev.rt0); }   // drawing into the back buffer (not a shadow map, reflection, ...)
+bool targetIsBack() { uint32_t w, h; targetSize(dev.rt0, w, h); return w == backW && h == backH; }   // a screen-sized target (the back buffer or the scene buffer), not a shadow map or reflection
 }   // namespace glr
 }   // namespace d3d
 

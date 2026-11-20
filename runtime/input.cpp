@@ -155,6 +155,7 @@ void panBegin(float sx, float sy)
 {
 	panPX = sx; panPY = sy; panVX = curX; panVY = curY;
 	dragActive = false;
+	if (rt::config.panInvert && !(vpValid && nowMs() - vpAt < 500)) { static int nl = 0; if (nl++ < 6) log("input: drag the map: no camera known (%d, %lld ms old), plain pan", (int)vpValid, (long long)(nowMs() - vpAt)); }
 	if (rt::config.panInvert && vpValid && nowMs() - vpAt < 500)
 	{
 		fingerBX = (sx - vx) * bw / std::max(1, vw); fingerBY = (sy - vy) * bh / std::max(1, vh);
@@ -293,7 +294,7 @@ void onTouch(int action, int idx, int count, const float* xs, const float* ys)
 				curX = startCX; curY = startCY;
 				// minimap: the right button moves the camera there, held while the finger moves
 				if (onRadar) { dragMode = 3; rDown = true; push(WM_RBUTTONDOWN, mouseFlags(), xy(), 0); }
-				else if (now - downAt >= 250) { dragMode = 1; lDown = true; push(WM_LBUTTONDOWN, mouseFlags(), xy(), 0); }
+				else if (now - downAt >= 250 || hud::mouseMode(0)) { dragMode = 1; lDown = true; push(WM_LBUTTONDOWN, mouseFlags(), xy(), 0); }
 				else { dragMode = 2; rDown = true; push(WM_RBUTTONDOWN, mouseFlags(), xy(), 0); panBegin(startX, startY); }
 				curX = cx; curY = cy;
 			}
@@ -333,7 +334,7 @@ void onTouch(int action, int idx, int count, const float* xs, const float* ys)
 	{
 		// tap = left click, long press = right click; on the minimap the other way round: a tap (right click) moves the
 		// camera, a long press (left click) sends the selected units there
-		if (pending && dragMode == 0 && action == UP) { bool lp = now - downAt >= 600; clickWithMods(onRadar ? !lp : lp); }
+		if (pending && dragMode == 0 && action == UP) { bool lp = now - downAt >= 600; clickWithMods((onRadar ? !lp : lp) != hud::mouseMode(1)); }   // RMB button lit: tap = right click
 		if (lDown) { lDown = false; push(WM_LBUTTONUP, mouseFlags(), xy(), 40); }
 		if (rDown && (dragMode == 2 || dragMode == 3)) { rDown = false; push(WM_RBUTTONUP, mouseFlags(), xy(), 40); }
 		if (mDown) { mDown = false; twoPan = false; push(WM_MBUTTONUP, mouseFlags(), xy(), 40); }
