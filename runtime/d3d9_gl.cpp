@@ -2026,20 +2026,12 @@ static void drawImpl(const DrawCall& dc)
 		{
 			// D3D: constants a shader defines itself (def c#) live in the constant registers, so relative
 			// addressing (c[a0 + n]) must see them - e.g. the random and corner tables of the particle shaders.
-			// only as far as the shader can reach: its constant table arrays, its defs and direct uses (comparing and
-			// copying all 256 registers on every particle draw was a large part of the upload cost)
-			if (!vs->info.relN)
-			{
-				int m = vs->info.numCDirect;
-				for (auto& c : vs->info.ctab) if (c.regSet == 2) m = std::max(m, (int)(c.regIndex + std::max(1u, c.regCount)));
-				for (auto& d : vs->info.defF) m = std::max(m, d.first + 1);
-				vs->info.relN = std::max(1, std::min(256, m));
-			}
-			nv = vs->info.relN;
+			// all 256 registers: limiting them to the constant table ranges left UI elements (health bars, the
+			// abilities window) at stale positions - their shaders also read registers the engine sets directly
 			static float merged[256 * 4];
-			memcpy(merged, dev.vsF, 16ull * nv);
-			for (auto& d : vs->info.defF) if (d.first >= 0 && d.first < nv) memcpy(merged + 4 * d.first, d.second.data(), 16);
-			vsrc = merged;
+			memcpy(merged, dev.vsF, sizeof merged);
+			for (auto& d : vs->info.defF) if (d.first >= 0 && d.first < 256) memcpy(merged + 4 * d.first, d.second.data(), 16);
+			vsrc = merged; nv = 256;
 		}
 		uploadVec4Range(p->vc, p->vcLoc, p->vcShadow, vsrc, nv, p->id, "vc", p->shadowValid);
 		uploadVec4Range(p->pc, p->pcLoc, p->pcShadow, dev.psF, std::max(1, std::min(224, ps->info.numC + 0)), p->id, "pc", p->shadowValid);
