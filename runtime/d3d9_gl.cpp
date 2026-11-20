@@ -1691,8 +1691,9 @@ static void drawImpl(const DrawCall& dc)
 	}
 	uint64_t t0 = profNow();
 	// fast shaders: a pixel shader that samples one of the game's own render targets keeps full precision
-	bool precise = false;
-	if (rt::config.fastShaders)
+	// particles (their vertex shader reads its corner / random tables through a0) fade against the scene depth too
+	bool precise = rt::config.fastShaders && vs->info.relC;
+	if (rt::config.fastShaders && !precise)
 		for (int i = 0; i < 16 && !precise; i++) if (ps->info.samplerType[i] && dev.tex[i] && (dev.tex[i]->usage & 3)) precise = true;
 	Prog* p = getProgram(vs, ps, precise);
 	if (!p) { gHNoProg++; static int nf = 0; if (nf++ < 10) log("d3d9: draw skipped: no program for vs %016llx ps %016llx", (unsigned long long)vs->hash, (unsigned long long)ps->hash); return; }

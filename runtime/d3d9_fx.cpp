@@ -760,6 +760,8 @@ static void packConst(const FxInfo& fx, const CtabConst& c, ShaderObj* sh, bool 
 		// /sdcard/ra3_packcheck: a skipped parameter is packed anyway and compared with what the registers hold;
 		// differences are logged (and repaired) - finds what else changes registers or values behind the tags
 		static const bool check = access("/sdcard/ra3_packcheck", F_OK) == 0;
+		static const bool checkLogged = (log("fx: stale constants check %s", check ? "ON (ra3_packcheck)" : "off"), true);
+		(void)checkLogged;
 		if (same && check)
 		{
 			static uint32_t tmp[256 * 4];
