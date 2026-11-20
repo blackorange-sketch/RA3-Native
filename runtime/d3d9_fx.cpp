@@ -465,6 +465,7 @@ static void noteTime(CPU* c, const PRef& r, const void* v, const char* how)
 	}
 	log("fxtime: %s Time=%.4f at %.3f s, frame %u, fps60 %d, callers%s", how, f, us / 1e6, glr::frameNo(), ::rt::gFps60 ? 1 : 0, ra.c_str());
 }
+static void noteViewProj(const std::string& name, const float* m, const char* how);
 H("ID3DXEffect::SetValue")
 {
 	PRef r = refOfSet(o, ARG(1));
