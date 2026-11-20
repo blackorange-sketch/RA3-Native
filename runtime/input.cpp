@@ -137,6 +137,8 @@ std::deque<CmdHist> cmdHist;       // cursor offsets over time (the camera react
 float pressX = 0, pressY = 0;      // where the right button went down (the game scrolls by the cursor's offset from it)
 float speed = 10.f;                // picture speed (pixels per second) per pixel of cursor offset; learned while dragging
 float lastPX = 0, lastPY = 0; int64_t lastTickAt = 0;
+float lastFX = 0, lastFY = 0, fvX = 0, fvY = 0;   // the finger's velocity (back buffer pixels per second, smoothed)
+bool finishing = false; int64_t finishUntil = 0;   // finger lifted: the camera still catches up with where it let go
 bool project(const float* w, float& px, float& py)
 {
 	float cx = w[0] * vp[0] + w[1] * vp[4] + w[2] * vp[8] + vp[12], cy = w[0] * vp[1] + w[1] * vp[5] + w[2] * vp[9] + vp[13];
@@ -167,7 +169,7 @@ void panBegin(float sx, float sy)
 		fingerBX = (sx - vx) * bw / std::max(1, vw); fingerBY = (sy - vy) * bh / std::max(1, vh);
 		if (unproject(fingerBX, fingerBY, anchorW) && project(anchorW, p0X, p0Y))
 		{
-			dragActive = true; fingerSX = fingerBX; fingerSY = fingerBY; cmdHist.clear(); lastPX = p0X; lastPY = p0Y; lastTickAt = nowMs(); fingerMovedAt = nowMs();
+			dragActive = true; finishing = false; lastFX = fingerBX; lastFY = fingerBY; fvX = fvY = 0; fingerSX = fingerBX; fingerSY = fingerBY; cmdHist.clear(); lastPX = p0X; lastPY = p0Y; lastTickAt = nowMs(); fingerMovedAt = nowMs();
 			pressX = (float)curX; pressY = (float)curY;   // the screen centre (see the right button press below)
 		}
 		static int nl = 0;
@@ -216,7 +218,20 @@ void dragTick()
 	{
 		return;
 	}
-	if (dragMode != 2 || !rDown)
+	if (finishing)
+	{
+		// the finger is up: keep scrolling until the grabbed point reaches where it let go (at most 0.6 s)
+		float qx, qy;
+		bool there = !project(anchorW, qx, qy) || fabsf(fingerBX - qx) + fabsf(fingerBY - qy) < 10.f;
+		if (there || now >= finishUntil || !rDown)
+		{
+			finishing = false; dragActive = false;
+			if (rDown) { rDown = false; push(WM_RBUTTONUP, mouseFlags(), xy(), 0); }
+			dragMode = 0;
+			return;
+		}
+	}
+	else if (dragMode != 2 || !rDown)
 	{
 		dragActive = false;
 		static int nl = 0;
@@ -243,9 +258,14 @@ void dragTick()
 		}
 	}
 	lastPX = px; lastPY = py; lastTickAt = now;
-	const float tau = 0.2f;                  // seconds to close the gap (longer than the game's reaction time of about 0.1 s: no overshoot)
+	const float tau = 0.18f;                 // seconds to close the gap (longer than the game's reaction time of about 0.1 s: no overshoot)
 	float k = 1.f / (tau * speed);
-	float ox = -(fingerBX - px) * k, oy = -(fingerBY - py) * k;
+	// finger velocity: the camera is also sent the finger's own speed (less lag), the gap term corrects the rest
+	float fdx = (fingerBX - lastFX) / dt, fdy = (fingerBY - lastFY) / dt;
+	lastFX = fingerBX; lastFY = fingerBY;
+	if (finishing) fdx = fdy = 0;
+	fvX = fvX * 0.5f + fdx * 0.5f; fvY = fvY * 0.5f + fdy * 0.5f;
+	float ox = -(fingerBX - px) * k - 0.6f * fvX / speed, oy = -(fingerBY - py) * k - 0.6f * fvY / speed;
 	float lim = std::min(bw, bh) * 0.36f, len = sqrtf(ox * ox + oy * oy);
 	if (len > lim) { ox *= lim / len; oy *= lim / len; }
 	if (fabsf(fingerBX - px) + fabsf(fingerBY - py) < 4.f) ox = oy = 0;
@@ -287,6 +307,12 @@ void onTouch(int action, int idx, int count, const float* xs, const float* ys)
 		kbButtonRect(bx, by, bw2, bh2);
 		if (action == DOWN && xs[0] >= bx && xs[0] < bx + bw2 && ys[0] >= by && ys[0] < by + bh2) { kbToggle = true; swallow = true; return; }
 		if (swallow) { if (action == UP || action == CANCEL) swallow = false; return; }
+	}
+	if (action == DOWN && finishing)
+	{
+		// a new touch while the camera was still catching up: stop it there
+		finishing = false; dragActive = false; dragMode = 0;
+		if (rDown) { rDown = false; push(WM_RBUTTONUP, mouseFlags(), xy(), 0); }
 	}
 	if (action == DOWN)
 	{
@@ -374,6 +400,7 @@ void onTouch(int action, int idx, int count, const float* xs, const float* ys)
 		// camera, a long press (left click) sends the selected units there
 		if (pending && dragMode == 0 && action == UP) { bool lp = now - downAt >= 600; clickWithMods((onRadar ? !lp : lp) != hud::mouseMode(1)); }   // RMB button lit: tap = right click
 		if (lDown) { lDown = false; push(WM_LBUTTONUP, mouseFlags(), xy(), 40); }
+		if (rDown && dragMode == 2 && dragActive && action == UP) { finishing = true; finishUntil = now + 600; pending = false; prevCount = count; return; }   // drag the map: the camera finishes the move
 		if (rDown && (dragMode == 2 || dragMode == 3)) { rDown = false; push(WM_RBUTTONUP, mouseFlags(), xy(), 40); }
 		if (mDown) { mDown = false; twoPan = false; push(WM_MBUTTONUP, mouseFlags(), xy(), 40); }
 		pending = false; dragMode = 0;
