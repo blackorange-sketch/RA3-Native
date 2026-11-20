@@ -757,6 +757,28 @@ static void packConst(const FxInfo& fx, const CtabConst& c, ShaderObj* sh, bool 
 		(void)noSkipLogged;
 		bool same = !fullPack && !noSkip;
 		for (uint32_t r = c.regIndex; same && r < end; r++) same = tags[r].p == &p && tags[r].ver == p.ver && tags[r].at == c.regIndex;
+		// /sdcard/ra3_packcheck: a skipped parameter is packed anyway and compared with what the registers hold;
+		// differences are logged (and repaired) - finds what else changes registers or values behind the tags
+		static const bool check = access("/sdcard/ra3_packcheck", F_OK) == 0;
+		if (same && check)
+		{
+			static uint32_t tmp[256 * 4];
+			memcpy(tmp + 4 * c.regIndex, fregs + 4 * c.regIndex, 16ull * (end - c.regIndex));
+			fxrt::packToRegs(p.ty, p.val.data(), p.val.size(), 2, c.regIndex, tmp, end);
+			if (memcmp(tmp + 4 * c.regIndex, fregs + 4 * c.regIndex, 16ull * (end - c.regIndex)))
+			{
+				static int nl = 0;
+				if (nl++ < 60)
+				{
+					uint32_t r = c.regIndex;
+					while (r < end && !memcmp(tmp + 4 * r, fregs + 4 * r, 16)) r++;
+					const float* h = fregs + 4 * r; const float* w = (const float*)tmp + 4 * r;
+					log("fx: STALE %s c%u (param '%s' c%u-c%u, %zu values): holds %g %g %g %g, should be %g %g %g %g",
+						isVs ? "vs" : "ps", r, p.name.c_str(), c.regIndex, end - 1, p.val.size(), h[0], h[1], h[2], h[3], w[0], w[1], w[2], w[3]);
+				}
+				same = false;
+			}
+		}
 		if (same) return;
 		fxrt::packToRegs(p.ty, p.val.data(), p.val.size(), 2, c.regIndex, (uint32_t*)fregs, end);
 		for (uint32_t r = c.regIndex; r < end; r++) tags[r] = {&p, p.ver, c.regIndex};
