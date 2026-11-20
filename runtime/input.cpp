@@ -129,8 +129,13 @@ float vp[16]; bool vpValid = false; int64_t vpAt = 0;
 bool dragActive = false;
 float anchorW[3];                  // the grabbed ground point (world)
 float fingerBX = 0, fingerBY = 0;  // the finger in back buffer pixels
-float prevPX = 0, prevPY = 0, cmdX = 0, cmdY = 0; bool prevValid = false;
-float ratio = -2.f;                // screen motion of the grabbed point per cursor pixel (negative: the camera follows the cursor)
+float fingerSX = 0, fingerSY = 0;  // the finger at touch-down (back buffer pixels)
+float p0X = 0, p0Y = 0;            // the grabbed point on screen at touch-down
+float sumCX = 0, sumCY = 0;        // cursor pixels sent so far in this drag
+float corrX = 0, corrY = 0;        // extra cursor pixels from the resting-finger correction
+int64_t fingerMovedAt = 0;
+bool learnPending = false; int64_t learnAt = 0; float learnW[3], learnP0X, learnP0Y, learnCX, learnCY;
+float ratio = -2.f;                // screen motion of the grabbed point per cursor pixel (negative: the camera follows the cursor); learned after each drag
 bool project(const float* w, float& px, float& py)
 {
 	float cx = w[0] * vp[0] + w[1] * vp[4] + w[2] * vp[8] + vp[12], cy = w[0] * vp[1] + w[1] * vp[5] + w[2] * vp[9] + vp[13];
@@ -159,7 +164,11 @@ void panBegin(float sx, float sy)
 	if (rt::config.panInvert && vpValid && nowMs() - vpAt < 500)
 	{
 		fingerBX = (sx - vx) * bw / std::max(1, vw); fingerBY = (sy - vy) * bh / std::max(1, vh);
-		if (unproject(fingerBX, fingerBY, anchorW)) { dragActive = true; prevValid = false; cmdX = cmdY = 0; }
+		if (unproject(fingerBX, fingerBY, anchorW) && project(anchorW, p0X, p0Y))
+		{
+			dragActive = true; learnPending = false;
+			fingerSX = fingerBX; fingerSY = fingerBY; sumCX = sumCY = 0; corrX = corrY = 0; fingerMovedAt = nowMs();
+		}
 		static int nl = 0;
 		if (nl++ < 6) log("input: drag the map from %.0f,%.0f -> ground %.1f,%.1f (%s)", fingerBX, fingerBY, anchorW[0], anchorW[1], dragActive ? "follows the finger" : "no ground, plain pan");
 	}
@@ -168,7 +177,7 @@ void panRelative(float dx, float dy, bool mid);
 // relative pan: the cursor moves kPanGain times faster than the finger; near an edge the right button is released and re-grabbed at the centre
 void panMove(float sx, float sy, bool mid = false)
 {
-	if (!mid && dragActive) { fingerBX = (sx - vx) * bw / std::max(1, vw); fingerBY = (sy - vy) * bh / std::max(1, vh); panPX = sx; panPY = sy; return; }   // dragTick moves the camera
+	if (!mid && dragActive) { fingerBX = (sx - vx) * bw / std::max(1, vw); fingerBY = (sy - vy) * bh / std::max(1, vh); panPX = sx; panPY = sy; fingerMovedAt = nowMs(); return; }   // dragTick moves the camera
 	float dir = (!mid && rt::config.panInvert) ? -1.f : 1.f;   // no camera known (yet): plain inverted pan
 	panRelative(dir * (sx - panPX) * bw / std::max(1, vw) * kPanGain, dir * (sy - panPY) * bh / std::max(1, vh) * kPanGain, mid);
 	panPX = sx; panPY = sy;
@@ -201,28 +210,44 @@ void setViewProj(const float* m) { std::lock_guard<std::mutex> g(mu); memcpy(vp,
 void dragTick()
 {
 	std::lock_guard<std::mutex> g(mu);
-	if (!dragActive) return;
-	if (dragMode != 2 || !rDown) { dragActive = false; static int nl = 0; if (nl++ < 10) log("input: drag the map ended, screen motion per cursor pixel %.2f", ratio); return; }
-	float px, py;
-	if (!project(anchorW, px, py)) return;
-	// learn how far the point moved on screen per cursor pixel of the last step
-	if (prevValid)
+	int64_t now = nowMs();
+	if (!dragActive)
 	{
-		float c2 = cmdX * cmdX + cmdY * cmdY;
-		if (c2 > 4.f)
+		// half a second after a drag the camera has settled: how far did the point really move per cursor pixel?
+		if (learnPending && now >= learnAt)
 		{
-			float obs = ((px - prevPX) * cmdX + (py - prevPY) * cmdY) / c2;
-			if (obs < -0.05f) ratio = ratio * 0.7f + std::max(-40.f, obs) * 0.3f;
+			learnPending = false;
+			float px, py, c2 = learnCX * learnCX + learnCY * learnCY;
+			if (c2 > 400.f && project(learnW, px, py))
+			{
+				float obs = ((px - learnP0X) * learnCX + (py - learnP0Y) * learnCY) / c2;
+				if (obs < -0.1f && obs > -40.f) ratio = ratio * 0.4f + obs * 0.6f;
+				static int nl = 0;
+				if (nl++ < 20) log("input: drag the map: measured %.2f, now %.2f screen pixels per cursor pixel", obs, ratio);
+			}
 		}
+		return;
 	}
-	float ex = fingerBX - px, ey = fingerBY - py;
-	{ static int nl = 0; if (nl++ < 40) log("input: drag tick point %.0f,%.0f finger %.0f,%.0f ratio %.2f", px, py, fingerBX, fingerBY, ratio); }
-	cmdX = 0.6f * ex / ratio; cmdY = 0.6f * ey / ratio;
-	float lim = bw / 12.f, len = sqrtf(cmdX * cmdX + cmdY * cmdY);
-	if (len > lim) { cmdX *= lim / len; cmdY *= lim / len; }
-	if (fabsf(cmdX) + fabsf(cmdY) < 0.5f) { cmdX = cmdY = 0; }
-	else panRelative(cmdX, cmdY, false);
-	prevPX = px; prevPY = py; prevValid = true;
+	if (dragMode != 2 || !rDown)
+	{
+		dragActive = false;
+		learnPending = true; learnAt = now + 500; memcpy(learnW, anchorW, sizeof learnW); learnP0X = p0X; learnP0Y = p0Y; learnCX = sumCX; learnCY = sumCY;
+		return;
+	}
+	// The game moves the camera a few frames after the cursor moves, so following the measured point would overshoot.
+	// Instead the cursor is sent exactly what the finger has moved (converted with the learned ratio); once the finger
+	// rests and the camera has caught up, the remaining error is corrected gently.
+	if (now - fingerMovedAt > 300)
+	{
+		float px, py;
+		if (project(anchorW, px, py)) { corrX += 0.1f * (fingerBX - px) / ratio; corrY += 0.1f * (fingerBY - py) / ratio; }
+	}
+	float wantX = (fingerBX - fingerSX) / ratio + corrX, wantY = (fingerBY - fingerSY) / ratio + corrY;
+	float cx = wantX - sumCX, cy = wantY - sumCY;
+	float lim = bw / 10.f, len = sqrtf(cx * cx + cy * cy);
+	if (len > lim) { cx *= lim / len; cy *= lim / len; }
+	int ix = (int)lroundf(cx), iy = (int)lroundf(cy);
+	if (ix || iy) { panRelative((float)ix, (float)iy, false); sumCX += ix; sumCY += iy; }
 }
 void kbButtonRect(int& x, int& y, int& w, int& h) { if (hud::kbRect(x, y, w, h)) return; int u = hud::buttonUnit(); x = u / 3; y = u / 3; w = u * 3 / 2; h = u; }
 
