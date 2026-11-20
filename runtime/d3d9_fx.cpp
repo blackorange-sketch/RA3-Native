@@ -11,7 +11,7 @@ namespace rt { extern bool gFps60; }
 #include "d3d9_int.h"
 #include "d3dx_fx.h"
 #include "gfx.h"
-namespace d3d { namespace glr { bool targetIsBack(); } }
+namespace d3d { namespace glr { bool targetIsBack(); } extern std::atomic<int> gViewProjReg; }
 namespace input { void setViewProj(const float* m); }
 
 using namespace rt;
@@ -687,7 +687,6 @@ H("ID3DXEffect::GetTexture")
 } END;
 
 // ---- technique / pass application
-std::atomic<int> gViewProjReg{-1};   // vertex shader register of the camera matrix (set by the engine)
 struct PassCtx { FxInfo* fx = nullptr; uint32_t tech = 0, pass = 0; bool active = false; };
 static PassCtx gPass;
 

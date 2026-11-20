@@ -33,7 +33,7 @@
 #include "gfx.h"
 #include "glrec.h"
 namespace rt { extern bool gFps60; uint64_t limiterCpuUs(); }
-namespace d3d { extern std::atomic<int> gViewProjReg; }
+namespace d3d { std::atomic<int> gViewProjReg{-1}; }   // vertex shader register of the camera matrix (the engine sets it; found in d3d9_fx)
 
 using namespace rt;
 
