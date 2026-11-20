@@ -2476,7 +2476,9 @@ static void presentImpl()
 		{
 			static int diagFrames = 0;
 			bool inGame = gUiWorldDraws >= 50;
-			gUiDiag = inGame && gUiScale > 1.001f && diagFrames < 3 && gFrameNo % 900 == 0 && verbose();   // ui-diag only with ra3_verbose
+			// /sdcard/ra3_uidiag: a frame every 1.5 s (40 in all), to catch a tooltip held open
+			static const bool uiDiagFlag = access("/sdcard/ra3_uidiag", F_OK) == 0;
+			gUiDiag = inGame && gUiScale > 1.001f && (uiDiagFlag ? diagFrames < 40 && gFrameNo % 45 == 0 : diagFrames < 3 && gFrameNo % 900 == 0 && verbose());
 			if (gUiDiag) { diagFrames++; log("ui-diag: frame %u", gFrameNo + 1); }
 		}
 		// the right column's extents only grow (the open build menu is the largest): its scale stays the same when menus open
