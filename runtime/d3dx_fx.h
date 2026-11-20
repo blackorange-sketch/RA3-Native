@@ -44,7 +44,8 @@ struct FxParam
 	uint32_t dv = 0;          // default value offset (relative to base)
 	std::string str;          // string parameters: default value (resolved from the object table)
 	std::vector<uint32_t> val;   // current value, tightly packed (4 bytes per scalar); object params hold ids / unused
-	bool skipConst = false;   // listed in D3DXCreateEffectEx's pSkipConstants: the application sets these registers itself
+	bool skipConst = false;
+	mutable int8_t isViewProj = -1;   // named ViewProjection (the camera; looked up once)   // listed in D3DXCreateEffectEx's pSkipConstants: the application sets these registers itself
 	uint32_t texObj = 0;      // texture parameters: guest address of the bound texture object
 	mutable uint32_t texCacheA = 0; mutable void* texCacheO = nullptr;   // texObj resolved (objects are never deleted)
 	uint32_t smpTex = 0;      // sampler parameters: index of the texture parameter it samples + 1

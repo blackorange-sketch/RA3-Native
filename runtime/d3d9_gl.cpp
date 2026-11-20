@@ -33,6 +33,7 @@
 #include "gfx.h"
 #include "glrec.h"
 namespace rt { extern bool gFps60; uint64_t limiterCpuUs(); }
+namespace d3d { extern std::atomic<int> gViewProjReg; }
 
 using namespace rt;
 
@@ -1481,7 +1482,8 @@ static std::vector<UiRect> gUiPieces;   // panel pieces scaled this frame, in th
 static bool gUiMenu = false;      // a big window covers the battle this frame
 static bool gUiNested = false;     // drawing a rebuilt interface draw (no second analysis)
 static uint32_t gUiWorldDraws = 0;
-static uint32_t gAptDraws = 0, gVideoDraws = 0;   // interface (Flash) and video draws this frame: menu vs. loading screen / cutscene   // depth-tested draws this frame: the HUD is scaled in a battle only, not in menus
+static uint32_t gAptDraws = 0, gVideoDraws = 0;
+static float gCamRegs[16]; static uint32_t gCamRegsFrame = ~0u; static bool gCamRegsNew = false;   // interface (Flash) and video draws this frame: menu vs. loading screen / cutscene   // depth-tested draws this frame: the HUD is scaled in a battle only, not in menus
 static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, float& axN, float& ayN, float& ax, float& ay, std::vector<uint8_t>& split)
 {
 	if (gUiNested || gUiScale <= 1.001f || gUiWorldDraws < 50 || !dev.vs || !isBack(dev.rt0)) return 0.f;
@@ -1686,6 +1688,12 @@ static void drawImpl(const DrawCall& dc)
 	healthStates();
 	if (dev.rs[7] && !gUiNested) gUiWorldDraws++;   // ZENABLE
 	if (!gUiNested) { if (vs->hash == kAptVs) gAptDraws++; else if (vs->hash == kVideoVs) gVideoDraws++; }
+	if (dev.rs[7] && !gUiNested && rt::config.panInvert)
+	{
+		// the camera of the 3D world draws, for "drag the map" (handed to input once per frame)
+		int r = gViewProjReg.load(std::memory_order_relaxed);
+		if (r >= 0 && r <= 252 && gCamRegsFrame != gFrameNo) { uint32_t tw, th; targetSize(dev.rt0, tw, th); if (tw == backW && th == backH) { memcpy(gCamRegs, dev.vsF + 4 * r, 64); gCamRegsFrame = gFrameNo; gCamRegsNew = true; } }
+	}
 	if (gUiDiag && !gUiNested)
 	{
 		static int nd = 0;
@@ -2366,6 +2374,16 @@ static void presentImpl()
 	{
 		// on-screen keyboard button: drawn with scissored clears (no shader needed)
 		input::setScreen(sw, sh);
+		if (gCamRegsNew)
+		{
+			// registers hold the matrix columns: back to the row-vector form (clip = pos * M)
+			gCamRegsNew = false;
+			float m[16];
+			for (int a = 0; a < 4; a++) for (int b = 0; b < 4; b++) m[a * 4 + b] = gCamRegs[b * 4 + a];
+			static int nl = 0;
+			if (nl++ < 3) log("input: camera [%g %g %g %g] [%g %g %g %g] [%g %g %g %g] [%g %g %g %g]", m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15]);
+			input::setViewProj(m);
+		}
 		input::dragTick();
 		int kx, ky, kw, kh;
 		input::kbButtonRect(kx, ky, kw, kh);

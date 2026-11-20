@@ -687,6 +687,7 @@ H("ID3DXEffect::GetTexture")
 } END;
 
 // ---- technique / pass application
+std::atomic<int> gViewProjReg{-1};   // vertex shader register of the camera matrix (set by the engine)
 struct PassCtx { FxInfo* fx = nullptr; uint32_t tech = 0, pass = 0; bool active = false; };
 static PassCtx gPass;
 
@@ -700,6 +701,12 @@ static void packConst(const FxInfo& fx, const CtabConst& c, ShaderObj* sh, bool 
 {
 	if (k < 0) return;
 	const FxParam& p = fx.params[k];
+	if (p.skipConst && isVs && c.regSet == 2)
+	{
+		// the engine sets the camera's ViewProjection registers itself: remember where they are ("drag the map")
+		if (p.isViewProj < 0) p.isViewProj = p.name == "ViewProjection" ? 1 : 0;
+		if (p.isViewProj && gViewProjReg.load(std::memory_order_relaxed) != (int)c.regIndex) { gViewProjReg = (int)c.regIndex; static int nl = 0; if (nl++ < 8) log("fx: ViewProjection lives in vertex registers c%u-c%u", c.regIndex, c.regIndex + 3); }
+	}
 	if (p.ty.cls == 4 || p.val.empty() || p.skipConst) return;
 	float* fregs = isVs ? dev.vsF : dev.psF;
 	int32_t* iregs = isVs ? dev.vsI : dev.psI;
