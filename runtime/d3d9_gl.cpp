@@ -2431,15 +2431,26 @@ static void presentImpl()
 	gFrameNo++;
 	if (gFrameNo == 1)
 	{
-		// The game's main thread does logic and rendering: keep it on the fast cores and raise its priority.
-		unsigned long freq[16] = {0}, maxF = 0; int ncpu = 0;
+		// The game thread that draws (the busiest one) goes to the fast cores, with a higher priority; the other threads
+		// are left to Android. Fast cores by the kernel's cpu_capacity (how much work a core does per clock and at its top
+		// clock): on Helio G85/G88/G99-like chips the small cores clock nearly as high as the two big ones (1.8 vs 2.0 GHz),
+		// so the clock alone picked all eight cores and the pinning did nothing.
+		unsigned long freq[16] = {0}, cap[16] = {0}, maxF = 0, maxC = 0; int ncpu = 0;
 		for (int i = 0; i < 16; i++)
 		{
 			char path[96]; snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq", i);
 			if (FILE* f = fopen(path, "r")) { if (fscanf(f, "%lu", &freq[i]) == 1) { ncpu = i + 1; maxF = std::max(maxF, freq[i]); } fclose(f); }
+			snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cpu_capacity", i);
+			if (FILE* f = fopen(path, "r")) { if (fscanf(f, "%lu", &cap[i]) == 1) maxC = std::max(maxC, cap[i]); fclose(f); }
 		}
 		cpu_set_t set; CPU_ZERO(&set); int picked = 0;
-		for (int i = 0; i < ncpu; i++) if (freq[i] * 4 >= maxF * 3) { CPU_SET(i, &set); picked++; }
+		for (int i = 0; i < ncpu; i++)
+			if (maxC ? cap[i] * 4 >= maxC * 3 : freq[i] * 4 >= maxF * 3) { CPU_SET(i, &set); picked++; }
+		{
+			std::string t;
+			for (int i = 0; i < ncpu; i++) t += " " + std::to_string(freq[i] / 1000) + "MHz/" + std::to_string(cap[i]);
+			log("perf: cores (top clock / capacity):%s", t.c_str());
+		}
 		int ra = picked ? sched_setaffinity(0, sizeof set, &set) : -1;
 		int rp = setpriority(PRIO_PROCESS, (id_t)gettid(), -10);
 		::profStart();
