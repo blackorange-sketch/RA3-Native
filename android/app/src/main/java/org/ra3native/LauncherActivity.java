@@ -19,6 +19,8 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.storage.StorageManager;
+import android.os.storage.StorageVolume;
 import android.provider.Settings;
 import android.util.TypedValue;
 import android.view.Gravity;
@@ -189,6 +191,9 @@ public class LauncherActivity extends Activity {
         ur.addView(usel);
         showUiScale();
 
+        stepRow(opts, "BUTTON SIZE", "Size of the on-screen hotkey buttons", "button_size", new int[]{80, 90, 100, 110, 120, 130, 140, 150, 160, 180, 200}, 100);
+        stepRow(opts, "BUTTON OPACITY", "How solid the on-screen buttons are (lower: more of the map shows through)", "button_opacity", new int[]{30, 40, 50, 60, 70, 80, 90, 100}, 100);
+        toggleRow(opts, "DRAG THE MAP", "Swipe moves the map under your finger (off: swipe moves the camera, like the mouse)", "pan_invert", false);
         toggleRow(opts, "CUTSCENES", "Intro, briefings and campaign videos", "cutscenes", true);
         toggleRow(opts, "WIDE SCREEN", "The game fills the whole screen instead of 16:9 (more of the map, buttons on top)", "wide_screen", false);
         toggleRow(opts, "FAST SHADERS", "Lower precision in pixel shaders: faster on Mali and weaker GPUs, rare visual glitches", "fast_shaders", false);
@@ -272,6 +277,30 @@ public class LauncherActivity extends Activity {
         sep.setBackgroundColor(0x33ffffff);
         parent.addView(sep, new LinearLayout.LayoutParams(-1, 1));
         return r;
+    }
+
+    // an option with a value list and arrows (percent values)
+    void stepRow(LinearLayout parent, String name, String hint, final String key, final int[] values, final int def) {
+        LinearLayout r = optionRow(parent, name, hint);
+        LinearLayout sel = new LinearLayout(this);
+        sel.setGravity(Gravity.CENTER_VERTICAL);
+        TextView prev = arrow("\u25C0"), next = arrow("\u25B6");
+        final TextView value = label("", 12, TEXT, true, 0.12f);
+        value.setGravity(Gravity.CENTER);
+        value.setMinWidth(dp(80));
+        final Runnable show = () -> value.setText(prefs.getInt(key, def) + "%");
+        final java.util.function.IntConsumer step = d -> {
+            int cur = prefs.getInt(key, def), i = 0;
+            for (int k = 0; k < values.length; k++) if (values[k] <= cur) i = k;
+            i = Math.max(0, Math.min(values.length - 1, i + d));
+            prefs.edit().putInt(key, values[i]).apply();
+            show.run();
+        };
+        prev.setOnClickListener(v -> step.accept(-1));
+        next.setOnClickListener(v -> step.accept(1));
+        sel.addView(prev); sel.addView(value); sel.addView(next);
+        r.addView(sel);
+        show.run();
     }
 
     void toggleRow(LinearLayout parent, String name, String hint, final String key, boolean def) {
@@ -396,11 +425,48 @@ public class LauncherActivity extends Activity {
         warnText.setText(languages.size() <= 1 ? "Only one language is installed in this copy of the game." : "");
     }
 
-    // ra3_1.12.game up to three levels below /sdcard (same rule as the native side)
+    // internal storage first, then memory cards and USB drives
+    List<File> storageRoots() {
+        List<File> roots = new ArrayList<>();
+        List<String> seen = new ArrayList<>();
+        List<File> cand = new ArrayList<>();
+        cand.add(Environment.getExternalStorageDirectory());
+        try {
+            StorageManager sm = (StorageManager) getSystemService(Context.STORAGE_SERVICE);
+            for (StorageVolume v : sm.getStorageVolumes()) {
+                File d = null;
+                if (Build.VERSION.SDK_INT >= 30) d = v.getDirectory();
+                else try { d = (File) StorageVolume.class.getMethod("getPathFile").invoke(v); } catch (Exception ignored) {}
+                if (d != null) cand.add(d);
+            }
+        } catch (Exception ignored) {}
+        File[] st = new File("/storage").listFiles();
+        if (st != null) for (File f : st) if (!f.getName().equals("emulated") && !f.getName().equals("self")) cand.add(f);
+        for (File f : cand) {
+            String key;
+            try { key = f.getCanonicalPath(); } catch (Exception e) { key = f.getAbsolutePath(); }
+            if (seen.contains(key) || f.listFiles() == null) continue;
+            seen.add(key);
+            roots.add(f);
+        }
+        return roots;
+    }
+
+    String rootLabel(File root) {
+        if (root.equals(Environment.getExternalStorageDirectory())) return "Internal storage";
+        try {
+            StorageManager sm = (StorageManager) getSystemService(Context.STORAGE_SERVICE);
+            StorageVolume v = sm.getStorageVolume(root);
+            if (v != null) return v.getDescription(this);
+        } catch (Exception ignored) {}
+        return root.getName();
+    }
+
+    // ra3_1.12.game up to three levels below the root of the internal storage, a memory card or a USB drive
     String findGame() {
         ArrayDeque<File> q = new ArrayDeque<>();
         ArrayDeque<Integer> depth = new ArrayDeque<>();
-        q.add(Environment.getExternalStorageDirectory()); depth.add(0);
+        for (File r : storageRoots()) { q.add(r); depth.add(0); }
         int visited = 0;
         while (!q.isEmpty() && visited++ < 20000) {
             File d = q.poll(); int dd = depth.poll();
@@ -424,16 +490,25 @@ public class LauncherActivity extends Activity {
         final List<File> dirs = new ArrayList<>();
         if (list != null) for (File f : list) if (f.isDirectory() && !f.getName().startsWith(".")) dirs.add(f);
         Collections.sort(dirs, (a, c) -> a.getName().compareToIgnoreCase(c.getName()));
-        final boolean canUp = dir.getParentFile() != null && !dir.equals(Environment.getExternalStorageDirectory());
+        // at the top of a storage the other storages (memory card, USB drive) are offered instead of ".."
+        final List<File> roots = storageRoots();
+        boolean isRoot = false;
+        for (File r : roots) if (r.getAbsolutePath().equals(dir.getAbsolutePath())) isRoot = true;
+        final List<File> others = new ArrayList<>();
+        if (isRoot || dir.getParentFile() == null) for (File r : roots) if (!r.getAbsolutePath().equals(dir.getAbsolutePath())) others.add(r);
+        final boolean canUp = !isRoot && dir.getParentFile() != null;
         List<String> names = new ArrayList<>();
         if (canUp) names.add("\u2191  ..");
+        for (File r : others) names.add("\u21C4  " + rootLabel(r));
         for (File f : dirs) names.add("\u25A0  " + f.getName());
         final File game = findIn(dir);
         AlertDialog.Builder bld = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-                .setTitle(dir.getAbsolutePath())
+                .setTitle(isRoot ? rootLabel(dir) : dir.getAbsolutePath())
                 .setItems(names.toArray(new String[0]), (dlg, which) -> {
-                    if (canUp && which == 0) browse(dir.getParentFile());
-                    else browse(dirs.get(which - (canUp ? 1 : 0)));
+                    int i = which;
+                    if (canUp) { if (i == 0) { browse(dir.getParentFile()); return; } i--; }
+                    if (i < others.size()) { browse(others.get(i)); return; }
+                    browse(dirs.get(i - others.size()));
                 })
                 .setNegativeButton("CANCEL", null);
         if (game != null) bld.setPositiveButton("USE THIS FOLDER", (dlg, w) -> {
@@ -572,6 +647,9 @@ public class LauncherActivity extends Activity {
         cfg.append("ui_scale=").append(prefs.getInt("ui_scale", 110)).append('\n');
         cfg.append("wide_screen=").append(prefs.getBoolean("wide_screen", false) ? 1 : 0).append('\n');
         cfg.append("fast_shaders=").append(prefs.getBoolean("fast_shaders", false) ? 1 : 0).append('\n');
+        cfg.append("button_size=").append(prefs.getInt("button_size", 100)).append('\n');
+        cfg.append("button_opacity=").append(prefs.getInt("button_opacity", 100)).append('\n');
+        cfg.append("pan_invert=").append(prefs.getBoolean("pan_invert", false) ? 1 : 0).append('\n');
         if (!gamePath.isEmpty()) cfg.append("gamepath=").append(gamePath).append('\n');
         try (FileOutputStream o = new FileOutputStream(new File(getFilesDir(), "launcher.cfg"))) {
             o.write(cfg.toString().getBytes("UTF-8"));

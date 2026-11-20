@@ -29,6 +29,9 @@ struct Config
 	bool fps60 = false;                  // experimental 60 fps cap
 	float uiScale = 1.f;                 // in-game interface size (HUD panels in the screen corners)
 	bool fastShaders = false;
+	int buttonSize = 100;                // launcher: on-screen hotkey button size, percent
+	int buttonOpacity = 100;             // launcher: on-screen button opacity, percent
+	bool panInvert = false;              // launcher: a swipe drags the map (the camera moves the other way)
 	bool wideScreen = false;             // launcher: game picture as wide as the screen allows (Options.ini resolution patched)            // pixel shaders in mediump (launcher option for Mali / weaker GPUs)
 };
 std::string commandLine();               // the game's command line (language config)

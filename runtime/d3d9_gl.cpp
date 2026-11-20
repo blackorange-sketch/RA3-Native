@@ -2377,7 +2377,7 @@ static void presentImpl()
 		bool opaque = hud::editingNow();
 		auto rect = [&](int x, int y, int w, int h, float r, float g, float b) {
 			float lum = 0.3f * r + 0.59f * g + 0.11f * b;
-			float a = opaque ? 1.f : lum < 0.2f ? 0.3f : lum < 0.6f ? 0.6f : 0.9f;
+			float a = opaque ? 1.f : (lum < 0.2f ? 0.3f : lum < 0.6f ? 0.6f : 0.9f) * std::min(1.f, rt::config.buttonOpacity / 100.f * (lum < 0.6f ? 1.f : 1.15f));   // launcher: button opacity (letters fade less)
 			float x0 = 2.f * x / sw - 1.f, x1 = 2.f * (x + w) / sw - 1.f, y0 = 1.f - 2.f * (y + h) / sh, y1 = 1.f - 2.f * y / sh;
 			glUniform4f(gRectLoc, x0, y0, x1, y1);
 			glUniform4f(gRectColLoc, r, g, b, a);

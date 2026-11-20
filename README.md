@@ -56,18 +56,19 @@
 
 - **Android 10 or newer, 64-bit (arm64)** with OpenGL ES 3.2. Developed and tested on a Snapdragon 8 Gen 2; other recent Snapdragon devices should work.
 - **Mali / PowerVR GPUs** — experimental: these GPUs cannot read the game's DXT textures, so they are converted to ETC2 on the first load and kept in a cache (up to 1.5 GB), which makes the first start of each map noticeably slower. The *Fast shaders* launcher option can speed up the GPU at a small cost in image quality. Reports from Mali devices are very welcome.
-- **Red Alert 3, patch 1.12** — the full game folder (about 8.7 GB), copied to the phone's internal storage.
+- **Red Alert 3, patch 1.12** — the full game folder (about 8.7 GB) on the phone's internal storage, a memory card or a USB drive.
 - About **4 GB of free RAM** recommended.
 
 ## Installation
 
 1. Download the APK from the [latest stable release](https://github.com/blackorange-sketch/RA3-Native/releases/latest) and install it.
    Want the newest fixes before they are released? The [nightly build](https://github.com/blackorange-sketch/RA3-Native/releases/tag/nightly) is rebuilt after every change — it may be broken. A newer build always installs over an older one, whichever channel it comes from.
-2. Copy your game folder to the phone, for example to
-   `/sdcard/Command and Conquer - Red Alert 3/`
-   (the folder that contains `Data/ra3_1.12.game` and the `RA3_<language>_1.12.SkuDef` files).
+2. Copy your game folder — the one that contains `Data/ra3_1.12.game` and the `RA3_<language>_1.12.SkuDef` files — to the phone's internal storage, a memory card or a USB drive (OTG), for example to
+   `/sdcard/Command and Conquer - Red Alert 3/`.
 3. Open **RA3 Native** and allow **All files access** when asked — the game reads its files directly from storage.
-4. The launcher finds the game by itself (or use **Game folder** to pick it), checks the files and unlocks **Play**.
+4. The launcher looks for the game on the internal storage, memory cards and USB drives, checks the files and unlocks **Play**. If it does not find it, tap **Game folder**: the other storages are listed at the top of the folder list.
+
+A game on a USB drive must stay connected while you play, and maps load more slowly from slow drives.
 
 > [!TIP]
 > Files the game never uses can be moved out to save space: `Launcher/`, `Support/`, `Trailers/`, the installer files in the root folder and `Data/ra3_1.0.game` … `ra3_1.11.game`. Keep every `.big` archive and every `.SkuDef` file.
@@ -79,7 +80,7 @@
 | Tap | Left click — select, give orders, press buttons |
 | Long press (0.6 s) | Right click |
 | Hold, then drag | Selection box |
-| Quick swipe | Scroll the map |
+| Quick swipe | Scroll the map (see *Drag the map* in the launcher options) |
 | Two-finger tap | Right click (cancel / deselect) |
 | Pinch | Zoom |
 | Two-finger drag | Rotate the camera |
@@ -101,6 +102,9 @@ The phone's volume keys keep working, and the screen stays on while the game run
 | Cutscenes | On | Intro, briefings and campaign videos |
 | Log file | Off in releases, on in nightly builds | Writes `/sdcard/ra3_native.log` — turn it on and attach the file to bug reports |
 | HUD size | 110% | Enlarges the minimap, build menu and other corner panels (100–200% in 10% steps) |
+| Button size | 100% | Size of the on-screen hotkey buttons (80–200%) |
+| Button opacity | 100% | How solid the on-screen buttons are; lower values show more of the map (30–100%) |
+| Drag the map | off | A swipe pulls the map under your finger, like on a touch screen map; off: the camera moves the way you swipe, like the mouse in the game |
 | Wide screen | off | Battles fill the whole screen instead of 16:9 and show more of the map; the on-screen buttons move to one row at the top centre. Menus stay 16:9 with blurred sides. The game's resolution list offers sizes in your screen's shape |
 | Fast shaders | off | Lower precision in pixel shaders: faster on Mali and weaker GPUs, occasional visual glitches |
 

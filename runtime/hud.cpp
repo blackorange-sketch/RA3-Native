@@ -96,7 +96,8 @@ void text(const hud::DrawRect& rect, const std::string& s, R box, float r, float
 	}
 }
 
-int unit() { return std::max(40, scrH / 15); }   // buttons: a bit smaller than they were (scrH / 12)
+int baseUnit() { return std::max(40, scrH / 15); }   // the button editor panel
+int unit() { return baseUnit() * rt::config.buttonSize / 100; }   // buttons (launcher: button size)
 // Wide screen: one horizontal row centred at the top (keyboard, EDIT, then the buttons), between the game's top-left
 // panel and the minimap; otherwise columns at the screen edges.
 bool topRow() { return rt::config.wideScreen; }
@@ -135,10 +136,10 @@ std::vector<std::pair<int, R>> layout()
 
 // palette geometry
 const int kCols = 9, kRows = 5;
-R panelRect() { int u = unit(); int c = u, g = u / 8; int w = kCols * (c + g) + g, h = (kRows + 1) * (c + g) + g; return {(scrW - w) / 2, (scrH - h) / 2, w, h}; }
+R panelRect() { int u = baseUnit(); int c = u, g = u / 8; int w = kCols * (c + g) + g, h = (kRows + 1) * (c + g) + g; return {(scrW - w) / 2, (scrH - h) / 2, w, h}; }
 R cellRect(int col, int row, int spanCols = 1)
 {
-	R p = panelRect(); int u = unit(); int c = u, g = u / 8;
+	R p = panelRect(); int u = baseUnit(); int c = u, g = u / 8;
 	return {p.x + g + col * (c + g), p.y + g + row * (c + g), spanCols * c + (spanCols - 1) * g, c};
 }
 bool inside(const R& r, float x, float y) { return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h; }
@@ -167,6 +168,7 @@ namespace hud
 {
 void setScreen(int sw, int sh) { std::lock_guard<std::mutex> g(mu); scrW = sw; scrH = sh; load(); buildPages(); }
 bool editingNow() { return editing; }
+int buttonUnit() { return unit(); }
 bool kbRect(int& x, int& y, int& w, int& h)
 {
 	if (!topRow()) return false;

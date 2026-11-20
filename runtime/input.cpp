@@ -126,7 +126,8 @@ void panBegin(float sx, float sy) { panPX = sx; panPY = sy; panVX = curX; panVY 
 void panMove(float sx, float sy, bool mid = false)
 {
 	uint32_t dn = mid ? WM_MBUTTONDOWN : WM_RBUTTONDOWN, up = mid ? WM_MBUTTONUP : WM_RBUTTONUP, bit = mid ? 0x10u : 2u;
-	panVX += (int)((sx - panPX) * bw / std::max(1, vw) * kPanGain); panVY += (int)((sy - panPY) * bh / std::max(1, vh) * kPanGain);
+	float dir = (!mid && rt::config.panInvert) ? -1.f : 1.f;   // launcher option: the map follows the finger
+	panVX += (int)(dir * (sx - panPX) * bw / std::max(1, vw) * kPanGain); panVY += (int)(dir * (sy - panPY) * bh / std::max(1, vh) * kPanGain);
 	panPX = sx; panPY = sy;
 	int mx = bw / 8, my = bh / 8;
 	if (panVX < mx || panVX > bw - mx || panVY < my || panVY > bh - my)
@@ -147,7 +148,7 @@ void panMove(float sx, float sy, bool mid = false)
 namespace input
 {
 void setScreen(int sw, int sh) { scrW = sw; scrH = sh; hud::setScreen(sw, sh); }
-void kbButtonRect(int& x, int& y, int& w, int& h) { if (hud::kbRect(x, y, w, h)) return; int u = std::max(40, scrH / 15); x = u / 3; y = u / 3; w = u * 3 / 2; h = u; }
+void kbButtonRect(int& x, int& y, int& w, int& h) { if (hud::kbRect(x, y, w, h)) return; int u = hud::buttonUnit(); x = u / 3; y = u / 3; w = u * 3 / 2; h = u; }
 
 void modButtonRect(int idx, int& x, int& y, int& w, int& h) { int u = std::max(40, scrH / 15); w = u; h = u * 3 / 4; x = u / 3; y = u / 3 + u + u / 4 + idx * (h + u / 6); }
 bool modActive(int idx) { return idx == 0 ? ctrlSticky : altSticky; }
