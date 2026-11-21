@@ -1733,7 +1733,35 @@ static void batchStat(const DrawCall& dc)
 	{
 		same++; if (!blend) sameOpaque++;
 		uint32_t dv = 0, dp = 0;
-		for (int r = 0; r < 256; r++) if (memcmp(pvs + 4 * r, dev.vsF + 4 * r, 16)) dv++;
+		struct PerVs { uint64_t pairs = 0; uint32_t reg[256] = {}; };
+		static std::unordered_map<ShaderObj*, PerVs> perVs;
+		PerVs& pv = perVs[dev.vs];
+		pv.pairs++;
+		for (int r = 0; r < 256; r++) if (memcmp(pvs + 4 * r, dev.vsF + 4 * r, 16)) { dv++; pv.reg[r]++; }
+		static uint32_t perFrame0 = gFrameNo;
+		if (gFrameNo - perFrame0 >= 900 && !perVs.empty())
+		{
+			// which registers differ between the draws of a run, per vertex shader (and the constants that live there)
+			perFrame0 = gFrameNo;
+			std::vector<std::pair<uint64_t, ShaderObj*>> v;
+			for (auto& kv : perVs) v.push_back({kv.second.pairs, kv.first});
+			std::sort(v.rbegin(), v.rend());
+			for (size_t i = 0; i < v.size() && i < 12; i++)
+			{
+				ShaderObj* sh = v[i].second; PerVs& e = perVs[sh];
+				std::string regs;
+				for (int r = 0; r < 256; r++)
+					if (e.reg[r] * 20 >= e.pairs)   // differs in at least 5% of the pairs
+					{
+						std::string nm;
+						for (auto& c : sh->info.ctab) if (c.regSet == 2 && r >= (int)c.regIndex && r < (int)(c.regIndex + std::max(1u, c.regCount))) { nm = c.name; break; }
+						char b2[96]; snprintf(b2, sizeof b2, " c%d:%u%%%s%s", r, (unsigned)(e.reg[r] * 100 / e.pairs), nm.empty() ? "" : "=", nm.c_str());
+						regs += b2;
+					}
+				log("batch: vs %016llx: %llu pairs, numC %d rel %d, differing:%s", (unsigned long long)sh->hash, (unsigned long long)e.pairs, sh->info.numC, sh->info.relC ? 1 : 0, regs.c_str());
+			}
+			perVs.clear();
+		}
 		for (int r = 0; r < 224; r++) if (memcmp(pps + 4 * r, dev.psF + 4 * r, 16)) dp++;
 		vsDiff += dv; psDiff += dp;
 		curRun = curRun ? curRun + 1 : 2;
