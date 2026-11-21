@@ -29,11 +29,13 @@ struct FxType
 	uint32_t type = 0, cls = 0, rows = 1, cols = 1, elements = 0;
 	std::string name, semantic;
 	std::vector<FxType> members;
-	uint32_t scalars() const   // scalar count of one element
+	// scalar count of one element; the common cases inline (it was a recursive out-of-line call on every write)
+	uint32_t scalars() const { return cls == 5 ? structScalars() : cls == 4 ? 1u : rows * cols; }
+	uint32_t structScalars() const
 	{
-		if (cls == 5) { uint32_t n = 0; for (auto& m : members) n += m.scalars() * std::max(1u, m.elements); return n; }
-		if (cls == 4) return 1;
-		return rows * cols;
+		uint32_t n = 0;
+		for (auto& m : members) n += m.scalars() * std::max(1u, m.elements);
+		return n;
 	}
 };
 // parameter value versions: one counter for all parameters, so a parameter created where a freed one lived never
