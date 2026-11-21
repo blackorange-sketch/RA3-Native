@@ -57,6 +57,7 @@ Chunk* getChunk(size_t min)
 	return c;
 }
 
+uint64_t pubSeq = 0;   // chunks handed over so far (producer lock)
 void publishLocked()   // producer lock held
 {
 	if (!cur) return;
@@ -73,6 +74,7 @@ void publishLocked()   // producer lock held
 	nSubmitted.fetch_add(1, std::memory_order_release);
 	if (wake) qcv.notify_one();
 	cur = nullptr;
+	pubSeq++;
 }
 
 // /sdcard/ra3_prof: wall time of every recorded command, by command type (its run function), logged every 30 s.
@@ -181,6 +183,13 @@ void* reserve(size_t payload, void (*run)(void*))
 	return c + 1;
 }
 
+// position in the queue: equal marks = nothing recorded in between and the chunk is still open (its commands
+// can still be changed: draw merging appends instances to the last draw)
+uint64_t mark()
+{
+	std::lock_guard<RecLock> l(producerLock());
+	return (pubSeq << 32) + (cur ? cur->used : 0);
+}
 void publish()
 {
 	std::lock_guard<RecLock> l(pm);

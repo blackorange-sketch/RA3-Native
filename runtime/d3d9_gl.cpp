@@ -744,16 +744,31 @@ static void saveProgramBinary(uint64_t key, GLuint prog)
 }
 static Prog* finishProgram(Prog& p, ShaderObj* vs, ShaderObj* ps, bool cached);
 
-Prog* getProgram(ShaderObj* vs, ShaderObj* ps, bool precise)
+// draw merging: the vertex shader of a merged draw reads its World rows (registers instReg..+2) from per-instance
+// attributes 16..18 instead of the constants
+static std::string instVariant(std::string src, int instReg)
+{
+	for (int j = 0; j < 3; j++)
+	{
+		std::string from = "vc[" + std::to_string(instReg + j) + "]", to = "i_w" + std::to_string(j);
+		for (size_t at = src.find(from); at != std::string::npos; at = src.find(from, at + to.size())) src.replace(at, from.size(), to);
+	}
+	size_t m = src.find("void main()");
+	if (m != std::string::npos) src.insert(m, "layout(location = 16) in vec4 i_w0;\nlayout(location = 17) in vec4 i_w1;\nlayout(location = 18) in vec4 i_w2;\n");
+	return src;
+}
+Prog* getProgram(ShaderObj* vs, ShaderObj* ps, bool precise, int instReg = -1)
 {
 	uint64_t key = vs->hash * 1000003ull ^ (ps->hash + 0x9e3779b97f4a7c15ull + (vs->hash << 6));
 	if (precise) key ^= 0x5bd1e9955bd1e995ull;
+	if (instReg >= 0) key ^= 0x9e3779b97f4a7c15ull * (uint64_t)(instReg + 1) + 0x2545f4914f6cdd1dull;
 	auto it = gProgs.find(key);
 	if (it != gProgs.end()) return it->second.failed ? nullptr : &it->second;
 	Prog& p = gProgs[key];
 	p.failed = true;
 	if (!vs->ok || !ps->ok || !vs->info.isVs || ps->info.isVs) return nullptr;
 	std::string vsrc = shdr::compose(vs->info), psrc = shdr::compose(ps->info, &vs->info.outputs, precise);
+	if (instReg >= 0) vsrc = instVariant(vsrc, instReg);
 	uint64_t bkey = binKey(vsrc, psrc);
 	if (loadProgramBinary(bkey, p)) return finishProgram(p, vs, ps, true);
 	GLuint v = compileStage(GL_VERTEX_SHADER, vsrc, "vertex");
@@ -1697,6 +1712,111 @@ void draw(const DrawCall& dc)
 	if ((gNDraws++ & 7) == 0) { uint64_t t0 = nowUs(); drawImpl(dc); gTDraw += (nowUs() - t0) * 8; }
 	else drawImpl(dc);
 }
+// ---- draw merging (instancing)
+// Consecutive draws of the same mesh with the same shaders, textures and states that differ only in their World
+// matrix (three registers) become one instanced draw: the first draw is recorded as an instanced draw whose
+// instance list stays open, and following identical draws only add their World rows to it - as long as nothing
+// else was recorded in between (rec::mark). Opaque, indexed draws from static buffers only.
+// /sdcard/ra3_nobatch turns it off.
+struct InstData { uint32_t count = 0; float rows[64][12]; };
+struct BatchSig
+{
+	ShaderObj* vs; ShaderObj* ps; Obj* decl; Obj* ib; uint32_t ibVer;
+	Obj* vb[16]; uint32_t vbVer[16], off[16], stride[16], freq[16];
+	Obj* tex[16]; uint32_t texVer[16];
+	Obj* rt; Obj* ds; uint32_t vp[4]; float vpZ[2]; int32_t sc[4];
+	uint32_t prim, count, start, minIdx, numV; int32_t base;
+};
+struct BatchState
+{
+	bool open = false;
+	uint64_t mark = 0;
+	int wreg = -1;
+	uint32_t nvs = 0, nps = 0;
+	BatchSig sig;
+	uint32_t rs[256], samp[16][16];
+	float vsF[256 * 4], psF[224 * 4];
+	int32_t vsI[16 * 4], psI[16 * 4], vsB[16], psB[16];
+	InstData* data = nullptr;
+};
+static BatchState gB;
+static uint64_t gBatchDraws, gBatchMerged, gBatchFrame0;
+static bool batchOn()
+{
+	static const bool on = [] {
+		if (access("/sdcard/ra3_nobatch", F_OK) == 0) { log("batch: draw merging off (ra3_nobatch)"); return false; }
+		GLint n = 0; glGetIntegerv(GL_MAX_VERTEX_ATTRIBS, &n);
+		log("batch: draw merging %s (%d vertex attributes)", n >= 19 ? "on" : "off: needs 19 vertex attributes", n);
+		return n >= 19;
+	}();
+	return on && rec::active();
+}
+// register of the World matrix (three rows) of a vertex shader, -1 none
+static int worldReg(ShaderObj* vs)
+{
+	if (vs->info.worldReg == -2)
+	{
+		vs->info.worldReg = -1;
+		if (!vs->info.relC)
+			for (auto& c : vs->info.ctab)
+				if (c.regSet == 2 && c.name == "World" && c.regCount == 3) { vs->info.worldReg = (int)c.regIndex; break; }
+	}
+	return vs->info.worldReg;
+}
+static void batchSig(const DrawCall& dc, BatchSig& g)
+{
+	memset(&g, 0, sizeof g);
+	g.vs = dev.vs; g.ps = dev.ps; g.decl = dev.vdecl; g.ib = dev.ib; g.ibVer = dev.ib ? dev.ib->ver : 0;
+	for (int i = 0; i < 16; i++)
+	{
+		const Stream& st = dev.streams[i];
+		g.vb[i] = st.vb; g.vbVer[i] = st.vb ? st.vb->ver : 0; g.off[i] = st.offset; g.stride[i] = st.stride; g.freq[i] = st.freq;
+		g.tex[i] = dev.tex[i]; g.texVer[i] = dev.tex[i] ? dev.tex[i]->ver : 0;
+	}
+	g.rt = dev.rt0; g.ds = dev.ds; memcpy(g.vp, dev.vp, sizeof g.vp); memcpy(g.vpZ, dev.vpZ, sizeof g.vpZ); memcpy(g.sc, dev.scissor, sizeof g.sc);
+	g.prim = dc.prim; g.count = dc.primCount; g.start = dc.startIndex; g.minIdx = dc.minIndex; g.numV = dc.numVertices; g.base = dc.baseVertex;
+}
+// can this draw start a merged draw: its World register, else -1
+static int batchEligible(const DrawCall& dc)
+{
+	if (!batchOn() || dc.upVerts || !dc.indexed || !dev.ib || (dev.ib->usage & 0x200) || dev.rs[27] || !dev.vs || !dev.ps) return -1;
+	for (int i = 0; i < 16; i++)
+	{
+		const Stream& st = dev.streams[i];
+		if (st.freq & 0xc0000000u) return -1;
+		if (st.vb && (st.vb->usage & 0x200)) return -1;
+	}
+	return worldReg(dev.vs);
+}
+static void batchOpen(const DrawCall& dc, int wreg, InstData* d)
+{
+	gB.open = true; gB.mark = rec::mark(); gB.wreg = wreg; gB.data = d;
+	gB.nvs = std::min(256, dev.vs->info.numC); gB.nps = dev.ps->info.relC ? 224 : std::min(224, dev.ps->info.numC);
+	batchSig(dc, gB.sig);
+	memcpy(gB.rs, dev.rs, sizeof gB.rs); memcpy(gB.samp, dev.samp, sizeof gB.samp);
+	memcpy(gB.vsF, dev.vsF, 16ull * gB.nvs); memcpy(gB.psF, dev.psF, 16ull * gB.nps);
+	memcpy(gB.vsI, dev.vsI, sizeof gB.vsI); memcpy(gB.psI, dev.psI, sizeof gB.psI); memcpy(gB.vsB, dev.vsB, sizeof gB.vsB); memcpy(gB.psB, dev.psB, sizeof gB.psB);
+}
+// add this draw to the open merged draw if it is the same draw with another World matrix
+static bool batchAppend(const DrawCall& dc)
+{
+	if (!gB.open) return false;
+	if (gB.data->count >= 64 || !rec::active() || rec::mark() != gB.mark) { gB.open = false; return false; }
+	BatchSig g;
+	batchSig(dc, g);
+	int w = gB.wreg;
+	bool same = !memcmp(&g, &gB.sig, sizeof g) && !memcmp(gB.rs, dev.rs, sizeof gB.rs) && !memcmp(gB.samp, dev.samp, sizeof gB.samp) &&
+		!memcmp(gB.vsF, dev.vsF, 16ull * std::min<uint32_t>(w, gB.nvs)) &&
+		(w + 3 >= (int)gB.nvs || !memcmp(gB.vsF + 4 * (w + 3), dev.vsF + 4 * (w + 3), 16ull * (gB.nvs - w - 3))) &&
+		!memcmp(gB.psF, dev.psF, 16ull * gB.nps) &&
+		!memcmp(gB.vsI, dev.vsI, sizeof gB.vsI) && !memcmp(gB.psI, dev.psI, sizeof gB.psI) && !memcmp(gB.vsB, dev.vsB, sizeof gB.vsB) && !memcmp(gB.psB, dev.psB, sizeof gB.psB);
+	if (!same) { gB.open = false; return false; }
+	memcpy(gB.data->rows[gB.data->count], dev.vsF + 4 * w, 48);
+	gB.data->count++;
+	gBatchMerged++;
+	return true;
+}
+
 // /sdcard/ra3_batchstat: how many draws could be merged. Each draw is compared with the one before it:
 //   same  - same mesh, shaders, textures and states: only shader constants differ (one instanced draw could do both)
 //   mat   - same shaders, textures and states, another mesh (needs merged buffers / multi-draw)
@@ -1800,13 +1920,21 @@ static void drawImpl(const DrawCall& dc)
 		if (noShader++ < 5) log("d3d9: draw without shaders (fixed function not implemented): fvf %x vdecl %p", dev.fvf, (void*)dev.vdecl);
 		return;
 	}
+	gBatchDraws++;
+	if (gFrameNo - gBatchFrame0 >= 900)
+	{
+		if (gBatchMerged) log("batch: %.0f draws/frame, %.0f of them merged into the draw before", gBatchDraws / 900.0, gBatchMerged / 900.0);
+		gBatchFrame0 = gFrameNo; gBatchDraws = gBatchMerged = 0;
+	}
+	if (batchAppend(dc)) { if (dev.rs[7] && !gUiNested) gUiWorldDraws++; gDrawsThisFrame++; return; }
+	const int instReg = batchEligible(dc);
 	uint64_t t0 = profNow();
 	// fast shaders: a pixel shader that samples one of the game's own render targets keeps full precision
 	// particles (their vertex shader reads its corner / random tables through a0) fade against the scene depth too
 	bool precise = rt::config.fastShaders && vs->info.relC;
 	if (rt::config.fastShaders && !precise)
 		for (int i = 0; i < 16 && !precise; i++) if (ps->info.samplerType[i] && dev.tex[i] && (dev.tex[i]->usage & 3)) precise = true;
-	Prog* p = getProgram(vs, ps, precise);
+	Prog* p = getProgram(vs, ps, precise, instReg);
 	if (!p) { gHNoProg++; static int nf = 0; if (nf++ < 10) log("d3d9: draw skipped: no program for vs %016llx ps %016llx", (unsigned long long)vs->hash, (unsigned long long)ps->hash); return; }
 	healthStates();
 	if (dev.rs[7] && !gUiNested) gUiWorldDraws++;   // ZENABLE
@@ -2359,7 +2487,34 @@ static void drawImpl(const DrawCall& dc)
 		else
 		{
 			glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ensureBuffer(dev.ib, GL_ELEMENT_ARRAY_BUFFER));
-			if (instanced) glDrawElementsInstanced(mode, nv, wide ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT, (const void*)(uintptr_t)(dc.startIndex * isz), (GLsizei)instCount);
+			if (instReg >= 0 && !instanced)
+			{
+				// merged draw: instance list open for the next identical draws (batchAppend); its World rows go to
+				// attributes 16..18 when the render thread runs it
+				InstData* d = new InstData;
+				d->count = 1;
+				memcpy(d->rows[0], dev.vsF + 4 * instReg, 48);
+				GLenum itype = wide ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT;
+				uintptr_t ioff = (uintptr_t)(dc.startIndex * isz);
+				rec::q([d, mode, nv, itype, ioff] {
+					static GLuint vbo = 0;
+					if (!vbo) ::glGenBuffers(1, &vbo);
+					::glBindBuffer(GL_ARRAY_BUFFER, vbo);
+					::glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)d->count * 48, d->rows, GL_STREAM_DRAW);
+					for (int j = 0; j < 3; j++)
+					{
+						::glEnableVertexAttribArray(16 + j);
+						::glVertexAttribPointer(16 + j, 4, GL_FLOAT, GL_FALSE, 48, (const void*)(uintptr_t)(16 * j));
+						::glVertexAttribDivisor(16 + j, 1);
+					}
+					::glDrawElementsInstanced(mode, nv, itype, (const void*)ioff, (GLsizei)d->count);
+					for (int j = 0; j < 3; j++) ::glDisableVertexAttribArray(16 + j);
+					delete d;
+				});
+				gArrBuf = ~0u;   // the array buffer binding changed on the render thread
+				batchOpen(dc, instReg, d);
+			}
+			else if (instanced) glDrawElementsInstanced(mode, nv, wide ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT, (const void*)(uintptr_t)(dc.startIndex * isz), (GLsizei)instCount);
 			else glDrawElements(mode, nv, wide ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT, (const void*)(uintptr_t)(dc.startIndex * isz));
 		}
 	}

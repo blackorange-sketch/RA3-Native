@@ -43,6 +43,7 @@ void* reserve(size_t payload, void (*run)(void*));
 extern RecLock gProducer;
 inline RecLock& producerLock() { return gProducer; }
 void publish();                          // hand the current chunk to the render thread
+uint64_t mark();                         // queue position (see glrec.cpp)
 void waitIdle();                         // until everything queued so far has executed
 void endFrame();                         // frame boundary: publish, and keep at most one frame in flight
 void start(void (*threadInit)());       // start the render thread (runs threadInit on it first)
