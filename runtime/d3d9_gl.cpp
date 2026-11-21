@@ -2498,17 +2498,17 @@ static void drawImpl(const DrawCall& dc)
 				uintptr_t ioff = (uintptr_t)(dc.startIndex * isz);
 				rec::q([d, mode, nv, itype, ioff] {
 					static GLuint vbo = 0;
-					if (!vbo) ::glGenBuffers(1, &vbo);
-					::glBindBuffer(GL_ARRAY_BUFFER, vbo);
-					::glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)d->count * 48, d->rows, GL_STREAM_DRAW);
+					if (!vbo) (::glGenBuffers)(1, &vbo);
+					(::glBindBuffer)(GL_ARRAY_BUFFER, vbo);
+					(::glBufferData)(GL_ARRAY_BUFFER, (GLsizeiptr)d->count * 48, d->rows, GL_STREAM_DRAW);
 					for (int j = 0; j < 3; j++)
 					{
-						::glEnableVertexAttribArray(16 + j);
-						::glVertexAttribPointer(16 + j, 4, GL_FLOAT, GL_FALSE, 48, (const void*)(uintptr_t)(16 * j));
-						::glVertexAttribDivisor(16 + j, 1);
+						(::glEnableVertexAttribArray)(16 + j);
+						(::glVertexAttribPointer)(16 + j, 4, GL_FLOAT, GL_FALSE, 48, (const void*)(uintptr_t)(16 * j));
+						(::glVertexAttribDivisor)(16 + j, 1);
 					}
-					::glDrawElementsInstanced(mode, nv, itype, (const void*)ioff, (GLsizei)d->count);
-					for (int j = 0; j < 3; j++) ::glDisableVertexAttribArray(16 + j);
+					(::glDrawElementsInstanced)(mode, nv, itype, (const void*)ioff, (GLsizei)d->count);
+					for (int j = 0; j < 3; j++) (::glDisableVertexAttribArray)(16 + j);
 					delete d;
 				});
 				gArrBuf = ~0u;   // the array buffer binding changed on the render thread
