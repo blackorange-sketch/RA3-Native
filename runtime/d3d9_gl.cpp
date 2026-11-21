@@ -1637,16 +1637,31 @@ static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, 
 	};
 	auto anchorOf = [&](int c, float& cx, float& cy) { cx = (c - 1) & 1 ? (float)vx + W : (float)vx; cy = (c - 1) & 2 ? (float)vy + H : (float)vy; };
 	auto addRect = [&](float a0, float b0, float a1, float b1, float cx, float cy, float s) { if (gUiCur.size() < 4000) gUiCur.push_back({cx + (a0 - cx) * s, cy + (b0 - cy) * s, cx + (a1 - cx) * s, cy + (b1 - cy) * s, cx, cy, s}); };
-	int c = corner(x0, y0, x1, y1);
+	// text: many glyph-sized triangles. The game draws each text twice (dark shadow, then the letters) in batches of
+	// different extent, so a corner decision per batch scaled one and not the other (doubled, offset messages and
+	// tooltips). Texts follow the panel under each glyph instead (the mixed path below).
+	bool textLike = false;
+	if (dc.prim == 4 && nIdx >= 24 && nIdx % 3 == 0)
+	{
+		textLike = true;
+		const float maxA = 0.0015f * W * H;
+		for (uint32_t t = 0; t < nIdx && textLike; t += 3)
+		{
+			float a0 = std::min({sxy[2 * t], sxy[2 * t + 2], sxy[2 * t + 4]}), a1 = std::max({sxy[2 * t], sxy[2 * t + 2], sxy[2 * t + 4]});
+			float b0 = std::min({sxy[2 * t + 1], sxy[2 * t + 3], sxy[2 * t + 5]}), b1 = std::max({sxy[2 * t + 1], sxy[2 * t + 3], sxy[2 * t + 5]});
+			if ((a1 - a0) * (b1 - b0) > maxA) textLike = false;
+		}
+	}
+	int c = textLike && gUiHud ? 0 : corner(x0, y0, x1, y1);
 	// a tooltip or popup that ends at the left edge of the right column belongs to it (it is anchored there);
 	// tooltips of the lower build rows reach well below the middle of the screen
 	// only after the HUD has started (health bars come first) and only popup-sized: the health bars of all units
 	// are one batch, and when a unit stood next to the column the whole batch was "attached" and scaled with it
-	bool attached = !c && gUiHud && (x1 - x0) <= 0.40f * W16 && gUiColLeft < 1e8f && x1 >= gUiColLeft - 0.04f * W16 && x0 < gUiColLeft && x1 <= gUiColLeft + 0.20f * W16 && y1 <= vy + 0.90f * H;
+	bool attached = !c && !textLike && gUiHud && (x1 - x0) <= 0.40f * W16 && gUiColLeft < 1e8f && x1 >= gUiColLeft - 0.04f * W16 && x0 < gUiColLeft && x1 <= gUiColLeft + 0.20f * W16 && y1 <= vy + 0.90f * H;
 	if (attached) c = 2;
 	// a tooltip of the unit panel / command bar opens above it and reaches down onto it: it moves with that panel
 	// (otherwise its texts, lying on the scaled command bar, moved while the box stayed)
-	bool attachedLow = !c && gUiHud && x0 >= fromR(0.50f) && y0 >= vy + 0.60f * H && y1 >= vy + 0.88f * H;
+	bool attachedLow = !c && !textLike && gUiHud && x0 >= fromR(0.50f) && y0 >= vy + 0.60f * H && y1 >= vy + 0.88f * H;
 	if (attachedLow) { c = 4; attached = true; }
 	if (c == 2 && !attached) gUiCurColLeft = std::min(gUiCurColLeft, x0);
 	// unit markers, health bars and names come first in a frame: only what follows the first big corner panel is HUD
