@@ -163,6 +163,7 @@ Empty files with these names in `/sdcard` change the runtime's behaviour:
 | `ra3_fps60` | Experimental 60 fps cap (effects and game speed are still wrong) |
 | `ra3_noetc` | Mali / PowerVR: decode textures on the CPU instead of converting them to ETC2 (large textures then load at half resolution; `ra3_fulltex` keeps them full size) |
 | `ra3_nos3tc` | Test the Mali texture path (ETC2 conversion) on a GPU that supports DXT |
+| `ra3_nobatch` | Draw every mesh separately (turns off draw merging) |
 
 Remove them again for normal play — some of them slow the game down.
 
