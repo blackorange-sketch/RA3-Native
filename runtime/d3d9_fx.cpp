@@ -123,6 +123,13 @@ struct PRef
 	const FxType* ty = nullptr;
 	bool valid() const { return p != nullptr; }
 };
+// /sdcard/ra3_fxsafe: every effect shortcut off (reference cache, unchanged-constant skip, pre-shader and shader
+// pick reuse, per-stage lookups, state path cache) - to find which one leaves UI elements at wrong places
+static bool fxSafe()
+{
+	static const bool on = [] { bool v = access("/sdcard/ra3_fxsafe", F_OK) == 0; rt::log("fx: shortcuts %s", v ? "OFF (ra3_fxsafe)" : "on"); return v; }();
+	return on;
+}
 PRef refOf(Obj* o, uint32_t h)
 {
 	PRef r;
@@ -130,14 +137,7 @@ PRef refOf(Obj* o, uint32_t h)
 	if (!fx) return r;
 	// handle -> reference, cached per thread: the records and type tables are several dependent loads that missed
 	// the cache on every parameter write (thousands per frame)
-	// /sdcard/ra3_fxsafe: every effect shortcut off (reference cache, unchanged-constant skip, pre-shader and shader
-// pick reuse, per-stage lookups, state path cache) - to find which one leaves UI elements at wrong places
-static bool fxSafe()
-{
-	static const bool on = [] { bool v = access("/sdcard/ra3_fxsafe", F_OK) == 0; rt::log("fx: shortcuts %s", v ? "OFF (ra3_fxsafe)" : "on"); return v; }();
-	return on;
-}
-struct RefCache { FxInfo* fx; uint32_t h; PRef r; };
+	struct RefCache { FxInfo* fx; uint32_t h; PRef r; };
 	static thread_local RefCache cache[2048];   // handles are numbered in order: 256 entries thrashed between effects
 	RefCache& ce = cache[(h >> 2) & 2047];
 	if (!fxSafe() && ce.h == h && ce.fx == fx && ce.r.p >= fx->params.data() && ce.r.p < fx->params.data() + fx->params.size()) return ce.r;
