@@ -1617,7 +1617,8 @@ static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, 
 	// a large window over the battle (pause / episode menu): nothing more is scaled this frame, and touches go to the
 	// game unchanged (the HUD under it is covered)
 	if (gUiMenu) return 0.f;
-	if (apt && (x1 - x0) * (y1 - y0) >= 0.35f * W * H && (x1 - x0) < 0.98f * W)
+	// (the special abilities window is about a quarter of a wide screen: from 20%)
+	if (apt && (x1 - x0) * (y1 - y0) >= 0.20f * W * H && (x1 - x0) < 0.98f * W)
 	{
 		gUiMenu = true; gUiCur.clear(); gUiPieces.clear();
 		if (diag) log("ui-diag: big window %.0f,%.0f-%.0f,%.0f: scaling off for this frame", x0, y0, x1, y1);
