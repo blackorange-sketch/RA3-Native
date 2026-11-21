@@ -27,7 +27,8 @@ GLint gUnpackAlign = 4;
 namespace
 {
 struct Chunk { uint8_t* buf; size_t cap, used; };
-const size_t kChunk = 64u << 10;
+// 256 KB: every handed-over chunk wakes the render thread (a system call on the game thread, ~3% of it with 64 KB)
+const size_t kChunk = 256u << 10;
 RecLock& pm = gProducer;                      // producers (game threads)
 std::mutex qm;                                 // queue
 std::condition_variable qcv, doneCv;
@@ -157,7 +158,7 @@ void renderLoop()
 		{
 			std::lock_guard<std::mutex> l(qm);
 			executed++;
-			if (c->cap <= kChunk && freeList.size() < 64) freeList.push_back(c);
+			if (c->cap <= kChunk && freeList.size() < 24) freeList.push_back(c);
 			else { free(c->buf); delete c; }
 			wake = doneWaiters > 0;
 		}
