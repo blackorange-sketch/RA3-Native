@@ -1602,15 +1602,17 @@ static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, 
 	int c = corner(x0, y0, x1, y1);
 	// a tooltip or popup that ends at the left edge of the right column belongs to it (it is anchored there);
 	// tooltips of the lower build rows reach well below the middle of the screen
-	bool attached = !c && gUiColLeft < 1e8f && x1 >= gUiColLeft - 0.04f * W16 && x0 < gUiColLeft && x1 <= gUiColLeft + 0.20f * W16 && y1 <= vy + 0.90f * H;
+	// only after the HUD has started (health bars come first) and only popup-sized: the health bars of all units
+	// are one batch, and when a unit stood next to the column the whole batch was "attached" and scaled with it
+	bool attached = !c && gUiHud && (x1 - x0) <= 0.40f * W16 && gUiColLeft < 1e8f && x1 >= gUiColLeft - 0.04f * W16 && x0 < gUiColLeft && x1 <= gUiColLeft + 0.20f * W16 && y1 <= vy + 0.90f * H;
 	if (attached) c = 2;
 	// a tooltip of the unit panel / command bar opens above it and reaches down onto it: it moves with that panel
 	// (otherwise its texts, lying on the scaled command bar, moved while the box stayed)
-	bool attachedLow = !c && x0 >= fromR(0.50f) && y0 >= vy + 0.60f * H && y1 >= vy + 0.88f * H;
+	bool attachedLow = !c && gUiHud && x0 >= fromR(0.50f) && y0 >= vy + 0.60f * H && y1 >= vy + 0.88f * H;
 	if (attachedLow) { c = 4; attached = true; }
 	if (c == 2 && !attached) gUiCurColLeft = std::min(gUiCurColLeft, x0);
 	// unit markers, health bars and names come first in a frame: only what follows the first big corner panel is HUD
-	if (!gUiHud && c && (x1 - x0) * (y1 - y0) >= 0.01f * W * H) gUiHud = true;
+	if (!gUiHud && c && !attached && (x1 - x0) * (y1 - y0) >= 0.01f * W * H) gUiHud = true;
 	if (!gUiHud) { if (diag) log("ui-diag: vs %016llx box %.0f,%.0f-%.0f,%.0f before the HUD", (unsigned long long)dev.vs->hash, x0, y0, x1, y1); return 0.f; }
 	// a large window over the battle (pause / episode menu): nothing more is scaled this frame, and touches go to the
 	// game unchanged (the HUD under it is covered)
