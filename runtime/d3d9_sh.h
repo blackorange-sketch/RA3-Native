@@ -39,6 +39,7 @@ struct ShaderInfo
 	bool relC = false;                   // reads float constants through a0 (relative addressing)
 	int numCDirect = 0;                  // highest register named directly (+1), also the base of relative reads
 	int relN = 0;
+	int instLoc[3] = {-2, -2, -2};       // draw merging: free attribute locations for the World rows (-1 none, -2 not looked up)
 	int worldReg = -2;                   // draw merging: register of a 3-row World matrix, -1 none, -2 not looked up                        // relC: registers reachable (constant table ranges, defs, direct uses); 0 not yet known
 	std::vector<std::pair<int, std::array<float, 4>>> defF;   // constants the shader defines itself (def c#)
 	std::vector<uint8_t> pres;           // embedded pre-shader ('PRES' comment), run before draws by the effect runtime

@@ -745,8 +745,22 @@ static void saveProgramBinary(uint64_t key, GLuint prog)
 static Prog* finishProgram(Prog& p, ShaderObj* vs, ShaderObj* ps, bool cached);
 
 // draw merging: the vertex shader of a merged draw reads its World rows (registers instReg..+2) from per-instance
-// attributes 16..18 instead of the constants
-static std::string instVariant(std::string src, int instReg)
+// attributes instead of the constants: three attribute locations the shader does not use (Adreno reports 32
+// attributes but its compiler only accepts locations 0..15)
+static bool instLocs(ShaderObj* vs, int loc[3])
+{
+	if (vs->info.instLoc[0] == -2)
+	{
+		uint32_t used = 0;
+		for (auto& kv : vs->info.inputs) if (kv.second >= 0 && kv.second < 16) used |= 1u << kv.second;
+		int n = 0;
+		for (int l = 15; l >= 0 && n < 3; l--) if (!(used >> l & 1)) vs->info.instLoc[n++] = l;
+		if (n < 3) vs->info.instLoc[0] = -1;
+	}
+	for (int j = 0; j < 3; j++) loc[j] = vs->info.instLoc[j];
+	return loc[0] >= 0;
+}
+static std::string instVariant(std::string src, int instReg, const int loc[3])
 {
 	for (int j = 0; j < 3; j++)
 	{
@@ -754,7 +768,8 @@ static std::string instVariant(std::string src, int instReg)
 		for (size_t at = src.find(from); at != std::string::npos; at = src.find(from, at + to.size())) src.replace(at, from.size(), to);
 	}
 	size_t m = src.find("void main()");
-	if (m != std::string::npos) src.insert(m, "layout(location = 16) in vec4 i_w0;\nlayout(location = 17) in vec4 i_w1;\nlayout(location = 18) in vec4 i_w2;\n");
+	if (m != std::string::npos)
+		for (int j = 2; j >= 0; j--) src.insert(m, "layout(location = " + std::to_string(loc[j]) + ") in vec4 i_w" + std::to_string(j) + ";\n");
 	return src;
 }
 Prog* getProgram(ShaderObj* vs, ShaderObj* ps, bool precise, int instReg = -1)
@@ -768,7 +783,7 @@ Prog* getProgram(ShaderObj* vs, ShaderObj* ps, bool precise, int instReg = -1)
 	p.failed = true;
 	if (!vs->ok || !ps->ok || !vs->info.isVs || ps->info.isVs) return nullptr;
 	std::string vsrc = shdr::compose(vs->info), psrc = shdr::compose(ps->info, &vs->info.outputs, precise);
-	if (instReg >= 0) vsrc = instVariant(vsrc, instReg);
+	if (instReg >= 0) { int loc[3]; if (!instLocs(vs, loc)) return nullptr; vsrc = instVariant(vsrc, instReg, loc); }
 	uint64_t bkey = binKey(vsrc, psrc);
 	if (loadProgramBinary(bkey, p)) return finishProgram(p, vs, ps, true);
 	GLuint v = compileStage(GL_VERTEX_SHADER, vsrc, "vertex");
@@ -1745,9 +1760,8 @@ static bool batchOn()
 {
 	static const bool on = [] {
 		if (access("/sdcard/ra3_nobatch", F_OK) == 0) { log("batch: draw merging off (ra3_nobatch)"); return false; }
-		GLint n = 0; glGetIntegerv(GL_MAX_VERTEX_ATTRIBS, &n);
-		log("batch: draw merging %s (%d vertex attributes)", n >= 19 ? "on" : "off: needs 19 vertex attributes", n);
-		return n >= 19;
+		log("batch: draw merging on");
+		return true;
 	}();
 	return on && rec::active();
 }
@@ -1786,6 +1800,8 @@ static int batchEligible(const DrawCall& dc)
 		if (st.freq & 0xc0000000u) return -1;
 		if (st.vb && (st.vb->usage & 0x200)) return -1;
 	}
+	int loc[3];
+	if (!instLocs(dev.vs, loc)) return -1;
 	return worldReg(dev.vs);
 }
 static void batchOpen(const DrawCall& dc, int wreg, InstData* d)
@@ -2496,22 +2512,25 @@ static void drawImpl(const DrawCall& dc)
 				memcpy(d->rows[0], dev.vsF + 4 * instReg, 48);
 				GLenum itype = wide ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT;
 				uintptr_t ioff = (uintptr_t)(dc.startIndex * isz);
-				rec::q([d, mode, nv, itype, ioff] {
+				int il[3]; instLocs(vs, il);
+				int l0 = il[0], l1 = il[1], l2 = il[2];
+				rec::q([d, mode, nv, itype, ioff, l0, l1, l2] {
+					const int L[3] = {l0, l1, l2};
 					static GLuint vbo = 0;
 					if (!vbo) (::glGenBuffers)(1, &vbo);
 					(::glBindBuffer)(GL_ARRAY_BUFFER, vbo);
 					(::glBufferData)(GL_ARRAY_BUFFER, (GLsizeiptr)d->count * 48, d->rows, GL_STREAM_DRAW);
 					for (int j = 0; j < 3; j++)
 					{
-						(::glEnableVertexAttribArray)(16 + j);
-						(::glVertexAttribPointer)(16 + j, 4, GL_FLOAT, GL_FALSE, 48, (const void*)(uintptr_t)(16 * j));
-						(::glVertexAttribDivisor)(16 + j, 1);
+						(::glEnableVertexAttribArray)(L[j]);
+						(::glVertexAttribPointer)(L[j], 4, GL_FLOAT, GL_FALSE, 48, (const void*)(uintptr_t)(16 * j));
+						(::glVertexAttribDivisor)(L[j], 1);
 					}
 					(::glDrawElementsInstanced)(mode, nv, itype, (const void*)ioff, (GLsizei)d->count);
-					for (int j = 0; j < 3; j++) (::glDisableVertexAttribArray)(16 + j);
+					for (int j = 0; j < 3; j++) { (::glVertexAttribDivisor)(L[j], 0); (::glDisableVertexAttribArray)(L[j]); }
 					delete d;
 				});
-				gArrBuf = ~0u;   // the array buffer binding changed on the render thread
+				gArrBuf = ~0u; gAttrDirty = true;   // array buffer binding and those attributes changed on the render thread
 				batchOpen(dc, instReg, d);
 			}
 			else if (instanced) glDrawElementsInstanced(mode, nv, wide ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT, (const void*)(uintptr_t)(dc.startIndex * isz), (GLsizei)instCount);
