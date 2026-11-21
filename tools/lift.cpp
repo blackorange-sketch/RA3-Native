@@ -1,3 +1,4 @@
+#include <mutex>
 #include <cstdlib>
 #include "lift.h"
 
@@ -1308,6 +1309,29 @@ void init()
 	cs_option(cs, CS_OPT_DETAIL, CS_OPT_ON);
 }
 
+// per-function instruction mix (x87 / SSE), written to lift-stats.txt: which hot functions use the x87 stack, whose
+// emulation (c->st[] in memory, reloaded after every guest store) is the slowest part of the lifted code
+static void noteStats(uint32_t entry, const std::map<uint32_t, Ins>& code)
+{
+	static std::mutex mu;
+	static FILE* f = fopen("lift-stats.txt", "w");
+	unsigned n = 0, x87 = 0, sse = 0;
+	for (auto& kv : code)
+	{
+		const std::string& m = kv.second.mn;
+		n++;
+		if (m.empty()) continue;
+		if (m[0] == 'f' && m.compare(0, 2, "fx") != 0) x87++;
+		else if (m.size() > 2)
+		{
+			std::string t = m.substr(m.size() - 2);
+			if (t == "ss" || t == "ps" || t == "sd" || t == "pd" || m.compare(0, 3, "cvt") == 0) sse++;
+		}
+	}
+	std::lock_guard<std::mutex> l(mu);
+	if (f) { fprintf(f, "%08x %u %u %u\n", entry, n, x87, sse); fflush(f); }
+}
+
 Result liftFunction(Reader& r, uint32_t entry, const Options& opt)
 {
 	gReader = &r;
@@ -1406,6 +1430,7 @@ Result liftFunction(Reader& r, uint32_t entry, const Options& opt)
 	for (auto& [va, i] : code)
 		for (uint32_t s : i.succ) labels.insert(s);
 
+	noteStats(entry, code);
 	Result res;
 	Gen g{opt.funcEntries, entry, &code, {}};
 	g.setjmpSlot = opt.setjmpSlot;

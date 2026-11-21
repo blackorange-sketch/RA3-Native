@@ -135,7 +135,8 @@ jobs:
             cat changes.md
           } > notes.md
           gh release view nightly >/dev/null 2>&1 || gh release create nightly --title "Nightly build" --notes "Nightly" --prerelease --target "$GITHUB_SHA"
-          gh release upload nightly ra3-native.apk ra3native-symbols.txt --clobber
+          touch -a lift-stats.txt
+          gh release upload nightly ra3-native.apk ra3native-symbols.txt lift-stats.txt --clobber
           gh release edit nightly --notes-file notes.md --prerelease
 
       - name: Publish stable release
