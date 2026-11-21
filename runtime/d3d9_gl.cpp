@@ -1697,8 +1697,72 @@ void draw(const DrawCall& dc)
 	if ((gNDraws++ & 7) == 0) { uint64_t t0 = nowUs(); drawImpl(dc); gTDraw += (nowUs() - t0) * 8; }
 	else drawImpl(dc);
 }
+// /sdcard/ra3_batchstat: how many draws could be merged. Each draw is compared with the one before it:
+//   same  - same mesh, shaders, textures and states: only shader constants differ (one instanced draw could do both)
+//   mat   - same shaders, textures and states, another mesh (needs merged buffers / multi-draw)
+// For "same" pairs: how many vertex / pixel shader registers differ (what each instance would need of its own).
+static void batchStat(const DrawCall& dc)
+{
+	static const bool on = access("/sdcard/ra3_batchstat", F_OK) == 0;
+	if (!on) return;
+	struct Key
+	{
+		Obj* vb[4]; uint32_t off[4], stride[4]; Obj* ib; Obj* decl; uint32_t start, count, prim; int32_t base; bool indexed;
+		ShaderObj* vs; ShaderObj* ps; Obj* tex[8]; Obj* rt; Obj* ds;
+	};
+	static Key prev{}; static bool havePrev = false;
+	static uint32_t prs[256], psamp[16][16];
+	static float pvs[256 * 4], pps[224 * 4];
+	static uint32_t frame0 = gFrameNo, lastFrame = ~0u;
+	static uint64_t draws, same, mat, blended, sameOpaque, runs, runLen, longest, vsDiff, psDiff, upDraws;
+	static uint32_t curRun = 0;
+	if (gFrameNo != lastFrame) { havePrev = false; lastFrame = gFrameNo; if (curRun > 1) { runs++; runLen += curRun; } curRun = 0; }
+	draws++;
+	if (dc.upVerts) { upDraws++; havePrev = false; if (curRun > 1) { runs++; runLen += curRun; } curRun = 0; return; }
+	Key k{};
+	for (int i = 0; i < 4; i++) { k.vb[i] = dev.streams[i].vb; k.off[i] = dev.streams[i].offset; k.stride[i] = dev.streams[i].stride; }
+	k.ib = dev.ib; k.decl = dev.vdecl; k.start = dc.startIndex; k.count = dc.primCount; k.prim = dc.prim; k.base = dc.baseVertex; k.indexed = dc.indexed;
+	k.vs = dev.vs; k.ps = dev.ps; for (int i = 0; i < 8; i++) k.tex[i] = dev.tex[i]; k.rt = dev.rt0; k.ds = dev.ds;
+	bool blend = dev.rs[27] != 0;   // D3DRS_ALPHABLENDENABLE
+	if (blend) blended++;
+	bool st = havePrev && !memcmp(prs, dev.rs, sizeof prs) && !memcmp(psamp, dev.samp, sizeof psamp);
+	bool material = st && k.vs == prev.vs && k.ps == prev.ps && !memcmp(k.tex, prev.tex, sizeof k.tex) && k.rt == prev.rt && k.ds == prev.ds;
+	bool mesh = !memcmp(k.vb, prev.vb, sizeof k.vb) && !memcmp(k.off, prev.off, sizeof k.off) && !memcmp(k.stride, prev.stride, sizeof k.stride) &&
+		k.ib == prev.ib && k.decl == prev.decl && k.start == prev.start && k.count == prev.count && k.prim == prev.prim && k.base == prev.base && k.indexed == prev.indexed;
+	if (material && mesh)
+	{
+		same++; if (!blend) sameOpaque++;
+		uint32_t dv = 0, dp = 0;
+		for (int r = 0; r < 256; r++) if (memcmp(pvs + 4 * r, dev.vsF + 4 * r, 16)) dv++;
+		for (int r = 0; r < 224; r++) if (memcmp(pps + 4 * r, dev.psF + 4 * r, 16)) dp++;
+		vsDiff += dv; psDiff += dp;
+		curRun = curRun ? curRun + 1 : 2;
+	}
+	else
+	{
+		if (material) mat++;
+		if (curRun > 1) { runs++; runLen += curRun; longest = std::max<uint64_t>(longest, curRun); }
+		curRun = 0;
+	}
+	if (curRun > longest) longest = curRun;
+	prev = k; havePrev = true;
+	memcpy(prs, dev.rs, sizeof prs); memcpy(psamp, dev.samp, sizeof psamp);
+	memcpy(pvs, dev.vsF, sizeof pvs); memcpy(pps, dev.psF, sizeof pps);
+	uint32_t frames = gFrameNo - frame0;
+	if (frames >= 300)
+	{
+		double f = frames;
+		log("batch: %.0f draws/frame (%.0f UP, %.0f blended); same mesh+material as the draw before: %.0f/frame (%.0f opaque), "
+			"%.1f runs/frame of avg %.1f draws, longest %llu; same material other mesh: %.0f/frame; per same-pair differing registers vs %.1f ps %.1f",
+			draws / f, upDraws / f, blended / f, same / f, sameOpaque / f, runs / f, runs ? (double)runLen / runs : 0.0, (unsigned long long)longest,
+			mat / f, same ? (double)vsDiff / same : 0.0, same ? (double)psDiff / same : 0.0);
+		frame0 = gFrameNo; draws = same = mat = blended = sameOpaque = runs = runLen = longest = vsDiff = psDiff = upDraws = 0;
+	}
+}
+
 static void drawImpl(const DrawCall& dc)
 {
+	batchStat(dc);
 	{ static int n = 0; if (n++ < 5) log("GL: draw on tid %d ctx %p", (int)gettid(), (void*)eglGetCurrentContext()); }
 	if (!ensureGl()) return;
 	ShaderObj *vs = dev.vs, *ps = dev.ps;
