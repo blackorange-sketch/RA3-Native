@@ -130,10 +130,17 @@ PRef refOf(Obj* o, uint32_t h)
 	if (!fx) return r;
 	// handle -> reference, cached per thread: the records and type tables are several dependent loads that missed
 	// the cache on every parameter write (thousands per frame)
-	struct RefCache { FxInfo* fx; uint32_t h; PRef r; };
+	// /sdcard/ra3_fxsafe: every effect shortcut off (reference cache, unchanged-constant skip, pre-shader and shader
+// pick reuse, per-stage lookups, state path cache) - to find which one leaves UI elements at wrong places
+static bool fxSafe()
+{
+	static const bool on = [] { bool v = access("/sdcard/ra3_fxsafe", F_OK) == 0; rt::log("fx: shortcuts %s", v ? "OFF (ra3_fxsafe)" : "on"); return v; }();
+	return on;
+}
+struct RefCache { FxInfo* fx; uint32_t h; PRef r; };
 	static thread_local RefCache cache[2048];   // handles are numbered in order: 256 entries thrashed between effects
 	RefCache& ce = cache[(h >> 2) & 2047];
-	if (ce.h == h && ce.fx == fx && ce.r.p >= fx->params.data() && ce.r.p < fx->params.data() + fx->params.size()) return ce.r;
+	if (!fxSafe() && ce.h == h && ce.fx == fx && ce.r.p >= fx->params.data() && ce.r.p < fx->params.data() + fx->params.size()) return ce.r;
 	if (const HRec* rc = getRec(h))
 	{
 		if (rc->kind != 1 || rc->fx != fx || rc->a >= fx->params.size()) return r;
@@ -781,7 +788,7 @@ static void packConst(const FxInfo& fx, const CtabConst& c, ShaderObj* sh, bool 
 				same = false;
 			}
 		}
-		if (same) return;
+		if (same && !noSkip && !fxSafe()) return;
 		fxrt::packToRegs(p.ty, p.val.data(), p.val.size(), 2, c.regIndex, (uint32_t*)fregs, end);
 		for (uint32_t r = c.regIndex; r < end; r++) tags[r] = {&p, p.ver, c.regIndex};
 	}
@@ -815,6 +822,7 @@ static int resOf(FxInfo& fx, uint32_t tech, uint32_t pass, uint32_t si)
 // versions of the parameters a pre-shader reads
 static bool verSame(const FxInfo& fx, const std::vector<int>& pidx, const std::vector<uint32_t>& vers)
 {
+	if (fxSafe()) return false;
 	if (vers.size() != pidx.size()) return false;
 	for (size_t i = 0; i < pidx.size(); i++)
 		if (pidx[i] >= 0 && fx.params[pidx[i]].ver != vers[i]) return false;
@@ -915,7 +923,7 @@ static void applyShaderState(FxInfo& fx, const FxPass& ps, uint32_t tech, uint32
 		if (r.usage == 1)
 		{
 			// the path is parsed once per state (it was a string build and parse on every pass)
-			if (!st.refDone)
+			if (!st.refDone || fxSafe())
 			{
 				st.refDone = true;
 				PRef ref;
@@ -959,7 +967,7 @@ void fxApplyPass(Obj* o)
 	{
 		ShaderObj* sh = stage == 0 ? dev.vs : dev.ps;
 		if (!sh || !sh->ok) continue;
-		if (fx->lastSh[stage] != sh)
+		if (fx->lastSh[stage] != sh || fxSafe())
 		{
 			auto ci = fx->ctabIdx.find(sh);
 			if (ci == fx->ctabIdx.end())
