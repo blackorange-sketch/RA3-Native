@@ -81,13 +81,21 @@ def main():
                     code = d[off(f - base):off(f - base) + min(end - f, 8192)]
                     for ins in cs.disasm(code, f):
                         m = ins.mnemonic
-                        if m == 'call' or m.startswith('cmp') or m == 'test' or ins.address == rv - 1 or (m.startswith('j') and m != 'jmp'):
+                        strs = ''
+                        for tok in re.findall(r'0x[0-9a-f]+', ins.op_str):
+                            v = int(tok, 16)
+                            so = off(v - base) if base <= v < base + 0x2000000 else None
+                            if so is not None:
+                                raw = d[so:so + 120].split(b'\0')[0]
+                                if len(raw) >= 3 and all(32 <= ch < 127 for ch in raw):
+                                    strs = ' "' + raw.decode() + '"'
+                        if strs or m == 'call' or m.startswith('cmp') or m == 'test' or ins.address == rv - 1:
                             note = ''
                             if m == 'call' and 'dword ptr [0x' in ins.op_str:
                                 slot = int(ins.op_str.split('[0x')[1].rstrip(']'), 16)
                                 note = '  ; ' + iat.get(slot, '?')
                             mark = '  <-- string' if ins.address <= rv < ins.address + ins.size else ''
-                            print(f'    {ins.address:08x} {m} {ins.op_str}{note}{mark}')
+                            print(f'    {ins.address:08x} {m} {ins.op_str}{note}{strs}{mark}')
                 at = d.find(enc, at + 1)
 
 
