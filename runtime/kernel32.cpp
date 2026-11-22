@@ -690,6 +690,26 @@ static void steamStub(CPU* c)
 	if (nl++ < 40) log("steam_api: %s() -> 0", imports::current ? imports::current->name.c_str() : "?");
 	SET(0);
 }
+// SteamInternal_ContextInit(CSteamAPIContextInitData* d): d = {void (*fill)(CSteamAPIContext*), counter, context}.
+// The game's accessors (SteamUser(), SteamUtils()...) read their interface from the returned context, so it must be a
+// real one: filled once through the game's own fill function, whose interface lookups all answer 0 (no Steam).
+static void steamContextInit(CPU* c)
+{
+	uint32_t d = ARG(0);
+	if (!d) { SET(0); return; }
+	if (guest::load<uint32_t>(d + 4) != 1)
+	{
+		guest::store<uint32_t>(d + 4, 1);
+		if (uint32_t fill = guest::load<uint32_t>(d))
+		{
+			uint32_t sv[8]; memcpy(sv, c->r, sizeof sv);
+			rt::callGuest(c, fill, {d + 8});
+			memcpy(c->r, sv, sizeof sv);
+		}
+		log("steam_api: context %08x filled (no Steam: all interfaces null)", d + 8);
+	}
+	SET(d + 8);
+}
 IMP_STD(K, LoadLibraryA, 1)
 {
 	std::string n = gstr(ARG(0));
@@ -705,7 +725,7 @@ IMP_STD(K, GetProcAddress, 2)
 	{
 		std::string n = gstr(ARG(1));
 		log("GetProcAddress(steam_api, %s)", n.c_str());
-		SET(imports::addDynamic("steam_api.dll", n, steamStub, 0, 0));
+		SET(imports::addDynamic("steam_api.dll", n, n == "SteamInternal_ContextInit" ? steamContextInit : steamStub, 0, 0));
 		return;
 	}
 	SET(0); setLastError(127);
