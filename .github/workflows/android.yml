@@ -84,6 +84,7 @@ jobs:
           if [ -f game/ra3_1.13.game ]; then
             ./analyze game/ra3_1.13.game game/ra313 | head -30
             # addresses the runtime uses in 1.12, translated to the Steam build (only addresses are printed)
+            pip install --quiet capstone==5.0.1 || pip install --quiet --break-system-packages capstone==5.0.1
             python3 tools/match_builds.py game/ra3_1.12.game game/ra3.functions.txt game/ra3_1.13.game game/ra313.functions.txt \
               4d398d af99f0 afa2a0 af9790 9c6870 61d660 6297e0 629863 caf9d4 caf9d0 ce2f98 cdb754 cebd54 4cc910 91b040 61c040 61c0d0 4cbbc0 a2b5e0 a2b850 d17d38 cf00b8 || true
           fi
