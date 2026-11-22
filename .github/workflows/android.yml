@@ -84,6 +84,7 @@ jobs:
           if [ -f game/ra3_1.13.game ]; then
             ./analyze game/ra3_1.13.game game/ra313 | head -30
             # imports the Steam build uses that 1.12 does not (each needs a runtime implementation)
+            echo "steam interfaces:"; strings -n 8 game/ra3_1.13.game | grep -E '^(Steam|STEAM)[A-Za-z_]*[0-9]{3}$|^SteamAPI_|^SteamInternal_' | sort -u | head -60
             echo "imports only in 1.13:"; awk '{print $2}' game/ra3.imports_used.txt | sort > /tmp/i12; awk '{print $2}' game/ra313.imports_used.txt | sort > /tmp/i13; comm -13 /tmp/i12 /tmp/i13
             # the Steam build: its own library (runtime/game_build.h has its addresses); a93130 = resolution list mode check
             mkdir -p lifted113
