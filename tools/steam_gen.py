@@ -74,6 +74,12 @@ def main():
         out += rows
         out.append('};')
         names.append(f'\t{{"{ver}", "{cls}", kSteamM{k}, {len(rows)}}},')
+        # ISteamUtils011 dropped GetCSERIPPort (after GetImageRGBA) - games built with 010 still have it
+        if ver == 'SteamUtils011' and len(rows) > 7 and '"GetImageRGBA"' in rows[6]:
+            out.append(f'static const SteamMethod kSteamM{k}c[] = {{')
+            out += rows[:7] + ['\t{"GetCSERIPPort", 8, \'B\'},'] + rows[7:]
+            out.append('};')
+            names.append(f'\t{{"SteamUtils010", "{cls}", kSteamM{k}c, {len(rows) + 1}}},')
         # ISteamUserStats013 dropped RequestCurrentStats (the first method) - games built with 012 still have it
         if ver == 'STEAMUSERSTATS_INTERFACE_VERSION013' and rows and '"RequestCurrentStats"' not in rows[0]:
             out.append(f'static const SteamMethod kSteamM{k}b[] = {{')

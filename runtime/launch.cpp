@@ -174,6 +174,16 @@ int launch(const std::string& gameFile)
 {
 	log("game root listing: %s", config.gameRoot.c_str());
 	listDir(config.gameRoot, 2);
+#ifdef RA3_GAME_113
+	// The Steam build checks steam_appid.txt (written by the Steam launcher RA3.exe) against the app id Steam
+	// reports: without it, "Unable to verify game installation". It holds only the app id.
+	for (const std::string& dir : {config.gameRoot, config.gameRoot + "/Data"})
+	{
+		std::string f = dir + "/steam_appid.txt";
+		if (access(f.c_str(), F_OK) != 0)
+			if (FILE* o = fopen(f.c_str(), "w")) { fputs("17480", o); fclose(o); log("steam: wrote %s", f.c_str()); }
+	}
+#endif
 	{
 		struct sigaction sa{};
 		sa.sa_sigaction = onFault;
