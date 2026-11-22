@@ -83,6 +83,8 @@ jobs:
           RA3_GATES=af99f0:4:1 RA3_HOOKS=afa2a0 ./lift_pe game/ra3_1.12.game game/ra3.functions.txt --emit-dir lifted 96 | head -3
           if [ -f game/ra3_1.13.game ]; then
             ./analyze game/ra3_1.13.game game/ra313 | head -30
+            # imports the Steam build uses that 1.12 does not (each needs a runtime implementation)
+            echo "imports only in 1.13:"; awk '{print $2}' game/ra3.imports_used.txt | sort > /tmp/i12; awk '{print $2}' game/ra313.imports_used.txt | sort > /tmp/i13; comm -13 /tmp/i12 /tmp/i13
             # the Steam build: its own library (runtime/game_build.h has its addresses); a93130 = resolution list mode check
             mkdir -p lifted113
             RA3_GATES=a93130:4:1 ./lift_pe game/ra3_1.13.game game/ra313.functions.txt --emit-dir lifted113 96 | head -3
