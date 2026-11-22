@@ -90,5 +90,48 @@ def main():
                 at = d.find(enc, at + 1)
 
 
+def strings_and_calls(path, funcs_path, ranges):
+    """For address ranges (a-b) or functions (a): the strings pushed/loaded and the calls made, in order."""
+    d = open(path, 'rb').read()
+    pe = struct.unpack_from('<I', d, 0x3c)[0]
+    nsec = struct.unpack_from('<H', d, pe + 6)[0]
+    optsz = struct.unpack_from('<H', d, pe + 20)[0]
+    opt = pe + 24
+    base = struct.unpack_from('<I', d, opt + 28)[0]
+    secs = [struct.unpack_from('<IIII', d, opt + optsz + 40 * i + 8) for i in range(nsec)]
+
+    def off(rva):
+        for vsz, va, rsz, rptr in secs:
+            if va <= rva < va + rsz:
+                return rptr + rva - va
+        return None
+    funcs = sorted(int(l.split()[0], 16) for l in open(funcs_path) if l.strip())
+    cs = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+    for r in ranges:
+        if '-' in r:
+            a, b = (int(x, 16) for x in r.split('-'))
+        else:
+            a = int(r, 16)
+            i = bisect.bisect_right(funcs, a)
+            b = funcs[i] if i < len(funcs) else a + 4096
+        print(f'  {a:08x}-{b:08x}:')
+        o = off(a - base)
+        for ins in cs.disasm(d[o:o + (b - a)], a):
+            txt = ''
+            for tok in ins.op_str.replace(',', ' ').split():
+                if tok.startswith('0x'):
+                    v = int(tok, 16)
+                    so = off(v - base) if base <= v < base + 0x2000000 else None
+                    if so is not None:
+                        raw = d[so:so + 80].split(b'\0')[0]
+                        if len(raw) >= 4 and all(32 <= ch < 127 for ch in raw):
+                            txt = ' "' + raw.decode() + '"'
+            if ins.mnemonic in ('call', 'ret') or txt or ins.mnemonic.startswith('cmp') or ins.mnemonic in ('test', 'setne', 'sete', 'mov') and ('bl' in ins.op_str.split(',')[0]):
+                print(f'    {ins.address:08x} {ins.mnemonic} {ins.op_str}{txt}')
+
+
 if __name__ == '__main__':
+    if len(sys.argv) > 3 and sys.argv[3] == '--at':
+        strings_and_calls(sys.argv[1], sys.argv[2], sys.argv[4:])
+        sys.exit(0)
     main()
