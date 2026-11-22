@@ -630,7 +630,7 @@ public class LauncherActivity extends Activity {
             boolean known = false;
             for (String h : GAME_SHA256) if (h.equals(sha)) known = true;
             final boolean buildOk = known;
-            final boolean libOk = !ver.equals("1.13") || new File(getApplicationInfo().nativeLibraryDir, "libra3native113.so").exists();
+            final boolean libOk = !ver.equals("1.13") || hasLibrary("ra3native113");
             runOnUiThread(() -> {
                 if (gen != checkGen) return;
                 busy = false;
@@ -647,6 +647,15 @@ public class LauncherActivity extends Activity {
                 else status("MISSING: " + missing.get(0) + (missing.size() > 1 ? "  (+" + (missing.size() - 1) + " MORE)" : "") + "  -  CHECK THE GAME FOLDER", RED_GLOW);
             });
         }).start();
+    }
+
+    // the native library is in the APK (installs keep libraries inside the APK, uncompressed, instead of extracting them)
+    boolean hasLibrary(String name) {
+        String file = "lib" + name + ".so";
+        if (new File(getApplicationInfo().nativeLibraryDir, file).exists()) return true;
+        try (java.util.zip.ZipFile z = new java.util.zip.ZipFile(getApplicationInfo().sourceDir)) {
+            return z.getEntry("lib/arm64-v8a/" + file) != null;
+        } catch (Exception e) { return false; }
     }
 
     static String sha256(File f) {
