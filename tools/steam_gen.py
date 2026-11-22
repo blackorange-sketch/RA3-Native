@@ -74,6 +74,13 @@ def main():
         out += rows
         out.append('};')
         names.append(f'\t{{"{ver}", "{cls}", kSteamM{k}, {len(rows)}}},')
+        # ISteamUserStats013 dropped RequestCurrentStats (the first method) - games built with 012 still have it
+        if ver == 'STEAMUSERSTATS_INTERFACE_VERSION013' and rows and '"RequestCurrentStats"' not in rows[0]:
+            out.append(f'static const SteamMethod kSteamM{k}b[] = {{')
+            out.append('\t{"RequestCurrentStats", 0, \'B\'},')
+            out += rows
+            out.append('};')
+            names.append(f'\t{{"STEAMUSERSTATS_INTERFACE_VERSION012", "{cls}", kSteamM{k}b, {len(rows) + 1}}},')
     out.append('static const SteamIface kSteamIfaces[] = {')
     out += names
     out.append('};')
