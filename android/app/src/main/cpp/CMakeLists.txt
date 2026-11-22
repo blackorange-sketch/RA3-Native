@@ -10,7 +10,7 @@ set(RUNTIME_SRC
   android_main.cpp
   ${GLUE}/android_native_app_glue.c
   ${RT}/guest.cpp ${RT}/imports.cpp ${RT}/pe_loader.cpp ${RT}/heap.cpp ${RT}/rt.cpp ${RT}/fmt.cpp
-  ${RT}/crt.cpp ${RT}/kernel32.cpp ${RT}/misc.cpp ${RT}/input.cpp ${RT}/hud.cpp ${RT}/ws2.cpp ${RT}/dsound.cpp ${RT}/d3d9.cpp ${RT}/d3d9_dev.cpp ${RT}/d3d9_fx.cpp ${RT}/d3d9_gl.cpp ${RT}/glrec.cpp ${RT}/perfhint.cpp ${RT}/gfx_gles.cpp ${RT}/launch.cpp ${RT}/prof.cpp ${RT}/etc2.cpp
+  ${RT}/crt.cpp ${RT}/msvcp80.cpp ${RT}/kernel32.cpp ${RT}/misc.cpp ${RT}/input.cpp ${RT}/hud.cpp ${RT}/ws2.cpp ${RT}/dsound.cpp ${RT}/d3d9.cpp ${RT}/d3d9_dev.cpp ${RT}/d3d9_fx.cpp ${RT}/d3d9_gl.cpp ${RT}/glrec.cpp ${RT}/perfhint.cpp ${RT}/gfx_gles.cpp ${RT}/launch.cpp ${RT}/prof.cpp ${RT}/etc2.cpp
   ${RT}/third_party/etcpak/ProcessRGB.cpp ${RT}/third_party/etcpak/Tables.cpp ${RT}/third_party/etcpak/Dither.cpp)
 
 # one library per game build (runtime/game_build.h): the runtime is compiled into each, with that build's lifted code
