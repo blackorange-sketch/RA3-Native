@@ -98,7 +98,8 @@ jobs:
             # imports the Steam build uses that 1.12 does not (each needs a runtime implementation)
             pip install --quiet capstone==5.0.1 || pip install --quiet --break-system-packages capstone==5.0.1
             echo "steam interfaces:"; strings -n 8 game/ra3_1.13.game | grep -E '^(Steam|STEAM)[A-Za-z_]*[0-9]{3}$|^SteamAPI_|^SteamInternal_' | sort -u | head -60
-            python3 tools/xref.py game/ra3_1.13.game game/ra313.functions.txt "Failed to fetch Steam App Name" "Failed to open Internet handle" || true
+            # the Steam start-up checks (Steam/Workshop set-up) in full, to answer all of them at once
+            python3 tools/xref.py game/ra3_1.13.game game/ra313.functions.txt --dis 4d67a0-4d7020 4d4770 4d47b0 4d45e0 4d4620 4d45a0 4d49f0 4d4d10 4d4dd0 4d5310 4d52b0 4d5590 4d54c0 4d4be0 4d5ec0 4d4436 || true
             echo "imports only in 1.13:"; awk '{print $2}' game/ra3.imports_used.txt | sort > /tmp/i12; awk '{print $2}' game/ra313.imports_used.txt | sort > /tmp/i13; comm -13 /tmp/i12 /tmp/i13
             # the Steam build: its own library (runtime/game_build.h has its addresses); a93130 = resolution list mode check
             mkdir -p lifted113
