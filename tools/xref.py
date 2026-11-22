@@ -5,6 +5,7 @@ and the compares/tests the function makes, in order - enough to see what a check
 usage: xref.py game.exe game.functions.txt "text" [...]
 """
 import bisect
+import re
 import struct
 import sys
 
@@ -118,8 +119,8 @@ def strings_and_calls(path, funcs_path, ranges):
         o = off(a - base)
         for ins in cs.disasm(d[o:o + (b - a)], a):
             txt = ''
-            for tok in ins.op_str.replace(',', ' ').split():
-                if tok.startswith('0x'):
+            for tok in re.findall(r'0x[0-9a-f]+', ins.op_str):
+                if True:
                     v = int(tok, 16)
                     so = off(v - base) if base <= v < base + 0x2000000 else None
                     if so is not None:
