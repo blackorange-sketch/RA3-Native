@@ -680,9 +680,36 @@ IMP_STD(K, GetEnvironmentVariableA, 3) { SET(0); setLastError(203); }
 IMP_STD(K, SetEnvironmentVariableA, 2) { SET(1); }
 IMP_STD(K, GetComputerNameA, 2) { putStr(ARG(0), "ANDROID"); guest::store<uint32_t>(ARG(1), 7); SET(1); }
 IMP_ID("ADVAPI32.dll", "GetUserNameA", GetUserNameA, 8) { putStr(ARG(0), "player"); guest::store<uint32_t>(ARG(1), 7); SET(1); }
-IMP_STD(K, LoadLibraryA, 1) { std::string n = gstr(ARG(0)); log("LoadLibraryA(%s)", n.c_str()); SET(0); setLastError(126); }
+// Steam build: steam_api.dll is delay-loaded (a missing DLL raises an exception in the game's delay-load helper).
+// A stand-in module: SteamAPI_Init reports that Steam is not running, every other export returns 0 (Steam API
+// exports are cdecl, so an unknown one is safe to answer this way); the names asked for are logged.
+constexpr uint32_t kSteamModule = 0x6f000000;
+static void steamStub(CPU* c)
+{
+	static std::atomic<int> nl{0};
+	if (nl++ < 40) log("steam_api: %s() -> 0", imports::current ? imports::current->name.c_str() : "?");
+	SET(0);
+}
+IMP_STD(K, LoadLibraryA, 1)
+{
+	std::string n = gstr(ARG(0));
+	log("LoadLibraryA(%s)", n.c_str());
+	std::string l = n; for (auto& ch : l) ch = (char)tolower((unsigned char)ch);
+	if (l == "steam_api.dll" || l.size() > 14 && l.compare(l.size() - 14, 14, "\\steam_api.dll") == 0) { SET(kSteamModule); return; }
+	SET(0); setLastError(126);
+}
 IMP_STD(K, FreeLibrary, 1) { SET(1); }
-IMP_STD(K, GetProcAddress, 2) { SET(0); setLastError(127); }
+IMP_STD(K, GetProcAddress, 2)
+{
+	if (ARG(0) == kSteamModule && ARG(1) >= 0x10000)
+	{
+		std::string n = gstr(ARG(1));
+		log("GetProcAddress(steam_api, %s)", n.c_str());
+		SET(imports::addDynamic("steam_api.dll", n, steamStub, 0, 0));
+		return;
+	}
+	SET(0); setLastError(127);
+}
 IMP_STD(K, GetLogicalDrives, 0) { SET(1 << 2); }
 IMP_STD(K, GetWindowsDirectoryW, 2) { SET(putWStr(ARG(0), u"C:\\Windows")); }
 IMP_STD(K, GetTempPathA, 2) { SET(putStr(ARG(1), "C:\\Temp\\")); }
