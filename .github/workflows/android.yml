@@ -63,6 +63,18 @@ jobs:
           gh release download game-binary -R blackorange-sketch/ra3-private -p ra3_1.13.game -D game || true
           sha256sum game/*.game
 
+      # Steam build: the stand-in steam_api (runtime/steam.cpp) needs every Steam interface's method table, generated
+      # from the Steamworks SDK description (steam_api.json, public in the Steamworks.NET / Facepunch.Steamworks repos)
+      - name: Steam interface tables
+        run: |
+          for src in "https://github.com/rlabrecque/Steamworks.NET CodeGen/steam/steam_api.json" \
+                     "https://github.com/Facepunch/Facepunch.Steamworks Generator/steam_sdk/steam_api.json"; do
+            set -- $src
+            rm -rf sdkjson; git clone -q --depth 1 --filter=blob:none --sparse "$1" sdkjson && git -C sdkjson sparse-checkout set --no-cone "/$2" && [ -f "sdkjson/$2" ] && { python3 tools/steam_gen.py "sdkjson/$2" runtime/steam_ifaces.inc && break; }
+          done
+          ls -la runtime/steam_ifaces.inc || echo "no Steam interface tables (fake interfaces will pop nothing)"
+          grep -o '"Steam[A-Za-z]*[0-9]\{3\}"\|"STEAM[A-Z_]*[0-9]\{3\}"' runtime/steam_ifaces.inc 2>/dev/null | tr '\n' ' ' | head -c 3000; echo
+
       - name: Build Capstone
         run: |
           git clone https://github.com/capstone-engine/capstone

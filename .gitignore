@@ -4,3 +4,4 @@
 build/
 out*
 runtime/build_id.h
+runtime/steam_ifaces.inc
