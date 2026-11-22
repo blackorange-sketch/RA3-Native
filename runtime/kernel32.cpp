@@ -1,3 +1,4 @@
+#include "game_build.h"
 #include <cmath>
 // KERNEL32 replacement: threads, synchronization, files, memory, time, misc.
 #include <atomic>
@@ -180,7 +181,7 @@ void threadMain(ThreadObj* t)
 	traceRegister(t->tid);
 	cpu.fsbase = tctx.teb;
 	cpu.r[ESP] = top - 16;
-	if (t->fn == 0xa2b5e0 || t->fn == 0xa2b850) log("thread %u starts: wrapper %08x real fn %08x arg %08x", t->tid, t->fn, guest::load<uint32_t>(t->arg + 0x10), guest::load<uint32_t>(t->arg + 0x14));
+	if (t->fn == gb::ThreadWrap1 || t->fn == gb::ThreadWrap2) log("thread %u starts: wrapper %08x real fn %08x arg %08x", t->tid, t->fn, guest::load<uint32_t>(t->arg + 0x10), guest::load<uint32_t>(t->arg + 0x14));
 	uint32_t r = callGuestRet(&cpu, t->fn, {t->arg}, 4);
 	std::lock_guard<std::mutex> l(waitMu);
 	t->exitCode = r;
@@ -319,7 +320,7 @@ static uint32_t gLimObj = 0;   // the game object that owns the frame limiter
 namespace rt { uint64_t limiterCpuUs() { return gLimCpu.exchange(0); } uint64_t limiterWaitUs() { return gLimWait.exchange(0); } uint64_t limiterWaitTotalUs() { return gLimWaitTotal.load(); } }
 static void limiterHeadroom(CPU* c)
 {
-	if (guest::load<uint32_t>(c->r[ESP] + 12) != 0x629863u) return;
+	if (guest::load<uint32_t>(c->r[ESP] + 12) != gb::LimiterRet) return;
 	{
 		// time spent in the limiter's wait loop: spans between consecutive calls belong to one wait
 		static uint64_t prev = 0, prevCpu = 0;
@@ -343,7 +344,7 @@ void fpsPinTick()
 	static const bool noPin = access("/sdcard/ra3_fpsnopin", F_OK) == 0;   // experiment: let the game lower it on slow frames
 	if (noPin) return;
 	// variant B keeps the game's 30 fps cap (everything it derives stays as on PC) and only shortens the wait
-	uint32_t want = gFps60b ? 4 : guest::load<uint32_t>(0xcaf9d4) / std::max(1u, guest::load<uint32_t>(0xcaf9d0));
+	uint32_t want = gFps60b ? 4 : guest::load<uint32_t>(gb::FpsCap) / std::max(1u, guest::load<uint32_t>(gb::LogicHz));
 
 	uint32_t k = guest::load<uint32_t>(gLimObj + 0x17c);
 	if (k == want || k == 0 || k > 16) return;
@@ -380,7 +381,7 @@ IMP_STD(K, SleepEx, 2)
 	noteWait(c, "SleepEx", ms);
 	limiterHeadroom(c);
 	// the frame limiter spins on SleepEx(0) + timeGetTime until the frame time is reached: 1 ms naps there save power
-	bool limiter = guest::load<uint32_t>(c->r[ESP] + 12) == 0x629863u;
+	bool limiter = guest::load<uint32_t>(c->r[ESP] + 12) == gb::LimiterRet;
 	if (ms) std::this_thread::sleep_for(std::chrono::milliseconds(ms));
 	else std::this_thread::sleep_for(std::chrono::microseconds(limiter ? 1000 : 100));
 	SET(0);
@@ -670,8 +671,8 @@ IMP_STD(K, GetSystemInfo, 1)
 	guest::store<uint32_t>(p + 28, 0x10000);
 }
 IMP_STD(K, GetModuleHandleA, 1) { SET(ARG(0) ? 0x7ff00000 : imageBase); }
-IMP_STD(K, GetModuleFileNameA, 3) { std::string s = "C:\\RA3\\Data\\ra3_1.12.game"; uint32_t n = std::min<uint32_t>(s.size(), ARG(2) - 1); guest::store<uint8_t>(ARG(1) + n, 0); memcpy(guest::host(ARG(1)), s.data(), n); SET(n); }
-IMP_STD(K, GetModuleFileNameW, 3) { auto s = utf8to16("C:\\RA3\\Data\\ra3_1.12.game"); uint32_t n = std::min<uint32_t>(s.size(), ARG(2) - 1); guest::store<char16_t>(ARG(1) + 2 * n, 0); memcpy(guest::host(ARG(1)), s.data(), 2 * n); SET(n); }
+IMP_STD(K, GetModuleFileNameA, 3) { std::string s = std::string("C:\\RA3\\Data\\") + gb::kExe; uint32_t n = std::min<uint32_t>(s.size(), ARG(2) - 1); guest::store<uint8_t>(ARG(1) + n, 0); memcpy(guest::host(ARG(1)), s.data(), n); SET(n); }
+IMP_STD(K, GetModuleFileNameW, 3) { auto s = utf8to16(std::string("C:\\RA3\\Data\\") + gb::kExe); uint32_t n = std::min<uint32_t>(s.size(), ARG(2) - 1); guest::store<char16_t>(ARG(1) + 2 * n, 0); memcpy(guest::host(ARG(1)), s.data(), 2 * n); SET(n); }
 IMP_STD(K, GetCommandLineA, 0) { static uint32_t a = newStr(rt::commandLine()); SET(a); }
 IMP_STD(K, GetCommandLineW, 0) { static uint32_t a = [] { auto s = utf8to16(rt::commandLine()); uint32_t p = gmalloc(2 * s.size() + 2); putWStr(p, s); return p; }(); SET(a); }
 IMP_STD(K, GetStartupInfoA, 1) { memset(guest::host(ARG(0)), 0, 68); guest::store<uint32_t>(ARG(0), 68); }

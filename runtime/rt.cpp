@@ -1,3 +1,4 @@
+#include "game_build.h"
 #include <string>
 #include <chrono>
 #include <thread>
@@ -473,12 +474,12 @@ void unsupported(CPU* c, uint32_t va, const char* what)
 uint32_t g_eflags_hi = 0;
 uint32_t ra3_stub_tolower = 0xffffffffu;
 
-namespace rt { std::string commandLine() { return "\"C:\\RA3\\Data\\ra3_1.12.game\" -config RA3_" + config.language + "_1.12.SkuDef -win"; } }
+namespace rt { std::string commandLine() { return std::string("\"C:\\RA3\\Data\\") + gb::kExe + "\" -config RA3_" + config.language + "_" + gb::kVer + ".SkuDef -win"; } }
 namespace rt { bool verbose() { static bool v = access("/sdcard/ra3_verbose", F_OK) == 0; return v; } }
 bool ra3_gate(CPU* c, uint32_t fn)
 {
 	// RA3_GATES in the workflow
-	if (fn == 0x00af99f0u)
+	if (fn == gb::ResModeCheck)
 	{
 		// the graphics options' check of a display mode for the resolution list (it accepts standard aspect ratios
 		// only): with Wide screen on, the modes of the screen's own shape are accepted as well (returns 1)
@@ -495,7 +496,7 @@ bool ra3_gate(CPU* c, uint32_t fn)
 }
 void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t ecx)
 {
-	if (fn == 0x9c6870u)
+	if (fn == gb::SetTextureWrapper)
 	{
 		static std::atomic<int> cnt{0};
 		static std::atomic<int> nz{0};
@@ -506,7 +507,7 @@ void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, 
 			rt::log("hook SetTextureWrapper this=%08x stage=%u wrapper=%08x d3dtex=%08x (calls %d nonnull %d)", ecx, a0, a1, tex, k, nz.load());
 		return;
 	}
-	if (fn == 0xafa2a0u || fn == 0xaf9790u)
+	if (fn == gb::GfxOptionsList || fn == gb::GfxOptionsList2)
 	{
 		// dump the LABELS / VALUES lists the graphics options handler built for the UI
 		static std::atomic<int> cnt{0};
@@ -515,7 +516,7 @@ void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, 
 			uint32_t first = guest::load<uint32_t>(a0 + 0x10), last = guest::load<uint32_t>(a0 + 0x14);
 			if (false) rt::log("hook gfx-list fn=%08x type=%u entries=%d", fn, a1, (int)(last - first) / 4);
 			static bool tested = true;
-			if (!tested && fn == 0xafa2a0u)
+			if (!tested && fn == gb::GfxOptionsList)
 			{
 				// experiment: ask the game's own string table for the option texts
 				tested = true;
@@ -523,13 +524,13 @@ void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, 
 				uint32_t scratch = c->r[ESP] - 0x800;
 				c->r[ESP] -= 0x2000;
 				static const char* keys[] = {"APT:AdvancedOption_TerrainLOD_Low", "APT:ADVANCEDOPTION_TERRAINLOD_LOW", "APT:OFF", "APT:MouseSensitivity", "APT:AdvancedOption_EffectsLOD_UltraHigh", "GUI:Low"};
-				uint32_t mgr = guest::load<uint32_t>(0xcdb754);
+				uint32_t mgr = guest::load<uint32_t>(gb::OptionsMgr);
 				for (const char* k : keys)
 				{
 					strcpy((char*)guest::host(scratch + 0x100), k);
 					guest::store<uint32_t>(scratch, 0);
 					c->r[ECX] = scratch;
-					rt::callGuest(c, 0x4cc910, {scratch + 0x100}, 4);
+					rt::callGuest(c, gb::FnStrInit, {scratch + 0x100}, 4);
 					uint32_t vt = guest::load<uint32_t>(mgr);
 					c->r[ECX] = mgr;
 					uint32_t res = rt::callGuestRet(c, guest::load<uint32_t>(vt + 0x3c), {scratch, 0u}, 8);
@@ -545,7 +546,7 @@ void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, 
 				}
 				*c = saved;
 			}
-			if (fn == 0xafa2a0u && a2 > 0x400000 && a2 < 0x30000000)
+			if (fn == gb::GfxOptionsList && a2 > 0x400000 && a2 < 0x30000000)
 			{
 				// The game registers the localized text of every list item as a UI variable named after the item
 				// label; that registration does not arrive here, so do it through the same game functions.
@@ -555,7 +556,7 @@ void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, 
 				std::string prefix1 = (const char*)guest::host(a2);
 				uint32_t p2 = (a2 + (uint32_t)prefix1.size() + 1 + 3) & ~3u;
 				std::string prefix2 = (const char*)guest::host(p2);
-				uint32_t store = guest::load<uint32_t>(0xcebd54), mgr = guest::load<uint32_t>(0xcdb754);
+				uint32_t store = guest::load<uint32_t>(gb::OptionsStore), mgr = guest::load<uint32_t>(gb::OptionsMgr);
 				static int logged = 0;
 				auto cstr = [&](uint32_t p) { return (p > 0x400000 && p < 0x30000000) ? std::string((const char*)guest::host(p)) : std::string(); };
 				// text of a string-table label -> guest UnicodeString*
@@ -563,7 +564,7 @@ void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, 
 					strcpy((char*)guest::host(scratch + 0x100), key.c_str());
 					guest::store<uint32_t>(scratch, 0);
 					c->r[ECX] = scratch;
-					rt::callGuest(c, 0x4cc910, {scratch + 0x100}, 4);
+					rt::callGuest(c, gb::FnStrInit, {scratch + 0x100}, 4);
 					c->r[ECX] = mgr;
 					uint32_t res = rt::callGuestRet(c, guest::load<uint32_t>(guest::load<uint32_t>(mgr) + 0x3c), {scratch, 0u}, 8);
 					return res < 0x400000 ? 0 : res; };
@@ -572,15 +573,15 @@ void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, 
 					uint32_t h = 0x811c9dc5u; for (char ch : var) h = (h * 0x1000193u) ^ (uint8_t)ch;
 					guest::store<uint32_t>(scratch + 0x20, h); guest::store<uint32_t>(scratch + 0x24, 0);
 					c->r[ECX] = store;
-					uint32_t ok = rt::callGuestRet(c, 0x91b040, {scratch + 0x20, ustr, 1u}, 12) & 0xff;
+					uint32_t ok = rt::callGuestRet(c, gb::FnOptHas, {scratch + 0x20, ustr, 1u}, 12) & 0xff;
 					if (logged++ < 4) rt::log("   set var '%s' <- %s: %u", var.c_str(), what.c_str(), ok); };
 				auto lodName = [&](uint32_t type, uint32_t i) {
 					guest::store<uint32_t>(scratch + 0x40, 0);
-					rt::callGuest(c, 0x61c040, {scratch + 0x40, type, i});
+					rt::callGuest(c, gb::FnOptGet, {scratch + 0x40, type, i});
 					return cstr(guest::load<uint32_t>(scratch + 0x40)); };
 				if (store && mgr && prefix2.compare(0, 4, "APT:") == 0)
 				{
-					int count = (int)rt::callGuestRet(c, 0x61c0d0, {a1});
+					int count = (int)rt::callGuestRet(c, gb::FnOptCount, {a1});
 					for (uint32_t i = 0; (int)i < count && i < 8; i++)
 					{
 						std::string nm = lodName(a1, i);
@@ -597,7 +598,7 @@ void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, 
 							for (uint32_t i = 0; i < 6; i++) setVar(pp1 + std::to_string(i), lookup(pp2 + presets[i]), pp2 + presets[i]);
 						// anti-aliasing list: item 0 is a string-table label, the rest are literal names ("2x", ...)
 						std::string ap1 = cstr(guest::load<uint32_t>(obj + 0x30)), ap0 = cstr(guest::load<uint32_t>(obj + 0x38));
-						int ac = (int)rt::callGuestRet(c, 0x61c0d0, {0u});
+						int ac = (int)rt::callGuestRet(c, gb::FnOptCount, {0u});
 						if (ap1.compare(0, 4, "APT:") == 0)
 							for (uint32_t i = 0; (int)i < ac && i < 8; i++)
 							{
@@ -607,7 +608,7 @@ void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, 
 								strcpy((char*)guest::host(scratch + 0x180), nm.c_str());
 								guest::store<uint32_t>(scratch + 0x60, 0);
 								c->r[ECX] = scratch + 0x60;
-								rt::callGuest(c, 0x4cbbc0, {scratch + 0x180}, 4);
+								rt::callGuest(c, gb::FnStrFree, {scratch + 0x180}, 4);
 								setVar(ap1 + std::to_string(i), scratch + 0x60, "'" + nm + "'");
 							}
 					}
@@ -615,7 +616,7 @@ void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, 
 				*c = saved;
 			}
 			static int probes = 0;
-			if (false && fn == 0xafa2a0u && probes++ < 2)
+			if (false && fn == gb::GfxOptionsList && probes++ < 2)
 			{
 				// experiment: is the per-item text registered in the UI variable map, and how does a "$label" resolve?
 				CPU saved = *c;
@@ -626,7 +627,7 @@ void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, 
 					int len = guest::load<uint16_t>(u - 4);
 					for (int i = 0; i < len && i < 28; i++) { char b[8]; uint16_t ch = guest::load<uint16_t>(u + i * 2); if (ch >= 0x20 && ch < 0x7f) snprintf(b, sizeof b, "%c", ch); else snprintf(b, sizeof b, "\\u%04x", ch); txt += b; }
 					return txt; };
-				uint32_t store = guest::load<uint32_t>(0xcebd54);
+				uint32_t store = guest::load<uint32_t>(gb::OptionsStore);
 				static const char* keys[] = {"APT:GfxTerrainDetail_0", "APT:GfxTerrainDetail_1", "APT:GfxVFXDetail_2", "$APT:GfxTerrainDetail_0", "APT:OFF"};
 				for (const char* k : keys)
 				{
@@ -648,13 +649,13 @@ void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, 
 					strcpy((char*)guest::host(scratch + 0x100), k);
 					guest::store<uint32_t>(scratch, 0); guest::store<uint32_t>(scratch + 8, 0);
 					c->r[ECX] = scratch;
-					rt::callGuest(c, 0x4cbbc0, {scratch + 0x100}, 4);
+					rt::callGuest(c, gb::FnStrFree, {scratch + 0x100}, 4);
 					uint32_t res = rt::callGuestRet(c, 0x917fd0, {scratch, scratch + 8, 0u});
 					rt::log("   resolve '%s' (in='%s') -> '%s'", k, wstr(guest::load<uint32_t>(scratch)).c_str(), (res > 0x400000 && res < 0x7f000000) ? wstr(guest::load<uint32_t>(res)).c_str() : "<bad>");
 				}
 				*c = saved;
 			}
-			if (fn == 0xafa2a0u && a2 > 0x400000 && a2 < 0x30000000)
+			if (fn == gb::GfxOptionsList && a2 > 0x400000 && a2 < 0x30000000)
 			{
 				// the label prefix (a2) and the string-table prefix live next to each other in the component data
 				std::string near;
@@ -705,7 +706,7 @@ void ra3_hook_after(CPU* c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, 
 		return;
 	}
 	// the remaining hooks were temporary diagnostics; stay silent (their arguments are not always pointers)
-	if (fn != 0x61d660u) return;
+	if (fn != gb::ApplyStaticLOD) return;
 	rt::log("hook %08x(ecx=%08x, %08x, %08x, %08x) -> eax=%08x", fn, ecx, a0, a1, a2, c->r[EAX]);
 	return;
 	auto tryStr = [](uint32_t p) -> std::string {

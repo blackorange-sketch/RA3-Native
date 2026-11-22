@@ -1,4 +1,5 @@
 // Shared start-up: maps the PE, creates the main guest thread and runs the entry point.
+#include "game_build.h"
 #include <dlfcn.h>
 #include <ucontext.h>
 #include <chrono>
@@ -215,11 +216,11 @@ int launch(const std::string& gameFile)
 		gFps60 = access("/sdcard/ra3_fps60", F_OK) == 0 || rt::config.fps60;
 		gFps60b = !gFps60 && access("/sdcard/ra3_fps60b", F_OK) == 0;
 		if (gFps60b) log("fps60b: keeping the 30 fps cap, frame wait shortened to 60 fps");
-		if (gFps60 && guest::load<uint32_t>(0xcaf9d4) == 30 && guest::load<uint32_t>(0xcaf9d0) == 15)
+		if (gFps60 && guest::load<uint32_t>(gb::FpsCap) == 30 && guest::load<uint32_t>(gb::LogicHz) == 15)
 		{
 			// experiment: /sdcard/ra3_fps45 -> 45 (3 frames per logic frame instead of 4)
 			uint32_t cap = access("/sdcard/ra3_fps45", F_OK) == 0 ? 45 : 60;
-			guest::store<uint32_t>(0xcaf9d4, cap);
+			guest::store<uint32_t>(gb::FpsCap, cap);
 			log("fps60: client frame-rate cap raised to %u (logic stays at 15 Hz)%s", cap, access("/sdcard/ra3_fpsnopin", F_OK) == 0 ? ", frames per logic frame not pinned" : "");
 		}
 	}

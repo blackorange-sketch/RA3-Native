@@ -1,3 +1,4 @@
+#include "game_build.h"
 #include <chrono>
 namespace rt { extern bool gFps60; }
 // ID3DXEffect: parameter storage and handles, technique/pass application onto the device state.
@@ -1047,7 +1048,7 @@ void fxApplyPass(Obj* o)
 				if (::rt::gFps60 && c.name == "Time")
 				{
 					if (fx->gpuParticle < 0) fx->gpuParticle = fxrt::findParam(*fx, "Physics") >= 0 && fxrt::findParam(*fx, "Update") >= 0 ? 1 : 0;
-					uint32_t cap = guest::load<uint32_t>(0xcaf9d4);
+					uint32_t cap = guest::load<uint32_t>(gb::FpsCap);
 					if (fx->gpuParticle == 1 && cap > 30 && cap <= 240) dst[0] *= cap / 30.0;
 				}
 			}

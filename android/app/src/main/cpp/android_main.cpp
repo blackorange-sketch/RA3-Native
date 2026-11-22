@@ -1,3 +1,4 @@
+#include "game_build.h"
 #include <chrono>
 // Android shell: NativeActivity glue, storage permission, game discovery, on-screen log console.
 #include "input.h"
@@ -55,7 +56,7 @@ bool exists(const std::string& p) { struct stat st; return stat(p.c_str(), &st) 
 
 std::string lower(std::string s) { for (auto& c : s) c = (char)tolower((unsigned char)c); return s; }
 
-// Looks for ra3_1.12.game (case-insensitive) up to three directory levels below the storage roots.
+// Looks for the game file of this build (game_build.h, case-insensitive) up to three directory levels below the storage roots.
 std::string findGame()
 {
 	std::vector<std::pair<std::string, int>> q = {{"/sdcard", 0}};
@@ -69,7 +70,7 @@ std::string findGame()
 			std::string n = e->d_name;
 			if (n == "." || n == "..") continue;
 			std::string full = q[i].first + "/" + n;
-			if (lower(n) == "ra3_1.12.game") { closedir(d); return full; }
+			if (lower(n) == gb::kExe) { closedir(d); return full; }
 			if (e->d_type == DT_DIR && q[i].second < 3 && lower(n) != "android" && n[0] != '.') q.push_back({full, q[i].second + 1});
 		}
 		closedir(d);
@@ -92,7 +93,7 @@ std::string gameIn(const std::string& dir)
 		if (DIR* d = opendir(base.c_str()))
 		{
 			while (auto* e = readdir(d))
-				if (lower(e->d_name) == "ra3_1.12.game") { std::string r = base + "/" + e->d_name; closedir(d); return r; }
+				if (lower(e->d_name) == gb::kExe) { std::string r = base + "/" + e->d_name; closedir(d); return r; }
 			closedir(d);
 		}
 	return "";
@@ -561,7 +562,7 @@ void android_main(android_app* app)
 				if (game.empty())
 				{
 					status = "choose the game folder";
-					pushLine("ra3_1.12.game not found automatically - pick the game folder.");
+					pushLine(std::string(gb::kExe) + " not found automatically - pick the game folder.");
 					startPicking();
 				}
 				else startGame(game);

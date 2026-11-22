@@ -83,6 +83,9 @@ jobs:
           RA3_GATES=af99f0:4:1 RA3_HOOKS=afa2a0 ./lift_pe game/ra3_1.12.game game/ra3.functions.txt --emit-dir lifted 96 | head -3
           if [ -f game/ra3_1.13.game ]; then
             ./analyze game/ra3_1.13.game game/ra313 | head -30
+            # the Steam build: its own library (runtime/game_build.h has its addresses); a93130 = resolution list mode check
+            mkdir -p lifted113
+            RA3_GATES=a93130:4:1 ./lift_pe game/ra3_1.13.game game/ra313.functions.txt --emit-dir lifted113 96 | head -3
             # addresses the runtime uses in 1.12, translated to the Steam build (only addresses are printed)
             pip install --quiet capstone==5.0.1 || pip install --quiet --break-system-packages capstone==5.0.1
             python3 tools/match_builds.py game/ra3_1.12.game game/ra3.functions.txt game/ra3_1.13.game game/ra313.functions.txt \
@@ -108,11 +111,12 @@ jobs:
           CCACHE_DIR: ~/.ccache
           CCACHE_NODIRECT: '1'
           CCACHE_COMPILERCHECK: 'string:ndk'
-          CCACHE_MAXSIZE: 1G
+          CCACHE_MAXSIZE: 2G
         run: |
           export CCACHE_DIR=$HOME/.ccache
           CC_OPT=""; command -v ccache >/dev/null && CC_OPT="-PuseCcache=1"
-          gradle assembleDebug -PbuildId=${{ github.sha }} -PversionName=$APP_VERSION -PversionCode=${{ github.run_number }} -PliftedDir=${{ github.workspace }}/lifted $CC_OPT --no-daemon
+          L113=""; [ -d ${{ github.workspace }}/lifted113 ] && L113="-PliftedDir113=${{ github.workspace }}/lifted113"
+          gradle assembleDebug -PbuildId=${{ github.sha }} -PversionName=$APP_VERSION -PversionCode=${{ github.run_number }} -PliftedDir=${{ github.workspace }}/lifted $L113 $CC_OPT --no-daemon
           command -v ccache >/dev/null && ccache -s | head -8 || echo "built without ccache"
 
       # Symbols of the runtime (static functions have no dynamic symbol): the profiler (/sdcard/ra3_prof) logs raw

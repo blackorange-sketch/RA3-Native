@@ -1,3 +1,4 @@
+#include "game_build.h"
 #include <set>
 #include <string>
 #include <cmath>
@@ -2837,7 +2838,7 @@ static void presentImpl()
 		if (FILE* f = fopen("/sdcard/ra3_lod", "r"))
 		{
 			int d = -1; if (fscanf(f, "%d", &d) != 1) d = -1; fclose(f);
-			uint32_t gm = guest::load<uint32_t>(0xce2f98);
+			uint32_t gm = guest::load<uint32_t>(gb::LODManager);
 			if (gm && d >= 0 && d <= 5)
 			{
 				log("LOD: forcing static level %d (was %d, ideal %d)", d, (int)guest::load<uint32_t>(gm + 0x2dc), (int)guest::load<uint32_t>(gm + 0x340));
@@ -2846,7 +2847,7 @@ static void presentImpl()
 				{
 					uint32_t sv[8]; memcpy(sv, cc->r, sizeof sv);
 					cc->r[ECX] = gm;
-					rt::callGuest(cc, 0x61d660, {(uint32_t)d});
+					rt::callGuest(cc, gb::ApplyStaticLOD, {(uint32_t)d});
 					memcpy(cc->r, sv, sizeof sv);
 					log("LOD: applied preset %d via 0x61d660", d);
 				}
@@ -2855,9 +2856,9 @@ static void presentImpl()
 			}
 		}
 	}
-	if (gFrameNo == 900 || gFrameNo == 1800 || gFrameNo == 3600 || gFrameNo == 5400)
+	if (gb::kLodDiag && (gFrameNo == 900 || gFrameNo == 1800 || gFrameNo == 3600 || gFrameNo == 5400))
 	{
-		uint32_t gm = guest::load<uint32_t>(0xce2f98);
+		uint32_t gm = guest::load<uint32_t>(gb::LODManager);
 		log("LOD: manager %08x; hw: cpu %u/%u/%u mem %08x%08x vid %u %u", gm, guest::load<uint32_t>(0xcf00b8), guest::load<uint32_t>(0xcf046c), guest::load<uint32_t>(0xcefa60), guest::load<uint32_t>(0xcee5d4), guest::load<uint32_t>(0xcee5d0), guest::load<uint32_t>(0xcf0414), guest::load<uint32_t>(0xce2fa8));
 		log("LOD: cpulib flag %02x tscfreq %08x%08x cf009c %x cee3a8 %x cee3ac %x", guest::load<uint8_t>(0xcf0423), guest::load<uint32_t>(0xcf0094), guest::load<uint32_t>(0xcf0090), guest::load<uint32_t>(0xcf009c), guest::load<uint32_t>(0xcee3a8), guest::load<uint32_t>(0xcee3ac));
 		if (gm && gFrameNo == 1800)

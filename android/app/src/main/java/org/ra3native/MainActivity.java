@@ -17,11 +17,13 @@ import android.widget.FrameLayout;
 // input connection and forwards every typed character / key to the native side.
 public class MainActivity extends NativeActivity {
     static volatile boolean running;   // the game runs in this process (the launcher then just brings it back)
+    static volatile boolean running113;   // ... and it is the Steam build (MainActivity113)
     private EditText edit;
 
     @Override
     protected void onCreate(android.os.Bundle b) {
         running = true;
+        running113 = this instanceof MainActivity113;
         super.onCreate(b);
         // Wi-Fi drops broadcast/multicast packets unless a multicast lock is held: LAN games find each other by broadcast
         try {

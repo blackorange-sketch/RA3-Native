@@ -64,7 +64,7 @@ public class LauncherActivity extends Activity {
     protected void onCreate(Bundle b) {
         super.onCreate(b);
         if (MainActivity.running) {   // the game is already running in this process: go back to it
-            startActivity(new Intent(this, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT));
+            startActivity(new Intent(this, MainActivity.running113 ? MainActivity113.class : MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT));
             finish();
             return;
         }
@@ -334,6 +334,12 @@ public class LauncherActivity extends Activity {
             showLanguage();
             return;
         }
+        // a remembered game file next to a newer one (Steam ships 1.12 beside its 1.13): use the newer
+        if (!gamePath.isEmpty() && new File(gamePath).exists()) {
+            File p = new File(gamePath).getParentFile();
+            File g = p == null ? null : gameFileIn(p);
+            if (g != null && !g.getAbsolutePath().equals(gamePath)) { gamePath = g.getAbsolutePath(); prefs.edit().putString("gamepath", gamePath).apply(); }
+        }
         if ((gamePath.isEmpty() || !new File(gamePath).exists()) && !busy) {
             // search in the background, the stripe bar runs meanwhile
             busy = true;
@@ -380,9 +386,10 @@ public class LauncherActivity extends Activity {
         if (files != null)
             for (File f : files) {
                 String n = f.getName().toLowerCase(Locale.ROOT);
-                // RA3_<language>_1.12.SkuDef: the language config of the current patch
-                if (n.startsWith("ra3_") && n.endsWith("_1.12.skudef")) {
-                    String l = n.substring(4, n.length() - "_1.12.skudef".length());
+                // RA3_<language>_<version>.SkuDef: the language config of the game build in use (1.12, Steam 1.13)
+                String suffix = "_" + gameVersion() + ".skudef";
+                if (n.startsWith("ra3_") && n.endsWith(suffix)) {
+                    String l = n.substring(4, n.length() - suffix.length());
                     if (!l.isEmpty() && !languages.contains(l)) languages.add(l);
                 }
             }
@@ -462,7 +469,25 @@ public class LauncherActivity extends Activity {
         return root.getName();
     }
 
-    // ra3_1.12.game up to three levels below the root of the internal storage, a memory card or a USB drive
+    // Game builds this APK can run: the file name, its SHA-256 and the library recompiled from it (runtime/game_build.h).
+    // A folder with both (the Steam release ships the old 1.12 next to its own 1.13) uses the newest.
+    static final String[] GAME_FILES = {"ra3_1.13.game", "ra3_1.12.game"};
+    static final String[] GAME_SHA256 = {
+        "e4016847423869b3d4e6a5ae4c74228f2083c65e34416104635602c5526b3eee",   // 1.13, Steam
+        "5d6540ca9d2ee431a99d8051f5cfe22f8240b42a3b52d0de094dda8d7d4508e8"};  // 1.12, retail / EA app
+    static boolean isGameFile(String name) { for (String g : GAME_FILES) if (name.equalsIgnoreCase(g)) return true; return false; }
+    // the preferred game file directly in this folder
+    static File gameFileIn(File dir) {
+        File[] l = dir.listFiles();
+        if (l == null) return null;
+        for (String g : GAME_FILES) for (File f : l) if (f.getName().equalsIgnoreCase(g)) return f;
+        return null;
+    }
+    String gameVersion() { return new File(gamePath).getName().toLowerCase(Locale.ROOT).contains("1.13") ? "1.13" : "1.12"; }
+    boolean steamBuild() { return gameVersion().equals("1.13"); }
+    Class<?> gameActivity() { return steamBuild() ? MainActivity113.class : MainActivity.class; }
+
+    // the game file up to three levels below the root of the internal storage, a memory card or a USB drive
     String findGame() {
         ArrayDeque<File> q = new ArrayDeque<>();
         ArrayDeque<Integer> depth = new ArrayDeque<>();
@@ -473,7 +498,7 @@ public class LauncherActivity extends Activity {
             File[] list = d.listFiles();
             if (list == null) continue;
             for (File f : list) {
-                if (f.getName().equalsIgnoreCase("ra3_1.12.game")) return f.getAbsolutePath();
+                if (isGameFile(f.getName())) { File g = gameFileIn(d); return (g != null ? g : f).getAbsolutePath(); }
                 if (f.isDirectory() && dd < 3 && !f.getName().startsWith(".") && !f.getName().equalsIgnoreCase("android")) { q.add(f); depth.add(dd + 1); }
             }
         }
@@ -522,8 +547,8 @@ public class LauncherActivity extends Activity {
     // the game file in this folder or in its Data subfolder
     File findIn(File dir) {
         for (File base : new File[]{dir, new File(dir, "Data"), new File(dir, "data")}) {
-            File[] l = base.listFiles();
-            if (l != null) for (File f : l) if (f.getName().equalsIgnoreCase("ra3_1.12.game")) return f;
+            File g = gameFileIn(base);
+            if (g != null) return g;
         }
         return null;
     }
@@ -560,12 +585,14 @@ public class LauncherActivity extends Activity {
         busy = true;
         backdrop.setProgress(0f);
         final String lang = prefs.getString("language", "russian");
+        final String ver = gameVersion();
+        final File gameFile = new File(gamePath);
         new Thread(() -> {
-            // the files the language configuration asks for (RA3_<lang>_1.12.SkuDef and the configs it chains to)
+            // the files the language configuration asks for (RA3_<lang>_<version>.SkuDef and the configs it chains to)
             File root = new File(gameRoot());
             List<String> files = new ArrayList<>();
             ArrayDeque<String> configs = new ArrayDeque<>();
-            configs.add("RA3_" + lang + "_1.12.SkuDef");
+            configs.add("RA3_" + lang + "_" + ver + ".SkuDef");
             List<String> seen = new ArrayList<>();
             while (!configs.isEmpty()) {
                 String c = configs.poll();
@@ -581,7 +608,7 @@ public class LauncherActivity extends Activity {
                     else if (w[0].equalsIgnoreCase("add-config")) configs.add(w[1].trim());
                 }
             }
-            files.add("Data/ra3_1.12.game");
+            files.add("Data/" + gameFile.getName());
             List<String> missing = new ArrayList<>();
             long start = System.currentTimeMillis();
             for (int i = 0; i < files.size(); i++) {
@@ -598,9 +625,20 @@ public class LauncherActivity extends Activity {
                 long now = System.currentTimeMillis();
                 if (due > now) try { Thread.sleep(due - now); } catch (InterruptedException ignored) {}
             }
+            // the exact build: the recompiled code only runs the file it was made from
+            final String sha = sha256(gameFile);
+            boolean known = false;
+            for (String h : GAME_SHA256) if (h.equals(sha)) known = true;
+            final boolean buildOk = known;
+            final boolean libOk = !ver.equals("1.13") || new File(getApplicationInfo().nativeLibraryDir, "libra3native113.so").exists();
             runOnUiThread(() -> {
                 if (gen != checkGen) return;
                 busy = false;
+                if (!libOk) { status("THE STEAM VERSION (1.13) IS NOT SUPPORTED BY THIS BUILD OF RA3 NATIVE", RED_GLOW); return; }
+                if (!buildOk) {
+                    status("UNSUPPORTED GAME BUILD: " + gameFile.getName() + "  SHA-256 " + (sha.length() > 12 ? sha.substring(0, 12) : sha) + "...  -  SEE THE README", RED_GLOW);
+                    return;
+                }
                 // the game skips archives that are not there (e.g. MapsExtra.big is absent from many copies):
                 // only the executable and the language configuration itself are required
                 boolean critical = false;
@@ -609,6 +647,17 @@ public class LauncherActivity extends Activity {
                 else status("MISSING: " + missing.get(0) + (missing.size() > 1 ? "  (+" + (missing.size() - 1) + " MORE)" : "") + "  -  CHECK THE GAME FOLDER", RED_GLOW);
             });
         }).start();
+    }
+
+    static String sha256(File f) {
+        try (java.io.FileInputStream in = new java.io.FileInputStream(f)) {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] buf = new byte[1 << 16];
+            for (int k; (k = in.read(buf)) > 0; ) md.update(buf, 0, k);
+            StringBuilder sb = new StringBuilder();
+            for (byte x : md.digest()) sb.append(String.format("%02x", x & 255));
+            return sb.toString();
+        } catch (Exception e) { return ""; }
     }
 
     // read the archive's header and file index, so it is already in memory when the game opens the archive
@@ -654,7 +703,7 @@ public class LauncherActivity extends Activity {
         try (FileOutputStream o = new FileOutputStream(new File(getFilesDir(), "launcher.cfg"))) {
             o.write(cfg.toString().getBytes("UTF-8"));
         } catch (Exception ignored) {}
-        startActivity(new Intent(this, MainActivity.class));
+        startActivity(new Intent(this, gameActivity()));
         finish();
     }
 

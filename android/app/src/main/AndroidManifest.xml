@@ -36,5 +36,14 @@
             android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
             <meta-data android:name="android.app.lib_name" android:value="ra3native" />
         </activity>
+        <activity
+            android:name="org.ra3native.MainActivity113"
+            android:windowSoftInputMode="adjustNothing|stateHidden"
+            android:exported="false"
+            android:configChanges="orientation|keyboardHidden|keyboard|navigation|screenSize|screenLayout|smallestScreenSize|uiMode|density|fontScale|layoutDirection|locale"
+            android:screenOrientation="sensorLandscape"
+            android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
+            <meta-data android:name="android.app.lib_name" android:value="ra3native113" />
+        </activity>
     </application>
 </manifest>
