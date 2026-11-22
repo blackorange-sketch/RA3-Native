@@ -1,5 +1,5 @@
 // Stand-in steam_api.dll for the Steam build (ra3_1.13.game), which delay-loads it. There is no Steam on the
-// phone: SteamAPI_Init reports that Steam is not running, but the game still calls into some interfaces, so every
+// phone, but the game insists on it: the stand-in reports Steam as running and initialised, and every
 // interface it asks for is a fake object. Its methods pop exactly the argument bytes the real ones do (tables
 // generated from the Steamworks SDK by tools/steam_gen.py, steam_ifaces.inc) and answer "nothing": 0, false, empty
 // strings - except a few ownership checks, which answer yes (the game is a bought copy) - and the app id.
@@ -109,6 +109,8 @@ void exNothing(CPU* c)
 	SET(0);
 }
 void exGetHSteamUser(CPU* c) { SET(1); }
+// the game refuses to start unless Steam is running ("Steam must be running to play this game")
+void exOne(CPU* c) { SET(1); }
 void exGetHSteamPipe(CPU* c) { SET(1); }
 // SteamInternal_FindOrCreateUserInterface(HSteamUser, const char* version) / ..EngineInterface(const char* version)
 void exFindUser(CPU* c) { std::string v = ARG(1) ? gstr(ARG(1)) : ""; uint32_t o = object(v); log("steam: interface %s -> %08x", v.c_str(), o); SET(o); }
@@ -155,6 +157,9 @@ uint32_t procAddress(uint32_t module, const std::string& n)
 	else if (n == "SteamInternal_FindOrCreateGameServerInterface") fn = exFindUser;
 	else if (n == "SteamInternal_CreateInterface") fn = exCreateInterface;
 	else if (n == "SteamAPI_GetHSteamUser") fn = exGetHSteamUser;
+	else if (n == "SteamAPI_IsSteamRunning") fn = exOne;
+	// SteamInternal_SteamAPI_Init returns ESteamAPIInitResult (0 = OK), SteamAPI_Init a bool (1 = OK)
+	else if (n == "SteamAPI_Init" || n == "SteamAPI_InitSafe") fn = exOne;
 	else if (n == "SteamAPI_GetHSteamPipe") fn = exGetHSteamPipe;
 	else if (n.find("EngineInterface") != std::string::npos) fn = exFindEngine;
 	log("steam_api: %s (%s)", n.c_str(), fn == exNothing ? "answers 0" : "handled");
