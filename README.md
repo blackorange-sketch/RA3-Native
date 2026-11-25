@@ -100,7 +100,7 @@ The phone's volume keys keep working, and the screen stays on while the game run
 |---|---|---|
 | Interface language | detected | Every language installed in your game folder (`RA3_<language>_1.12.SkuDef`) |
 | Cutscenes | On | Intro, briefings and campaign videos |
-| Log file | Off in releases, on in nightly builds | Writes `/sdcard/ra3_native.log` — turn it on and attach the file to bug reports |
+| Log file | Off in releases, on in nightly builds | Writes `/sdcard/ra3_native.log` (`ra3_native_steam.log` in RA3 Native Steam) — turn it on and attach the file to bug reports |
 | HUD size | 110% | Enlarges the minimap, build menu and other corner panels (100–200% in 10% steps) |
 | Button size | 100% | Size of the on-screen hotkey buttons (80–200%) |
 | Button opacity | 100% | How solid the on-screen buttons are; lower values show more of the map (30–100%) |

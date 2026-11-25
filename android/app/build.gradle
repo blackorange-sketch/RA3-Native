@@ -23,6 +23,24 @@ android {
     externalNativeBuild {
         cmake { path 'src/main/cpp/CMakeLists.txt' }
     }
+    // two apps from one code base: RA3 Native for the retail / EA app game (ra3_1.12.game) and RA3 Native Steam for
+    // the Steam release (ra3_1.13.game); separate application ids, so both install side by side
+    flavorDimensions 'game'
+    productFlavors {
+        classic {
+            dimension 'game'
+            manifestPlaceholders = [appLabel: 'RA3 Native']
+            buildConfigField "boolean", "STEAM", "false"
+            externalNativeBuild { cmake { arguments "-DGAME=112" } }
+        }
+        steam {
+            dimension 'game'
+            applicationIdSuffix '.steam'
+            manifestPlaceholders = [appLabel: 'RA3 Native Steam']
+            buildConfigField "boolean", "STEAM", "true"
+            externalNativeBuild { cmake { arguments "-DGAME=113" } }
+        }
+    }
     buildFeatures { buildConfig true }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8

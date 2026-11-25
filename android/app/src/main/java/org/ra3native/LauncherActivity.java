@@ -118,7 +118,7 @@ public class LauncherActivity extends Activity {
         title.setSingleLine(true);
         title.setShadowLayer(dp(10), 0, dp(2), 0xcc000000);
         left.addView(title);
-        TextView sub = label("NATIVE  \u2022  ANDROID", 10, YELLOW, true, 0.35f);
+        TextView sub = label(BuildConfig.STEAM ? "NATIVE  \u2022  ANDROID  \u2022  STEAM" : "NATIVE  \u2022  ANDROID", 10, YELLOW, true, 0.35f);
         sub.setPadding(dp(2), dp(2), 0, dp(12));
         left.addView(sub);
 
@@ -197,7 +197,7 @@ public class LauncherActivity extends Activity {
         toggleRow(opts, "CUTSCENES", "Intro, briefings and campaign videos", "cutscenes", true);
         toggleRow(opts, "WIDE SCREEN", "The game fills the whole screen instead of 16:9 (more of the map, buttons on top)", "wide_screen", false);
         toggleRow(opts, "FAST SHADERS", "Lower precision in pixel shaders: faster on Mali and weaker GPUs, rare visual glitches", "fast_shaders", false);
-        toggleRow(opts, "LOG FILE", "Writes /sdcard/ra3_native.log for bug reports", "log", logDefault());
+        toggleRow(opts, "LOG FILE", "Writes /sdcard/" + (BuildConfig.STEAM ? "ra3_native_steam.log" : "ra3_native.log") + " for bug reports", "log", logDefault());
 
         warnText = label("", 10, YELLOW, false, 0f);
         warnText.setPadding(0, dp(8), 0, 0);
@@ -334,11 +334,12 @@ public class LauncherActivity extends Activity {
             showLanguage();
             return;
         }
-        // a remembered game file next to a newer one (Steam ships 1.12 beside its 1.13): use the newer
+        // a remembered game file that is not this app's build any more: look in its folder again
         if (!gamePath.isEmpty() && new File(gamePath).exists()) {
             File p = new File(gamePath).getParentFile();
             File g = p == null ? null : gameFileIn(p);
-            if (g != null && !g.getAbsolutePath().equals(gamePath)) { gamePath = g.getAbsolutePath(); prefs.edit().putString("gamepath", gamePath).apply(); }
+            String np = g == null ? "" : g.getAbsolutePath();
+            if (!np.equals(gamePath)) { gamePath = np; prefs.edit().putString("gamepath", gamePath).apply(); }
         }
         if ((gamePath.isEmpty() || !new File(gamePath).exists()) && !busy) {
             // search in the background, the stripe bar runs meanwhile
@@ -364,7 +365,7 @@ public class LauncherActivity extends Activity {
     void showGame() {
         playButton.setOnClickListener(v -> play());
         if (gamePath.isEmpty()) {
-            gameText.setText("GAME NOT FOUND  \u2022  choose GAME FOLDER");
+            gameText.setText((BuildConfig.STEAM ? "STEAM VERSION (ra3_1.13.game) NOT FOUND" : "GAME (ra3_1.12.game) NOT FOUND") + "  \u2022  choose GAME FOLDER");
             gameText.setTextColor(YELLOW);
             setPlayEnabled(false);
         } else {
@@ -469,12 +470,12 @@ public class LauncherActivity extends Activity {
         return root.getName();
     }
 
-    // Game builds this APK can run: the file name, its SHA-256 and the library recompiled from it (runtime/game_build.h).
-    // A folder with both (the Steam release ships the old 1.12 next to its own 1.13) uses the newest.
-    static final String[] GAME_FILES = {"ra3_1.13.game", "ra3_1.12.game"};
-    static final String[] GAME_SHA256 = {
-        "e4016847423869b3d4e6a5ae4c74228f2083c65e34416104635602c5526b3eee",   // 1.13, Steam
-        "5d6540ca9d2ee431a99d8051f5cfe22f8240b42a3b52d0de094dda8d7d4508e8"};  // 1.12, retail / EA app
+    // The game build this app runs: RA3 Native - the retail / EA app 1.12, RA3 Native Steam - the Steam 1.13 (the
+    // Steam folder also holds the old 1.12, which the Steam app ignores). File name, SHA-256 (runtime/game_build.h).
+    static final String[] GAME_FILES = BuildConfig.STEAM ? new String[] {"ra3_1.13.game"} : new String[] {"ra3_1.12.game"};
+    static final String[] GAME_SHA256 = BuildConfig.STEAM
+        ? new String[] {"e4016847423869b3d4e6a5ae4c74228f2083c65e34416104635602c5526b3eee"}    // 1.13, Steam
+        : new String[] {"5d6540ca9d2ee431a99d8051f5cfe22f8240b42a3b52d0de094dda8d7d4508e8"};   // 1.12, retail / EA app
     static boolean isGameFile(String name) { for (String g : GAME_FILES) if (name.equalsIgnoreCase(g)) return true; return false; }
     // the preferred game file directly in this folder
     static File gameFileIn(File dir) {
@@ -483,8 +484,8 @@ public class LauncherActivity extends Activity {
         for (String g : GAME_FILES) for (File f : l) if (f.getName().equalsIgnoreCase(g)) return f;
         return null;
     }
-    String gameVersion() { return new File(gamePath).getName().toLowerCase(Locale.ROOT).contains("1.13") ? "1.13" : "1.12"; }
-    boolean steamBuild() { return gameVersion().equals("1.13"); }
+    String gameVersion() { return BuildConfig.STEAM ? "1.13" : "1.12"; }
+    boolean steamBuild() { return BuildConfig.STEAM; }
     Class<?> gameActivity() { return steamBuild() ? MainActivity113.class : MainActivity.class; }
 
     // the game file up to three levels below the root of the internal storage, a memory card or a USB drive
@@ -630,11 +631,11 @@ public class LauncherActivity extends Activity {
             boolean known = false;
             for (String h : GAME_SHA256) if (h.equals(sha)) known = true;
             final boolean buildOk = known;
-            final boolean libOk = !ver.equals("1.13") || hasLibrary("ra3native113");
+            final boolean libOk = hasLibrary(steamBuild() ? "ra3native113" : "ra3native");
             runOnUiThread(() -> {
                 if (gen != checkGen) return;
                 busy = false;
-                if (!libOk) { status("THE STEAM VERSION (1.13) IS NOT SUPPORTED BY THIS BUILD OF RA3 NATIVE", RED_GLOW); return; }
+                if (!libOk) { status("THIS APK HAS NO GAME LIBRARY - REINSTALL IT", RED_GLOW); return; }
                 if (!buildOk) {
                     status("UNSUPPORTED GAME BUILD: " + gameFile.getName() + "  SHA-256 " + (sha.length() > 12 ? sha.substring(0, 12) : sha) + "...  -  SEE THE README", RED_GLOW);
                     return;

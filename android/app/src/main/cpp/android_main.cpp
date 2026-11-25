@@ -173,7 +173,12 @@ void requestAllFilesAccess(android_app* app)
 	app->activity->vm->AttachCurrentThread(&env, nullptr);
 	jclass uriCls = env->FindClass("android/net/Uri");
 	jmethodID parse = env->GetStaticMethodID(uriCls, "parse", "(Ljava/lang/String;)Landroid/net/Uri;");
-	jobject uri = env->CallStaticObjectMethod(uriCls, parse, env->NewStringUTF("package:org.ra3native"));
+	jclass ctxCls = env->GetObjectClass(app->activity->clazz);
+	jstring pkg = (jstring)env->CallObjectMethod(app->activity->clazz, env->GetMethodID(ctxCls, "getPackageName", "()Ljava/lang/String;"));
+	const char* pc = env->GetStringUTFChars(pkg, nullptr);
+	std::string pkgUri = std::string("package:") + pc;
+	env->ReleaseStringUTFChars(pkg, pc);
+	jobject uri = env->CallStaticObjectMethod(uriCls, parse, env->NewStringUTF(pkgUri.c_str()));
 	jclass intentCls = env->FindClass("android/content/Intent");
 	jmethodID ctor = env->GetMethodID(intentCls, "<init>", "(Ljava/lang/String;Landroid/net/Uri;)V");
 	jobject intent = env->NewObject(intentCls, ctor, env->NewStringUTF("android.settings.MANAGE_APP_ALL_FILES_ACCESS_PERMISSION"), uri);
@@ -506,7 +511,11 @@ void android_main(android_app* app)
 	savedFile = std::string(app->activity->internalDataPath ? app->activity->internalDataPath : "/data/local/tmp") + "/gamepath.txt";
 	rt::logHook = logSink;
 	rt::config.dataRoot = app->activity->internalDataPath ? app->activity->internalDataPath : "/data/local/tmp";
+#ifdef RA3_GAME_113
+	rt::config.logFile = "/sdcard/ra3_native_steam.log";   // RA3 Native Steam
+#else
 	rt::config.logFile = "/sdcard/ra3_native.log";
+#endif
 	// settings chosen in the launcher (LauncherActivity writes <app data>/launcher.cfg as key=value lines)
 	if (FILE* f = fopen((rt::config.dataRoot + "/launcher.cfg").c_str(), "r"))
 	{
