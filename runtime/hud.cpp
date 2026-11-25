@@ -59,7 +59,12 @@ void buildPages()
 	p2.push_back({"^", 0x26, false}); p2.push_back({"v", 0x28, false}); p2.push_back({"<", 0x25, false}); p2.push_back({">", 0x27, false});
 	p2.push_back({"+", 0xbb, false}); p2.push_back({"-", 0xbd, false}); p2.push_back({"HOM", 0x24, false}); p2.push_back({"END", 0x23, false});
 	p2.push_back({"LMB", 0x01, false}); p2.push_back({"RMB", 0x02, false});
-	pages.push_back(p1); pages.push_back(p2);
+	// page 3: the number pad - the game's camera keys (4 / 6 rotate, 8 / 2 tilt, 5 resets the camera)
+	std::vector<Key> p3;
+	static char np[10][4];
+	for (int d = 0; d <= 9; d++) { snprintf(np[d], 4, "N%d", d); p3.push_back({np[d], 0x60 + d, false}); }
+	p3.push_back({"N+", 0x6b, false}); p3.push_back({"N-", 0x6d, false});
+	pages.push_back(p1); pages.push_back(p2); pages.push_back(p3);
 }
 
 // ---- 5x7 font (column bytes, LSB = top row)
@@ -377,7 +382,8 @@ void draw(const DrawRect& rect)
 		rect(a.x, a.y, a.w, a.h, addSide ? 0.25f : 0.2f, addSide ? 0.45f : 0.6f, addSide ? 0.9f : 0.3f);
 		text(rect, addSide ? "RIGHT" : "LEFT", a, 1.f, 1.f, 1.f);
 		rect(b.x, b.y, b.w, b.h, 0.35f, 0.35f, 0.4f);
-		text(rect, page == 0 ? "KEYS 1" : "KEYS 2", b, 1.f, 1.f, 1.f);
+		static const char* pageName[] = {"KEYS 1", "KEYS 2", "NUMPAD"};
+		text(rect, pageName[std::min(page, 2)], b, 1.f, 1.f, 1.f);
 		rect(rs.x, rs.y, rs.w, rs.h, 0.45f, 0.2f, 0.2f);
 		text(rect, "RESET", rs, 1.f, 1.f, 1.f);   // every button back to its default place
 		rect(d.x, d.y, d.w, d.h, 0.8f, 0.55f, 0.1f);

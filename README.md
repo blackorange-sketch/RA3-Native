@@ -104,7 +104,7 @@ A game on a USB drive must stay connected while you play, and maps load more slo
 | Minimap: long press | Send the selected units there |
 | ⌨ button | Show or hide the Android keyboard (player names, chat, save names) |
 | `D` `ENT` `ESC` `SPC` | Default hotkey buttons: special ability, chat, menu, jump to event |
-| `EDIT` | Set up the hotkey buttons: add any key (numbers, F1–F12, Ctrl groups `C1`…`C0`, Shift / Ctrl / Alt, `LMB` / `RMB` mouse modes), remove one with its ✕, drag any button (also ⌨ and `EDIT`) to another place, `RESET` puts them all back, choose the left or right side for new ones; `DONE` saves |
+| `EDIT` | Set up the hotkey buttons: add any key (numbers, F1–F12, Ctrl groups `C1`…`C0` = Ctrl+1…0, Shift / Ctrl / Alt, `LMB` / `RMB` mouse modes, number pad `N0`…`N9` — the game's camera keys: `N4` / `N6` turn, `N8` / `N2` tilt, `N5` resets the camera), remove one with its ✕, drag any button (also ⌨ and `EDIT`) to another place, `RESET` puts them all back, choose the left or right side for new ones; `DONE` saves |
 
 The buttons are see-through so the map shows behind them. With *Wide screen* on they sit in one row at the top centre. Shift, Ctrl and Alt buttons toggle: tap once to hold the key (the button lights up), tap again to release it. `RMB` lit: a tap is a right click (a long press a left click). `LMB` lit: a drag draws a selection box at once, without holding first.
 
@@ -120,6 +120,7 @@ The phone's volume keys keep working, and the screen stays on while the game run
 | HUD size | 110% | Enlarges the minimap, build menu and other corner panels (100–200% in 10% steps) |
 | Button size | 100% | Size of the on-screen hotkey buttons (80–200%) |
 | Button opacity | 100% | How solid the on-screen buttons are; lower values show more of the map (30–100%) |
+| Camera rotation | 300% | How fast a two-finger drag turns the camera (100–1000%) |
 | Drag the map | off | The spot you touch stays under your finger, like a map app or a mobile strategy game (a quick swipe is finished after you let go); off: the camera moves the way you swipe, like the mouse in the game |
 | Wide screen | off | Battles fill the whole screen instead of 16:9 and show more of the map; the on-screen buttons move to one row at the top centre. Menus stay 16:9 with blurred sides. The game's resolution list offers sizes in your screen's shape |
 | Fast shaders | off | Lower precision in pixel shaders: faster on Mali and weaker GPUs, occasional visual glitches |

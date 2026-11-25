@@ -54,6 +54,9 @@ uint32_t scanOf(uint32_t vk)
 	case 0xbd: return 0x0c; case 0xbb: return 0x0d; case 0xdb: return 0x1a; case 0xdd: return 0x1b; case 0xba: return 0x27;
 	case 0xde: return 0x28; case 0xc0: return 0x29; case 0xdc: return 0x2b; case 0xbc: return 0x33; case 0xbe: return 0x34; case 0xbf: return 0x35;
 	case 0x13: return 0x45;
+	case 0x60: return 0x52; case 0x61: return 0x4f; case 0x62: return 0x50; case 0x63: return 0x51; case 0x64: return 0x4b;   // number pad 0-4
+	case 0x65: return 0x4c; case 0x66: return 0x4d; case 0x67: return 0x47; case 0x68: return 0x48; case 0x69: return 0x49;   // 5-9
+	case 0x6a: return 0x37; case 0x6b: return 0x4e; case 0x6d: return 0x4a; case 0x6e: return 0x53; case 0x6f: return 0x135;  // * + - . /
 	case 0x24: return 0x147; case 0x26: return 0x148; case 0x21: return 0x149; case 0x25: return 0x14b;   // Home, Up, PgUp, Left
 	case 0x27: return 0x14d; case 0x23: return 0x14f; case 0x28: return 0x150; case 0x22: return 0x151;   // Right, End, Down, PgDn
 	case 0x2d: return 0x152; case 0x2e: return 0x153;                                                     // Insert, Delete
@@ -182,7 +185,9 @@ void panMove(float sx, float sy, bool mid = false)
 {
 	if (!mid && dragActive) { fingerBX = (sx - vx) * bw / std::max(1, vw); fingerBY = (sy - vy) * bh / std::max(1, vh); panPX = sx; panPY = sy; fingerMovedAt = nowMs(); return; }   // dragTick moves the camera
 	float dir = (!mid && rt::config.panInvert) ? -1.f : 1.f;   // no camera known (yet): plain inverted pan
-	panRelative(dir * (sx - panPX) * bw / std::max(1, vw) * kPanGain, dir * (sy - panPY) * bh / std::max(1, vh) * kPanGain, mid);
+	// two fingers (middle button): the camera turns; the launcher's CAMERA ROTATION speeds it up
+	float gain = kPanGain * (mid ? rt::config.rotateSpeed / 100.f : 1.f);
+	panRelative(dir * (sx - panPX) * bw / std::max(1, vw) * gain, dir * (sy - panPY) * bh / std::max(1, vh) * gain, mid);
 	panPX = sx; panPY = sy;
 }
 // the cursor moves by dx, dy back buffer pixels with the button held (re-grabbed at the centre near an edge)

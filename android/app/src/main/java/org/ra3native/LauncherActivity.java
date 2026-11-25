@@ -193,6 +193,7 @@ public class LauncherActivity extends Activity {
 
         stepRow(opts, "BUTTON SIZE", "Size of the on-screen hotkey buttons", "button_size", new int[]{80, 90, 100, 110, 120, 130, 140, 150, 160, 180, 200}, 100);
         stepRow(opts, "BUTTON OPACITY", "How solid the on-screen buttons are (lower: more of the map shows through)", "button_opacity", new int[]{30, 40, 50, 60, 70, 80, 90, 100}, 100);
+        stepRow(opts, "CAMERA ROTATION", "How fast a two-finger drag turns the camera", "rotate_speed", new int[]{100, 200, 300, 400, 500, 600, 700, 800, 900, 1000}, 300);
         toggleRow(opts, "DRAG THE MAP", "Swipe moves the map under your finger (off: swipe moves the camera, like the mouse)", "pan_invert", false);
         toggleRow(opts, "CUTSCENES", "Intro, briefings and campaign videos", "cutscenes", true);
         toggleRow(opts, "WIDE SCREEN", "The game fills the whole screen instead of 16:9 (more of the map, buttons on top)", "wide_screen", false);
@@ -708,6 +709,7 @@ public class LauncherActivity extends Activity {
         cfg.append("fast_shaders=").append(prefs.getBoolean("fast_shaders", false) ? 1 : 0).append('\n');
         cfg.append("button_size=").append(prefs.getInt("button_size", 100)).append('\n');
         cfg.append("button_opacity=").append(prefs.getInt("button_opacity", 100)).append('\n');
+        cfg.append("rotate_speed=").append(prefs.getInt("rotate_speed", 300)).append('\n');
         cfg.append("pan_invert=").append(prefs.getBoolean("pan_invert", false) ? 1 : 0).append('\n');
         if (!gamePath.isEmpty()) cfg.append("gamepath=").append(gamePath).append('\n');
         try (FileOutputStream o = new FileOutputStream(new File(getFilesDir(), "launcher.cfg"))) {

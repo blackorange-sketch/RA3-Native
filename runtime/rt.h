@@ -29,6 +29,7 @@ struct Config
 	bool fps60 = false;                  // experimental 60 fps cap
 	float uiScale = 1.f;                 // in-game interface size (HUD panels in the screen corners)
 	bool fastShaders = false;
+	int rotateSpeed = 300;               // launcher: two-finger camera rotation speed, percent of the map pan speed
 	int buttonSize = 100;                // launcher: on-screen hotkey button size, percent
 	int buttonOpacity = 100;             // launcher: on-screen button opacity, percent
 	bool panInvert = false;              // launcher: a swipe drags the map (the camera moves the other way)

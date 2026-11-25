@@ -406,7 +406,7 @@ void startGame(const std::string& game)
 	rt::config.gameRoot = leaf == "data" ? dir.substr(0, dir.rfind('/')) : dir;
 	pushLine("game: " + game);
 	pushLine("game root: " + rt::config.gameRoot);
-	rt::log("launcher: language %s, cutscenes %d, log %d, fast shaders %d, wide screen %d, buttons %d%% / opacity %d%%, drag the map %d", rt::config.language.c_str(), (int)rt::config.playMovies, (int)!rt::config.logFile.empty(), (int)rt::config.fastShaders, (int)rt::config.wideScreen, rt::config.buttonSize, rt::config.buttonOpacity, (int)rt::config.panInvert);
+	rt::log("launcher: language %s, cutscenes %d, log %d, fast shaders %d, wide screen %d, buttons %d%% / opacity %d%%, drag the map %d, camera rotation %d%%", rt::config.language.c_str(), (int)rt::config.playMovies, (int)!rt::config.logFile.empty(), (int)rt::config.fastShaders, (int)rt::config.wideScreen, rt::config.buttonSize, rt::config.buttonOpacity, (int)rt::config.panInvert, rt::config.rotateSpeed);
 	patchProfileResolutions();
 	status = "running";
 	started = true;
@@ -537,6 +537,7 @@ void android_main(android_app* app)
 			else if (k == "button_size") { int pc = atoi(v.c_str()); if (pc >= 50 && pc <= 300) rt::config.buttonSize = pc; }
 			else if (k == "button_opacity") { int pc = atoi(v.c_str()); if (pc >= 10 && pc <= 100) rt::config.buttonOpacity = pc; }
 			else if (k == "pan_invert") rt::config.panInvert = v == "1";
+			else if (k == "rotate_speed") { int pc = atoi(v.c_str()); if (pc >= 50 && pc <= 2000) rt::config.rotateSpeed = pc; }
 			else if (k == "ui_scale") { int pc = atoi(v.c_str()); if (pc >= 100 && pc <= 200) rt::config.uiScale = pc / 100.f; }
 			else if (k == "gamepath" && !v.empty())
 			{
