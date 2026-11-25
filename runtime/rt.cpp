@@ -382,6 +382,9 @@ std::string hostPath(const std::string& win)
 	// everything under RA3/ is the game folder; the rest is our writable area
 	std::string lp = lowerStr(p);
 	if (lp == "ra3" || lp.rfind("ra3/", 0) == 0) return resolveCI(config.gameRoot, p.size() > 4 ? p.substr(4) : "");
+	// the Steam build sees the game folder inside the Steam library (steam.cpp GetAppInstallDir)
+	static const std::string lib = "steam/steamapps/common/command and conquer red alert 3";
+	if (lp == lib || lp.rfind(lib + "/", 0) == 0) return resolveCI(config.gameRoot, p.size() > lib.size() + 1 ? p.substr(lib.size() + 1) : "");
 	return resolveCI(config.dataRoot, p);
 }
 }

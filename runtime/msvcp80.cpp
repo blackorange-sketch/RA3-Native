@@ -4,6 +4,8 @@
 // the heap pointer), _Mysize, _Myres (capacity).
 #include <algorithm>
 #include <cstring>
+#include <map>
+#include <mutex>
 #include <string>
 #include <unistd.h>
 
@@ -189,13 +191,84 @@ IMP_ID("SHLWAPI.dll", "PathFileExistsA", PathFileExistsA, 4)
 	SET(access(hp.c_str(), F_OK) == 0);
 }
 
-// ---- WININET: no internet access for the game (online services are gone); every call fails
+// ---- WININET: no internet for the game (its online services are gone). The Steam build asks the Steam store
+// for its own name at start (store.steampowered.com/api/appdetails?appids=17480) and stops without it, so that one
+// request is answered here, as the store would; any other request fails to connect.
 #define W "WININET.dll"
-IMP_ID(W, "InternetOpenA", InternetOpenA, 20) { SET(0); }
-IMP_ID(W, "InternetConnectA", InternetConnectA, 32) { SET(0); }
-IMP_ID(W, "HttpOpenRequestA", HttpOpenRequestA, 32) { SET(0); }
-IMP_ID(W, "HttpAddRequestHeadersA", HttpAddRequestHeadersA, 16) { SET(0); }
-IMP_ID(W, "HttpSendRequestA", HttpSendRequestA, 20) { SET(0); }
-IMP_ID(W, "InternetQueryDataAvailable", InternetQueryDataAvailable, 16) { SET(0); }
-IMP_ID(W, "InternetReadFile", InternetReadFile, 16) { if (ARG(3)) guest::store<uint32_t>(ARG(3), 0); SET(0); }
-IMP_ID(W, "InternetCloseHandle", InternetCloseHandle, 4) { SET(1); }
+namespace
+{
+struct WebReq { std::string host, path, body; size_t at = 0; bool sent = false; };
+std::mutex webMu;
+std::map<uint32_t, WebReq> web;   // handle -> session (InternetConnect) or request (HttpOpenRequest)
+uint32_t webNext = 0x1ee70000;
+std::string storeAnswer(const std::string& host, const std::string& path)
+{
+	std::string h = host;
+	for (auto& ch : h) ch = (char)tolower((unsigned char)ch);
+	if (h != "store.steampowered.com" || path.rfind("/api/appdetails", 0) != 0) return std::string();
+	size_t q = path.find("appids=");
+	std::string id = q == std::string::npos ? "17480" : path.substr(q + 7, path.find_first_not_of("0123456789", q + 7) - q - 7);
+	return "{\"" + id + "\":{\"success\":true,\"data\":{\"type\":\"game\",\"name\":\"Command & Conquer: Red Alert 3\",\"steam_appid\":" + id + "}}}";
+}
+}
+IMP_ID(W, "InternetOpenA", InternetOpenA, 20) { std::lock_guard<std::mutex> l(webMu); uint32_t h = webNext++; web[h] = WebReq(); SET(h); }
+// (internet, server, port, user, password, service, flags, context)
+IMP_ID(W, "InternetConnectA", InternetConnectA, 32)
+{
+	std::string host = ARG(1) ? gstr(ARG(1)) : "";
+	std::lock_guard<std::mutex> l(webMu);
+	if (!web.count(ARG(0))) { SET(0); return; }
+	uint32_t h = webNext++;
+	web[h].host = host;
+	SET(h);
+}
+// (connect, verb, object, version, referrer, accept types, flags, context)
+IMP_ID(W, "HttpOpenRequestA", HttpOpenRequestA, 32)
+{
+	std::string path = ARG(2) ? gstr(ARG(2)) : "/";
+	std::lock_guard<std::mutex> l(webMu);
+	auto it = web.find(ARG(0));
+	if (it == web.end()) { SET(0); return; }
+	uint32_t h = webNext++;
+	web[h].host = it->second.host;
+	web[h].path = path;
+	SET(h);
+}
+IMP_ID(W, "HttpAddRequestHeadersA", HttpAddRequestHeadersA, 16) { SET(1); }
+// (request, headers, headers length, optional, optional length)
+IMP_ID(W, "HttpSendRequestA", HttpSendRequestA, 20)
+{
+	std::lock_guard<std::mutex> l(webMu);
+	auto it = web.find(ARG(0));
+	if (it == web.end()) { SET(0); return; }
+	WebReq& r = it->second;
+	r.body = storeAnswer(r.host, r.path);
+	r.at = 0;
+	r.sent = !r.body.empty();
+	log("wininet: GET %s%s -> %s", r.host.c_str(), r.path.c_str(), r.sent ? "answered" : "no internet");
+	SET(r.sent ? 1 : 0);
+}
+// (request, bytes available*, flags, context)
+IMP_ID(W, "InternetQueryDataAvailable", InternetQueryDataAvailable, 16)
+{
+	std::lock_guard<std::mutex> l(webMu);
+	auto it = web.find(ARG(0));
+	if (it == web.end() || !it->second.sent) { if (ARG(1)) guest::store<uint32_t>(ARG(1), 0); SET(0); return; }
+	if (ARG(1)) guest::store<uint32_t>(ARG(1), (uint32_t)(it->second.body.size() - it->second.at));
+	SET(1);
+}
+// (handle, buffer, bytes to read, bytes read*)
+IMP_ID(W, "InternetReadFile", InternetReadFile, 16)
+{
+	std::lock_guard<std::mutex> l(webMu);
+	auto it = web.find(ARG(0));
+	if (ARG(3)) guest::store<uint32_t>(ARG(3), 0);
+	if (it == web.end() || !it->second.sent) { SET(0); return; }
+	WebReq& r = it->second;
+	uint32_t n = (uint32_t)std::min<size_t>(ARG(2), r.body.size() - r.at);
+	if (n) memcpy(guest::host(ARG(1)), r.body.data() + r.at, n);
+	r.at += n;
+	if (ARG(3)) guest::store<uint32_t>(ARG(3), n);
+	SET(1);
+}
+IMP_ID(W, "InternetCloseHandle", InternetCloseHandle, 4) { std::lock_guard<std::mutex> l(webMu); web.erase(ARG(0)); SET(1); }

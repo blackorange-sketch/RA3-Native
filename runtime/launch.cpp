@@ -183,6 +183,13 @@ int launch(const std::string& gameFile)
 		if (access(f.c_str(), F_OK) != 0)
 			if (FILE* o = fopen(f.c_str(), "w")) { fputs("17480", o); fclose(o); log("steam: wrote %s", f.c_str()); }
 	}
+	// its Workshop folder (Steam folder from the registry, misc.cpp): Workshop mods go there, none for now
+	{
+		std::string w = hostPath("C:\\Steam\\steamapps\\workshop\\content\\17480");
+		for (size_t i = 1; i <= w.size(); i++)
+			if (i == w.size() || w[i] == '/') mkdir(w.substr(0, i).c_str(), 0777);
+		log("steam: workshop folder %s", w.c_str());
+	}
 #endif
 	{
 		struct sigaction sa{};

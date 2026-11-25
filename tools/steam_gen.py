@@ -1,96 +1,161 @@
 #!/usr/bin/env python3
-"""Generate runtime/steam_ifaces.inc from the Steamworks SDK's steam_api.json: for every Steam interface (by its
-version string) the methods in vtable order with the number of argument bytes each one pops (32-bit thiscall) and
-the kind of value it returns. The runtime's stand-in steam_api (runtime/steam.cpp) builds fake interface objects
-from it, so a game can call any method of an interface without the stack going out of balance.
+"""Generate runtime/steam_ifaces.inc from the Steamworks SDK headers (public/steam/isteam*.h): for every Steam
+interface (by its version string) the methods in vtable order with the number of argument bytes each one pops
+(32-bit thiscall) and the kind of value it returns. The runtime's stand-in steam_api (runtime/steam.cpp) builds fake
+interface objects from it, so a game can call any method of an interface without the stack going out of balance.
 
-usage: steam_gen.py steam_api.json out.inc
+The headers, not steam_api.json: the json leaves out the private methods (STEAM_PRIVATE_API: ISteamUtils
+GetCSERIPPort, RunFrame...), which still have their vtable slots.
+
+usage: steam_gen.py <dir with the isteam*.h headers> out.inc
 """
-import json
+import glob
+import os
 import re
 import sys
 
+EIGHT = {'uint64', 'int64', 'unsigned long long', 'long long', 'double', 'uint64_t', 'int64_t', 'CSteamID', 'CGameID',
+         'unsigned __int64', '__int64'}
+STRUCTS = {'SteamNetworkingIdentity': 136, 'SteamIPAddress_t': 20, 'SteamNetworkingIPAddr': 18 + 2}
+
+
+def strip_comments(s):
+    s = re.sub(r'/\*.*?\*/', ' ', s, flags=re.S)
+    return re.sub(r'//[^\n]*', ' ', s)
+
+
+def unannotate(s):
+    # STEAM_OUT_STRING_COUNT( x ), STEAM_ARRAY_COUNT(x), STEAM_DESC(...) and friends (one level of parentheses)
+    prev = None
+    while prev != s:
+        prev = s
+        s = re.sub(r'\bSTEAM_(?!PRIVATE_API)[A-Z0-9_]+\s*\((?:[^()]|\([^()]*\))*\)', ' ', s)
+        s = re.sub(r'\bSTEAM_[A-Z0-9_]+\b(?!\s*\()', ' ', s)
+    return s
+
+
+def split_params(p):
+    out, depth, cur = [], 0, ''
+    for ch in p:
+        if ch in '(<[':
+            depth += 1
+        elif ch in ')>]':
+            depth -= 1
+        if ch == ',' and depth == 0:
+            out.append(cur)
+            cur = ''
+        else:
+            cur += ch
+    if cur.strip():
+        out.append(cur)
+    return [x.strip() for x in out if x.strip() and x.strip() != 'void']
+
 
 def main():
-    j = json.load(open(sys.argv[1], encoding='utf-8'))
-    typedefs = {t['typedef']: t['type'] for t in j.get('typedefs', [])}
-    enums = {e['enumname'] for e in j.get('enums', [])}
-    for i in j.get('interfaces', []):
-        for e in i.get('enums', []) or []:
-            enums.add(e.get('enumname', ''))
-    structs = {s['struct'] for s in j.get('structs', [])}
+    hdir, outp = sys.argv[1], sys.argv[2]
+    files = sorted(glob.glob(os.path.join(hdir, '*.h')))
+    typedefs = {}
+    texts = {}
+    for f in files:
+        t = strip_comments(open(f, encoding='latin1').read())
+        texts[f] = t
+        for m in re.finditer(r'\btypedef\s+([A-Za-z_][\w\s\*]*?)\s+(\w+)\s*;', t):
+            typedefs[m.group(2)] = m.group(1).strip()
+        for m in re.finditer(r'\benum\s+(\w+)', t):
+            typedefs.setdefault(m.group(1), 'int')
 
     def base(t):
-        t = t.replace('const ', '').strip()
-        seen = 0
-        while t in typedefs and seen < 10:
-            t = typedefs[t].replace('const ', '').strip()
-            seen += 1
+        t = re.sub(r'\b(const|volatile|struct|enum|class)\b', ' ', t).strip()
+        t = re.sub(r'\s+', ' ', t)
+        n = 0
+        while t in typedefs and n < 10 and '*' not in typedefs[t]:
+            t = re.sub(r'\b(const|struct|enum)\b', ' ', typedefs[t]).strip()
+            n += 1
         return t
 
-    def size(t):
-        t0 = t.strip()
-        if '*' in t0 or '&' in t0 or '[' in t0:
+    def psize(p):
+        p = p.split('=')[0].strip()
+        if '*' in p or '&' in p or '[' in p:
             return 4
-        b = base(t0)
-        if b in ('uint64', 'int64', 'unsigned long long', 'long long', 'double', 'uint64_t', 'int64_t', 'CSteamID', 'CGameID'):
+        m = re.match(r'(.*?)(\w+)\s*$', p)
+        t = m.group(1).strip() if m and m.group(1).strip() else p
+        b = base(t)
+        if b in EIGHT:
             return 8
-        if b in ('SteamNetworkingIdentity',):
-            return 136
+        if b in STRUCTS:
+            return (STRUCTS[b] + 3) & ~3
         return 4
 
     def ret_kind(t):
-        t0 = t.strip()
-        if t0 == 'void':
+        t = t.strip()
+        if t == 'void':
             return 'V'
-        if '*' in t0:
-            return 'S' if re.search(r'\bchar\b', t0) else 'I'
-        b = base(t0)
-        if b in ('CSteamID', 'CGameID'):
-            return 'H'          # class returned through a hidden pointer
+        if '*' in t:
+            return 'S' if re.search(r'\bchar\b', t) else 'I'
+        b = base(t)
+        if b in ('CSteamID', 'CGameID') or b in STRUCTS:
+            return 'H'          # class / struct returned through a hidden pointer
         if b in ('float', 'double'):
             return 'F'
-        if b in ('uint64', 'int64', 'unsigned long long', 'long long', 'uint64_t', 'int64_t'):
+        if b in EIGHT:
             return 'L'
         if b == 'bool':
             return 'B'
         return 'I'
 
-    out = ['// generated by tools/steam_gen.py from the Steamworks SDK steam_api.json - do not edit']
+    out = ['// generated by tools/steam_gen.py from the Steamworks SDK headers - do not edit']
     names = []
-    for k, i in enumerate(j.get('interfaces', [])):
-        ver = i.get('version_string') or ''
-        cls = i.get('classname', '')
-        rows = []
-        for m in i.get('methods', []):
-            pop = sum(size(p['paramtype']) for p in m.get('params', []))
-            rk = ret_kind(m.get('returntype', 'void'))
-            if rk == 'H':
-                pop += 4
-            rows.append(f'\t{{"{m["methodname"]}", {pop}, \'{rk}\'}},')
-        if not rows:
-            continue
-        out.append(f'static const SteamMethod kSteamM{k}[] = {{')
-        out += rows
-        out.append('};')
-        names.append(f'\t{{"{ver}", "{cls}", kSteamM{k}, {len(rows)}}},')
-        # ISteamUtils011 dropped GetCSERIPPort (after GetImageRGBA) - games built with 010 still have it
-        if ver == 'SteamUtils011' and len(rows) > 7 and '"GetImageRGBA"' in rows[6]:
-            out.append(f'static const SteamMethod kSteamM{k}c[] = {{')
-            out += rows[:7] + ['\t{"GetCSERIPPort", 8, \'B\'},'] + rows[7:]
+    k = 0
+    for f in files:
+        t = texts[f]
+        versions = [(m.start(), m.group(1), m.group(2)) for m in
+                    re.finditer(r'#define\s+(\w*INTERFACE_VERSION\w*)\s+"([^"]+)"', t)]
+        for cm in re.finditer(r'\bclass\s+(ISteam\w+)\s*(?::[^{;]*)?\{', t):
+            cls = cm.group(1)
+            # class body: brace matching
+            i, depth = cm.end(), 1
+            while i < len(t) and depth:
+                depth += {'{': 1, '}': -1}.get(t[i], 0)
+                i += 1
+            body = unannotate(t[cm.end():i - 1])
+            body = re.sub(r'\bSTEAM_PRIVATE_API\s*\(', ' (', body)
+            rows, seen = [], {}
+            for mm in re.finditer(r'\bvirtual\s+([^;{}()]*?)\b(\w+)\s*\(((?:[^()]|\([^()]*\))*)\)\s*(?:const\s*)?=\s*0\s*;', body):
+                rt, name, params = mm.group(1).strip(), mm.group(2), mm.group(3)
+                rk = ret_kind(rt)
+                pop = sum(psize(p) for p in split_params(params)) + (4 if rk == 'H' else 0)
+                seen[name] = seen.get(name, 0) + 1
+                rows.append((name, pop, rk))
+            if not rows:
+                continue
+            # the version define after the class (before the next class), if any
+            nxt = re.search(r'\bclass\s+ISteam\w+\s*(?::[^{;]*)?\{', t[i:])
+            end = i + nxt.start() if nxt else len(t)
+            vers = [v for pos, _, v in versions if i <= pos < end]
+            if not vers:
+                continue
+            over = [n for n, c in seen.items() if c > 1]
+            if over:
+                # MSVC groups overloads of a virtual function together, in reverse declaration order
+                grouped, done = [], set()
+                for r in rows:
+                    if r[0] in done:
+                        continue
+                    same = [x for x in rows if x[0] == r[0]]
+                    grouped += list(reversed(same)) if len(same) > 1 else same
+                    done.add(r[0])
+                rows = grouped
+                print(f'steam_gen: {cls} has overloaded methods {over} (MSVC order applied)')
+            out.append(f'static const SteamMethod kSteamM{k}[] = {{')
+            out += [f'\t{{"{n}", {p}, \'{r}\'}},' for n, p, r in rows]
             out.append('};')
-            names.append(f'\t{{"SteamUtils010", "{cls}", kSteamM{k}c, {len(rows) + 1}}},')
-        # ISteamUserStats013 dropped RequestCurrentStats (the first method) - games built with 012 still have it
-        if ver == 'STEAMUSERSTATS_INTERFACE_VERSION013' and rows and '"RequestCurrentStats"' not in rows[0]:
-            out.append(f'static const SteamMethod kSteamM{k}b[] = {{')
-            out.append('\t{"RequestCurrentStats", 0, \'B\'},')
-            out += rows
-            out.append('};')
-            names.append(f'\t{{"STEAMUSERSTATS_INTERFACE_VERSION012", "{cls}", kSteamM{k}b, {len(rows) + 1}}},')
+            for v in vers:
+                names.append(f'\t{{"{v}", "{cls}", kSteamM{k}, {len(rows)}}},')
+            k += 1
     out.append('static const SteamIface kSteamIfaces[] = {')
     out += names
     out.append('};')
-    open(sys.argv[2], 'w').write('\n'.join(out) + '\n')
+    open(outp, 'w').write('\n'.join(out) + '\n')
     print(f'steam_gen: {len(names)} interfaces')
 
 

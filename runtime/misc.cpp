@@ -1,5 +1,6 @@
 // Smaller DLLs: ADVAPI32 (registry), SHLWAPI, SHELL32, OLE32, USER32/GDI32/IMM32 (headless bring-up stubs).
 // Windowing is a placeholder until the SDL layer exists: windows are fake handles.
+#include <cstring>
 #include <unistd.h>
 
 #include "rt.h"
@@ -14,12 +15,69 @@ using namespace rt;
 #define U "USER32.dll"
 #define IMM "IMM32.dll"
 
-// ---- registry: nothing exists, the game falls back to defaults
-IMP_ID(ADV, "RegOpenKeyExA", RegOpenKeyExA, 20) { SET(2); }
-IMP_ID(ADV, "RegOpenKeyExW", RegOpenKeyExW, 20) { SET(2); }
+// ---- registry: nothing exists, the game falls back to defaults - except the Steam client's key, which the Steam
+// build (ra3_1.13.game) reads for the Steam folder (its Workshop folder is under it): HKLM\SOFTWARE\Valve\Steam
+namespace
+{
+constexpr uint32_t kSteamKey = 0x5eea0001;
+const char* kSteamDir = "C:\\Steam";
+bool steamKey(uint32_t root, std::string sub)
+{
+	for (auto& ch : sub) ch = (char)tolower((unsigned char)ch == '/' ? '\\' : (unsigned char)ch);
+	while (!sub.empty() && sub.back() == '\\') sub.pop_back();
+	return root == 0x80000002 && (sub == "software\\valve\\steam" || sub == "software\\wow6432node\\valve\\steam");
+}
+// RegQueryValueEx(key, name, reserved, type*, data*, size*) for a string value (bytes with the terminator)
+void queryString(CPU* c, const void* v, uint32_t n)
+{
+	if (ARG(3)) guest::store<uint32_t>(ARG(3), 1);   // REG_SZ
+	uint32_t cap = ARG(5) ? guest::load<uint32_t>(ARG(5)) : 0;
+	if (ARG(5)) guest::store<uint32_t>(ARG(5), n);
+	if (!ARG(4)) { SET(0); return; }
+	if (cap < n) { SET(234); return; }   // ERROR_MORE_DATA
+	memcpy(guest::host(ARG(4)), v, n);
+	SET(0);
+}
+bool steamValue(const std::string& name)
+{
+	std::string l = name;
+	for (auto& ch : l) ch = (char)tolower((unsigned char)ch);
+	return l == "installpath" || l == "steampath";
+}
+}
+IMP_ID(ADV, "RegOpenKeyExA", RegOpenKeyExA, 20)
+{
+	if (ARG(1) && steamKey(ARG(0), gstr(ARG(1)))) { if (ARG(4)) guest::store<uint32_t>(ARG(4), kSteamKey); SET(0); return; }
+	SET(2);
+}
+IMP_ID(ADV, "RegOpenKeyExW", RegOpenKeyExW, 20)
+{
+	if (ARG(1) && steamKey(ARG(0), utf16to8(gwstr(ARG(1))))) { if (ARG(4)) guest::store<uint32_t>(ARG(4), kSteamKey); SET(0); return; }
+	SET(2);
+}
+IMP_ID(ADV, "RegQueryValueExA", RegQueryValueExA, 24)
+{
+	if (ARG(0) == kSteamKey && ARG(1) && steamValue(gstr(ARG(1))))
+	{
+		log("registry: Steam %s -> %s", gstr(ARG(1)).c_str(), kSteamDir);
+		queryString(c, kSteamDir, (uint32_t)strlen(kSteamDir) + 1);
+		return;
+	}
+	SET(2);
+}
+IMP_ID(ADV, "RegQueryValueExW", RegQueryValueExW, 24)
+{
+	if (ARG(0) == kSteamKey && ARG(1) && steamValue(utf16to8(gwstr(ARG(1)))))
+	{
+		log("registry: Steam %s -> %s", utf16to8(gwstr(ARG(1))).c_str(), kSteamDir);
+		std::u16string w = utf8to16(kSteamDir);
+		w.push_back(0);
+		queryString(c, w.data(), (uint32_t)(2 * w.size()));
+		return;
+	}
+	SET(2);
+}
 IMP_ID(ADV, "RegCreateKeyExA", RegCreateKeyExA, 36) { SET(5); }
-IMP_ID(ADV, "RegQueryValueExA", RegQueryValueExA, 24) { SET(2); }
-IMP_ID(ADV, "RegQueryValueExW", RegQueryValueExW, 24) { SET(2); }
 IMP_ID(ADV, "RegSetValueExA", RegSetValueExA, 24) { SET(0); }
 IMP_ID(ADV, "RegCloseKey", RegCloseKey, 4) { SET(0); }
 

@@ -4,6 +4,7 @@
 // generated from the Steamworks SDK by tools/steam_gen.py, steam_ifaces.inc) and answer "nothing": 0, false, empty
 // strings - except a few ownership checks, which answer yes (the game is a bought copy) - and the app id.
 // The first calls of each method are logged ("steam:") to see what the game wants.
+#include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <map>
@@ -28,6 +29,9 @@ static const SteamIface kSteamIfaces[] = {{"", "", nullptr, 0}};
 #endif
 constexpr int kIfaces = sizeof kSteamIfaces / sizeof kSteamIfaces[0];
 constexpr uint32_t kAppId = 17480;   // Command & Conquer Red Alert 3 on Steam
+constexpr uint64_t kSteamId = 0x0110000100000001ull;   // individual account in the public universe
+// the Steam folder is C:\Steam (misc.cpp registry); the library's copy of the game is the game folder
+const char* kInstallDir = "C:\\Steam\\steamapps\\common\\Command and Conquer Red Alert 3";
 
 std::mutex mu;
 std::map<std::string, uint32_t> objects;   // interface version -> fake object
@@ -54,7 +58,14 @@ void method(CPU* c)
 	char r = m ? m->ret : 'I';
 	switch (r)
 	{
-	case 'H': guest::store<uint32_t>(ARG(0), 0); guest::store<uint32_t>(ARG(0) + 4, 0); SET(ARG(0)); return;
+	case 'H':
+	{
+		// CSteamID through the hidden pointer: a valid individual account id for the user (the game wants one)
+		uint64_t v = name == "GetSteamID" ? kSteamId : 0;
+		guest::store<uint32_t>(ARG(0), (uint32_t)v); guest::store<uint32_t>(ARG(0) + 4, (uint32_t)(v >> 32));
+		SET(ARG(0));
+		return;
+	}
 	case 'L': SET(0); c->r[EDX] = 0; return;
 	case 'F': RET_F(0.0); return;
 	case 'S':
@@ -65,6 +76,15 @@ void method(CPU* c)
 		SET(name.rfind("BIsSubscribed", 0) == 0 || name == "BIsAppInstalled" || name == "BIsDlcInstalled" || name == "BLoggedOn" ? 1 : 0);
 		return;
 	default:
+		if (name == "GetAppInstallDir" && ARG(1) && ARG(2))
+		{
+			// (appid, char* folder, size): the game folder as seen through the Steam library (rt.cpp hostPath maps it)
+			uint32_t n = std::min<uint32_t>((uint32_t)strlen(kInstallDir), ARG(2) - 1);
+			memcpy(guest::host(ARG(1)), kInstallDir, n);
+			guest::store<uint8_t>(ARG(1) + n, 0);
+			SET(n);
+			return;
+		}
 		SET(name == "GetAppID" ? kAppId : 0);
 		return;
 	}

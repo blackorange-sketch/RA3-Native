@@ -67,13 +67,13 @@ jobs:
       # from the Steamworks SDK description (steam_api.json, public in the Steamworks.NET / Facepunch.Steamworks repos)
       - name: Steam interface tables
         run: |
-          for src in "https://github.com/rlabrecque/Steamworks.NET CodeGen/steam/steam_api.json" \
-                     "https://github.com/Facepunch/Facepunch.Steamworks Generator/steam_sdk/steam_api.json"; do
-            set -- $src
-            rm -rf sdkjson; git clone -q --depth 1 --filter=blob:none --sparse "$1" sdkjson && git -C sdkjson sparse-checkout set --no-cone "/$2" && [ -f "sdkjson/$2" ] && { python3 tools/steam_gen.py "sdkjson/$2" runtime/steam_ifaces.inc && break; }
-          done
+          # headers of Steamworks SDK 1.60 - the interface versions ra3_1.13.game asks for (SteamUtils010, UGC020...)
+          git init -q sdkh && git -C sdkh remote add origin https://github.com/rlabrecque/Steamworks.NET \
+            && git -C sdkh fetch -q --depth 1 --filter=blob:none origin 7e5ab1859e30dab8162de2327d7fcfd176ce1064 \
+            && git -C sdkh sparse-checkout set --no-cone '/CodeGen/steam/*.h' && git -C sdkh checkout -q FETCH_HEAD \
+            && python3 tools/steam_gen.py sdkh/CodeGen/steam runtime/steam_ifaces.inc
           ls -la runtime/steam_ifaces.inc || echo "no Steam interface tables (fake interfaces will pop nothing)"
-          grep -o '"Steam[A-Za-z]*[0-9]\{3\}"\|"STEAM[A-Z_]*[0-9]\{3\}"' runtime/steam_ifaces.inc 2>/dev/null | tr '\n' ' ' | head -c 3000; echo
+          grep -o '{"[^"]*", "ISteam' runtime/steam_ifaces.inc 2>/dev/null | tr '\n' ' ' | head -c 3000; echo
 
       - name: Build Capstone
         run: |
@@ -98,8 +98,8 @@ jobs:
             # imports the Steam build uses that 1.12 does not (each needs a runtime implementation)
             pip install --quiet capstone==5.0.1 || pip install --quiet --break-system-packages capstone==5.0.1
             echo "steam interfaces:"; strings -n 8 game/ra3_1.13.game | grep -E '^(Steam|STEAM)[A-Za-z_]*[0-9]{3}$|^SteamAPI_|^SteamInternal_' | sort -u | head -60
-            # the Steam start-up checks (Steam/Workshop set-up) in full, to answer all of them at once
-            python3 tools/xref.py game/ra3_1.13.game game/ra313.functions.txt --dis 4d67a0-4d7020 4d4770 4d47b0 4d45e0 4d4620 4d45a0 4d49f0 4d4d10 4d4dd0 4d5310 4d52b0 4d5590 4d54c0 4d4be0 4d5ec0 4d4436 || true
+            # the Steam start-up glue: the web request and the registry reader it relies on
+            python3 tools/xref.py game/ra3_1.13.game game/ra313.functions.txt --dis 4d47b0-4d49f0 95e080 95e250 4d4f40 || true
             echo "imports only in 1.13:"; awk '{print $2}' game/ra3.imports_used.txt | sort > /tmp/i12; awk '{print $2}' game/ra313.imports_used.txt | sort > /tmp/i13; comm -13 /tmp/i12 /tmp/i13
             # the Steam build: its own library (runtime/game_build.h has its addresses); a93130 = resolution list mode check
             mkdir -p lifted113
