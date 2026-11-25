@@ -95,6 +95,11 @@ IMP_ID(P, "??$?HDU?$char_traits@D@std@@V?$allocator@D@1@@std@@YA?AV?$basic_strin
 	sNew(ARG(0), sGet(ARG(1)) + (ARG(2) ? gstr(ARG(2)) : std::string()));
 	SET(ARG(0));
 }
+IMP_ID(P, "??$?HDU?$char_traits@D@std@@V?$allocator@D@1@@std@@YA?AV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@0@PBDABV10@@Z", str_cstr_plus, 0)
+{
+	sNew(ARG(0), (ARG(1) ? gstr(ARG(1)) : std::string()) + sGet(ARG(2)));
+	SET(ARG(0));
+}
 
 // ---- MSVCR80: std::exception {vftable, const char* what, int free}
 #define R "MSVCR80.dll"
