@@ -1658,11 +1658,13 @@ static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, 
 	// tooltips of the lower build rows reach well below the middle of the screen
 	// only after the HUD has started (health bars come first) and only popup-sized: the health bars of all units
 	// are one batch, and when a unit stood next to the column the whole batch was "attached" and scaled with it
-	bool attached = !c && !textLike && gUiHud && (x1 - x0) <= 0.40f * W16 && gUiColLeft < 1e8f && x1 >= gUiColLeft - 0.04f * W16 && x0 < gUiColLeft && x1 <= gUiColLeft + 0.20f * W16 && y1 <= vy + 0.90f * H;
+	// (the tooltips of the buttons under the minimap - repair, sell, objectives - end up to 12% short of the column)
+	bool attached = !c && !textLike && gUiHud && (x1 - x0) <= 0.40f * W16 && gUiColLeft < 1e8f && x1 >= gUiColLeft - 0.12f * W16 && x0 < gUiColLeft && x1 <= gUiColLeft + 0.20f * W16 && y1 <= vy + 0.90f * H;
 	if (attached) c = 2;
 	// a tooltip of the unit panel / command bar opens above it and reaches down onto it: it moves with that panel
 	// (otherwise its texts, lying on the scaled command bar, moved while the box stayed)
-	bool attachedLow = !c && !textLike && gUiHud && x0 >= fromR(0.50f) && y0 >= vy + 0.60f * H && y1 >= vy + 0.88f * H;
+	// (long ones - the planning mode's - start well above the middle of the screen)
+	bool attachedLow = !c && !textLike && gUiHud && x0 >= fromR(0.50f) && y0 >= vy + 0.30f * H && y1 >= vy + 0.88f * H && (x1 - x0) <= 0.40f * W16;
 	if (attachedLow) { c = 4; attached = true; }
 	if (c == 2 && !attached) gUiCurColLeft = std::min(gUiCurColLeft, x0);
 	// unit markers, health bars and names come first in a frame: only what follows the first big corner panel is HUD
