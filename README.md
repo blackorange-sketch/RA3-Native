@@ -19,7 +19,7 @@
 </p>
 
 > [!IMPORTANT]
-> **No game files are included.** This project contains only tools and a runtime. You need your own legally obtained copy of Red Alert 3 (patch 1.12).
+> **No game files are included.** This project contains only tools and a runtime. You need your own legally obtained copy of Red Alert 3: the retail / EA app game (patch 1.12) or the Steam release (1.13).
 
 ---
 
@@ -27,6 +27,7 @@
 
 - [What works](#what-works)
 - [Requirements](#requirements)
+- [Which app: RA3 Native or RA3 Native Steam](#which-app-ra3-native-or-ra3-native-steam)
 - [Installation](#installation)
 - [Controls](#controls)
 - [Launcher options](#launcher-options)
@@ -51,27 +52,42 @@
 | 🌐 **Network** | Windows sockets on top of Android networking; the LAN menu opens — LAN play is being tested |
 | 📱 **Wide screens** | Battles fill the whole screen of modern 20:9 / 21:9 phones and show more of the map |
 | 🚀 **Launcher** | Start screen with language, HUD size, wide screen, cutscene and logging options, background file check |
+| 🟦 **Steam release** | The Steam game (1.13) runs in its own app, **RA3 Native Steam** — no Steam client needed |
 
 ## Requirements
 
 - **Android 10 or newer, 64-bit (arm64)** with OpenGL ES 3.2. Developed and tested on a Snapdragon 8 Gen 2; other recent Snapdragon devices should work.
 - **Mali / PowerVR GPUs** — experimental: these GPUs cannot read the game's DXT textures, so they are converted to ETC2 on the first load and kept in a cache (up to 1.5 GB), which makes the first start of each map noticeably slower. The *Fast shaders* launcher option can speed up the GPU at a small cost in image quality. Reports from Mali devices are very welcome.
-- **Red Alert 3, patch 1.12** — the full game folder (about 8.7 GB) on the phone's internal storage, a memory card or a USB drive.
+- **Red Alert 3** — patch 1.12 (retail DVD, EA app / Origin) or the Steam release (1.13): the full game folder (about 8.7 GB) on the phone's internal storage, a memory card or a USB drive.
 - About **4 GB of free RAM** recommended.
+
+## Which app: RA3 Native or RA3 Native Steam
+
+The recompiled code runs exactly the game executable it was made from, so there are two apps, one per game build. Both install side by side, each with its own settings and saves.
+
+| Your game | Game file in `Data/` | App | APK |
+|---|---|---|---|
+| Retail DVD, EA app / Origin, patched to 1.12 | `ra3_1.12.game` | **RA3 Native** | `ra3-native-<version>.apk` |
+| Steam (also the Ultimate Collection on Steam) | `ra3_1.13.game` | **RA3 Native Steam** | `ra3-native-steam-<version>.apk` |
+
+A Steam game folder also contains an old `ra3_1.12.game`, which can be a different build from the retail 1.12 — with Steam, always use **RA3 Native Steam**. The Steam app needs no Steam client and no internet connection; Steam Workshop items are not supported yet.
+
+If the launcher reports **UNSUPPORTED GAME BUILD**, your game file is a build the apps were not made from — please open an issue with the SHA-256 it shows.
 
 ## Installation
 
-1. Download the APK from the [latest stable release](https://github.com/blackorange-sketch/RA3-Native/releases/latest) and install it.
+1. Download the APK for your game (see the table above) from the [latest stable release](https://github.com/blackorange-sketch/RA3-Native/releases/latest) and install it.
    Want the newest fixes before they are released? The [nightly build](https://github.com/blackorange-sketch/RA3-Native/releases/tag/nightly) is rebuilt after every change — it may be broken. A newer build always installs over an older one, whichever channel it comes from.
-2. Copy your game folder — the one that contains `Data/ra3_1.12.game` and the `RA3_<language>_1.12.SkuDef` files — to the phone's internal storage, a memory card or a USB drive (OTG), for example to
+2. Copy your game folder — the one that contains `Data/ra3_1.12.game` (Steam: `Data/ra3_1.13.game`) and the `RA3_<language>_<version>.SkuDef` files — to the phone's internal storage, a memory card or a USB drive (OTG), for example to
    `/sdcard/Command and Conquer - Red Alert 3/`.
-3. Open **RA3 Native** and allow **All files access** when asked — the game reads its files directly from storage.
+   A Steam copy can be copied from a PC's `steamapps/common/` folder, or downloaded on the phone with an Android Steam client app such as GameHub.
+3. Open **RA3 Native** (or **RA3 Native Steam**) and allow **All files access** when asked — the game reads its files directly from storage.
 4. The launcher looks for the game on the internal storage, memory cards and USB drives, checks the files and unlocks **Play**. If it does not find it, tap **Game folder**: the other storages are listed at the top of the folder list.
 
 A game on a USB drive must stay connected while you play, and maps load more slowly from slow drives.
 
 > [!TIP]
-> Files the game never uses can be moved out to save space: `Launcher/`, `Support/`, `Trailers/`, the installer files in the root folder and `Data/ra3_1.0.game` … `ra3_1.11.game`. Keep every `.big` archive and every `.SkuDef` file.
+> Files the game never uses can be moved out to save space: `Launcher/`, `Support/`, `Trailers/`, the installer files in the root folder and the older `Data/ra3_1.*.game` files (keep `ra3_1.12.game`, and `ra3_1.13.game` for Steam). Keep every `.big` archive and every `.SkuDef` file.
 
 ## Controls
 
@@ -98,7 +114,7 @@ The phone's volume keys keep working, and the screen stays on while the game run
 
 | Option | Default | |
 |---|---|---|
-| Interface language | detected | Every language installed in your game folder (`RA3_<language>_1.12.SkuDef`) |
+| Interface language | detected | Every language installed in your game folder (`RA3_<language>_1.12.SkuDef`, Steam: `_1.13`) |
 | Cutscenes | On | Intro, briefings and campaign videos |
 | Log file | Off in releases, on in nightly builds | Writes `/sdcard/ra3_native.log` (`ra3_native_steam.log` in RA3 Native Steam) — turn it on and attach the file to bug reports |
 | HUD size | 110% | Enlarges the minimap, build menu and other corner panels (100–200% in 10% steps) |
@@ -123,16 +139,18 @@ The game logic itself is capped at 30 fps, like on PC. Rendering runs on its own
 
 - **Online play** — the original GameSpy servers were shut down in 2014. Support for the community C&C:Online servers is planned.
 - **LAN play** is new and largely untested.
+- **Mods, Steam Workshop and Uprising** are not supported yet. *Uprising* is a separate game with its own executable, which would need its own recompiled app.
 - The game runs at **30 fps**, as on PC. An experimental 60 fps mode (`/sdcard/ra3_fps60`) exists but is not usable yet: the game's engine ties its logic and effects to the frame rate.
 
-Found something else? Please [open an issue](https://github.com/blackorange-sketch/RA3-Native/issues) with your device model and the `ra3_native.log` file.
+Found something else? Please [open an issue](https://github.com/blackorange-sketch/RA3-Native/issues) with your device model and the `ra3_native.log` file (`ra3_native_steam.log` for the Steam app).
 
 ## How it works
 
 Red Alert 3 is a 32-bit Windows program. Instead of emulating an x86 CPU while you play, every function of the game is translated ahead of time into C++ and compiled for ARM64:
 
 ```
-ra3_1.12.game ──► analyser + lifter (tools/) ──► C++ per function ──► clang ──► libra3native.so
+ra3_1.12.game ──► analyser + lifter (tools/) ──► C++ per function ──► clang ──► libra3native.so     (RA3 Native)
+ra3_1.13.game ──►            〃                                              ──► libra3native113.so  (RA3 Native Steam)
                                                                                      │
                      Android runtime (runtime/): Win32 · D3D9 → OpenGL ES · audio · input · sockets
 ```
@@ -141,6 +159,7 @@ ra3_1.12.game ──► analyser + lifter (tools/) ──► C++ per function �
 - **`runtime/`** — what the translated code runs against:
   - PE loader and a 4 GB guest address space
   - Win32, MSVCRT, DirectSound, XInput and WinSock import layers
+  - a stand-in `steam_api.dll` for the Steam build: Steam reports as running and signed in, its interfaces follow the Steamworks SDK 1.60 the game was built with
   - **Direct3D 9 → OpenGL ES 3** renderer: shader translation from D3D bytecode to GLSL, the D3DX effect framework (FX9) including preshaders, a dedicated render thread and a program binary cache
   - NEON versions of the MMX routines used by the VP6 video decoder
   - Touch input mapped to the RTS mouse and keyboard controls
