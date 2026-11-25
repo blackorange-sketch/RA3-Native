@@ -1527,6 +1527,7 @@ static bool gUiHud = false;       // the HUD panels have started this frame: ear
 static float gUiColLeft = 1e9f, gUiCurColLeft = 1e9f;   // left edge of the right column (back-buffer pixels)
 static float gUiRightT = 0.f, gUiRightB = 1.f, gUiCurT = 0.f, gUiCurB = 1.f;   // right column: lowest top piece, highest bottom piece (fractions of the height)
 static std::vector<UiRect> gUiPieces;   // panel pieces scaled this frame, in the game's own (unscaled) coordinates
+static std::vector<UiRect> gUiPops;     // tooltip boxes scaled this frame (unscaled coordinates): their lines and icons follow
 static bool gUiMenu = false;      // a big window covers the battle this frame
 static bool gUiNested = false;     // drawing a rebuilt interface draw (no second analysis)
 static uint32_t gUiWorldDraws = 0;
@@ -1654,6 +1655,22 @@ static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, 
 		}
 	}
 	int c = textLike && gUiHud ? 0 : corner(x0, y0, x1, y1);
+	// anything inside a tooltip scaled earlier in this frame (its frame pieces, the requirement tree of a locked
+	// building: bracket lines and the building icon) moves and grows exactly with the tooltip
+	if (!c && !textLike && gUiHud && !gUiMenu && !gUiPops.empty())
+	{
+		const float tol = 0.01f * W16;
+		for (size_t q = gUiPops.size(); q-- > 0;)
+		{
+			const UiRect& r = gUiPops[q];
+			if (x0 < r.x0 - tol || x1 > r.x1 + tol || y0 < r.y0 - tol || y1 > r.y1 + tol) continue;
+			ax = r.ax; ay = r.ay;
+			addRect(x0, y0, x1, y1, ax, ay, r.sc);
+			axN = (ax - vx) / W * 2.f - 1.f; ayN = 1.f - (ay - vy) / H * 2.f;
+			if (diag) log("ui-diag: box %.0f,%.0f-%.0f,%.0f inside tooltip %zu: scaled with it", x0, y0, x1, y1, q);
+			return r.sc - 1.f;
+		}
+	}
 	// a tooltip or popup that ends at the left edge of the right column belongs to it (it is anchored there);
 	// tooltips of the lower build rows reach well below the middle of the screen
 	// only after the HUD has started (health bars come first) and only popup-sized: the health bars of all units
@@ -1676,7 +1693,7 @@ static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, 
 	// (the special abilities window is about a quarter of a wide screen: from 20%)
 	if (apt && (x1 - x0) * (y1 - y0) >= 0.20f * W * H && (x1 - x0) < 0.98f * W)
 	{
-		gUiMenu = true; gUiCur.clear(); gUiPieces.clear();
+		gUiMenu = true; gUiCur.clear(); gUiPieces.clear(); gUiPops.clear();
 		if (diag) log("ui-diag: big window %.0f,%.0f-%.0f,%.0f: scaling off for this frame", x0, y0, x1, y1);
 		return 0.f;
 	}
@@ -1704,12 +1721,14 @@ static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, 
 			s = st;
 			addRect(x0, y0, x1, y1, ax, ay, s);
 			if (gUiPieces.size() < 2000) gUiPieces.push_back({x0 - 0.15f * W16, y0, x1, y1, ax, ay, s});
+			if (gUiPops.size() < 64) gUiPops.push_back({x0, y0, x1, y1, ax, ay, s});
 			axN = (ax - vx) / W * 2.f - 1.f; ayN = 1.f - (ay - vy) / H * 2.f;
 			return s - 1.f;
 		}
 		addRect(x0, y0, x1, y1, ax, ay, s);
 		// a tooltip's text can start left of its box: texts get a wider catch area to the left of attached popups
 		if (gUiPieces.size() < 2000) gUiPieces.push_back({attached ? x0 - 0.15f * W16 : x0, y0, x1, y1, ax, ay, s});
+		if (attached && gUiPops.size() < 64) gUiPops.push_back({x0, y0, x1, y1, ax, ay, s});
 		axN = (c - 1) & 1 ? 1.f : -1.f; ayN = (c - 1) & 2 ? -1.f : 1.f;
 		return s - 1.f;
 	}
@@ -2830,7 +2849,7 @@ static void presentImpl()
 		// the right column's extents only grow (the open build menu is the largest): its scale stays the same when menus open
 		if (gUiHud) { gUiRightT = std::max(gUiRightT, gUiCurT); gUiRightB = std::min(gUiRightB, gUiCurB); if (gUiCurColLeft < 1e8f) gUiColLeft = gUiCurColLeft; }
 		gUiCurT = 0.f; gUiCurB = 1.f; gUiCurColLeft = 1e9f;
-		gUiWorldDraws = 0; gAptDraws = gVideoDraws = 0; gUiHud = false; gUiAptSeen = false; gUiPieces.clear(); gUiMenu = false;
+		gUiWorldDraws = 0; gAptDraws = gVideoDraws = 0; gUiHud = false; gUiAptSeen = false; gUiPieces.clear(); gUiPops.clear(); gUiMenu = false;
 		static int nl = 0;
 		if (gUiScale > 1.001f && !gUiPub.empty() && nl < 3 && gFrameNo > 600) { nl++; log("ui: interface scale %.2f, %zu panel pieces scaled this frame", gUiScale, gUiPub.size()); }
 	}
