@@ -167,9 +167,11 @@ Obj* objectAt(uint32_t addr)
 	// Misses (null and non-object pointers: SetTexture(stage, 0) and the like) are cached too; creating an object
 	// bumps a generation that invalidates them, since a freed non-object block could become an object later.
 	if (!addr) return nullptr;
-	static thread_local uint32_t cacheA[64], cacheG[64];
-	static thread_local Obj* cacheO[64];
-	uint32_t k = ((addr >> 4) ^ (addr >> 10)) & 63;
+	// (512 entries: with ~1000 draws a frame the textures and buffers of all meshes no longer fit in 64 - misses
+	// were 2% of the game thread in the profile)
+	static thread_local uint32_t cacheA[512], cacheG[512];
+	static thread_local Obj* cacheO[512];
+	uint32_t k = ((addr >> 4) ^ (addr >> 13)) & 511;
 	uint32_t gen = gObjGen.load(std::memory_order_acquire);
 	if (cacheA[k] == addr && (cacheO[k] || cacheG[k] == gen)) return cacheO[k];
 	Obj* o = objectAtSlow(addr);

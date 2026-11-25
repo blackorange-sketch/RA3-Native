@@ -91,6 +91,17 @@ void onProf(int, siginfo_t* si, void* uctx)
 #endif
 }
 
+// this library's file name (libra3native.so, or libra3native113.so in RA3 Native Steam): its own symbols get no prefix
+static const std::string& selfName()
+{
+	static const std::string n = [] {
+		Dl_info di{};
+		std::string s = "libra3native.so";
+		if (dladdr((void*)&selfName, &di) && di.dli_fname) { const char* b = strrchr(di.dli_fname, '/'); s = b ? b + 1 : di.dli_fname; }
+		return s;
+	}();
+	return n;
+}
 std::string nameOf(uintptr_t pc, std::unordered_map<uintptr_t, std::string>& cache)
 {
 	auto it = cache.find(pc);
@@ -108,7 +119,7 @@ std::string nameOf(uintptr_t pc, std::unordered_map<uintptr_t, std::string>& cac
 			if (n.compare(0, 2, "_Z") == 0 && f != std::string::npos && f < 6) n = n.substr(f, 10);
 		}
 		else { char b[96]; snprintf(b, sizeof b, "%s+0x%zx", base, (size_t)(pc - (uintptr_t)di.dli_fbase) & ~(size_t)0xfff); n = b; }
-		if (strcmp(base, "libra3native.so") != 0) n = std::string(base) + ":" + n;
+		if (selfName() != base) n = std::string(base) + ":" + n;
 	}
 	else n = "?";
 	cache[pc] = n;
@@ -206,7 +217,7 @@ void reporter()
 			for (auto& kv : perPc)
 			{
 				const std::string& nm = nameOf(kv.first, cache);
-				if (nm.compare(0, 16, "libra3native.so+") == 0) perOff[kv.first - (uintptr_t)self.dli_fbase] += kv.second;
+				if (nm.compare(0, selfName().size() + 1, selfName() + "+") == 0) perOff[kv.first - (uintptr_t)self.dli_fbase] += kv.second;
 			}
 		std::vector<std::pair<uint32_t, uintptr_t>> vo;
 		for (auto& kv : perOff) vo.push_back({kv.second, kv.first});
