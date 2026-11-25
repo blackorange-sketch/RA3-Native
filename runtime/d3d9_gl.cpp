@@ -2846,8 +2846,17 @@ static void presentImpl()
 			gUiDiag = inGame && gUiScale > 1.001f && (uiDiagFlag ? diagFrames < 40 && gFrameNo % 45 == 0 : diagFrames < 3 && gFrameNo % 900 == 0 && verbose());
 			if (gUiDiag) { diagFrames++; log("ui-diag: frame %u", gFrameNo + 1); }
 		}
-		// the right column's extents only grow (the open build menu is the largest): its scale stays the same when menus open
-		if (gUiHud) { gUiRightT = std::max(gUiRightT, gUiCurT); gUiRightB = std::min(gUiRightB, gUiCurB); if (gUiCurColLeft < 1e8f) gUiColLeft = gUiCurColLeft; }
+		// the right column's extents: a menu that opens shrinks the column at once (it has to fit); after it closes the
+		// column grows back to the full HUD size, once the smaller extents have held for half a second (no flicker while
+		// switching tabs)
+		if (gUiHud)
+		{
+			static int smaller = 0;
+			if (gUiCurT >= gUiRightT - 0.005f && gUiCurB <= gUiRightB + 0.005f) smaller = 0;
+			gUiRightT = std::max(gUiRightT, gUiCurT); gUiRightB = std::min(gUiRightB, gUiCurB);
+			if ((gUiCurT < gUiRightT - 0.005f || gUiCurB > gUiRightB + 0.005f) && ++smaller >= 15) { gUiRightT = gUiCurT; gUiRightB = gUiCurB; smaller = 0; }
+			if (gUiCurColLeft < 1e8f) gUiColLeft = gUiCurColLeft;
+		}
 		gUiCurT = 0.f; gUiCurB = 1.f; gUiCurColLeft = 1e9f;
 		gUiWorldDraws = 0; gAptDraws = gVideoDraws = 0; gUiHud = false; gUiAptSeen = false; gUiPieces.clear(); gUiPops.clear(); gUiMenu = false;
 		static int nl = 0;
