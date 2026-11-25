@@ -216,9 +216,20 @@ void noteReleased(Obj* o)
 std::vector<Obj*> takeReleased() { std::lock_guard<std::mutex> l(objMu); std::vector<Obj*> v; v.swap(releasedQ); return v; }
 void requeueReleased(Obj* o) { std::lock_guard<std::mutex> l(objMu); releasedQ.push_back(o); }
 
+static std::atomic<uint32_t> gMade[INumIfaces];
+std::string objStats()
+{
+	static const char* nm[INumIfaces] = {"d3d", "dev", "tex", "cube", "vol", "surf", "vb", "ib", "decl", "vs", "ps", "query", "sb", "swap", "buf", "fx"};
+	std::string r;
+	char b[32];
+	for (int i = 0; i < INumIfaces; i++)
+		if (uint32_t n = gMade[i].load(std::memory_order_relaxed)) { snprintf(b, sizeof b, "%s%s %u", r.empty() ? "" : ", ", nm[i], n); r += b; }
+	return r;
+}
 Obj* newObj(Iface i)
 {
 	initDefs();
+	gMade[i].fetch_add(1, std::memory_order_relaxed);
 	buildVtable(defs[i]);
 	auto* o = new Obj;
 	o->iface = i;
@@ -291,19 +302,31 @@ Obj* makeSurface(uint32_t w, uint32_t h, uint32_t fmt, uint32_t usage, uint32_t 
 	return s;
 }
 
+// One surface object per level and face, as in D3D9: the game asks for a render-target level every frame
+// (GetSurfaceLevel, SetRenderTarget, Release), and a new object each time added ~25 objects a frame - over a
+// million in a long battle, never freed, which also overflowed the object table behind objectAt.
 static Obj* surfaceOfLevel(Obj* tex, uint32_t level, uint32_t face)
 {
-	Obj* s = newObj(ISurface);
 	uint32_t idx = face * tex->levels + level;
+	if (idx >= tex->levelOff.size()) return nullptr;
+	static std::mutex mu;   // loader threads ask for levels too
+	std::lock_guard<std::mutex> l(mu);
+	if (tex->levelSurf.size() <= idx) tex->levelSurf.resize(tex->levelOff.size(), nullptr);
+	Obj* s = tex->levelSurf[idx];
+	if (s) s->ref = std::max(s->ref, 0) + 1;
+	else
+	{
+		s = newObj(ISurface);
+		tex->levelSurf[idx] = s;
+		s->ownsData = false;
+		s->parent = tex->addr;
+		s->level = level; s->face = face;
+	}
 	s->w = std::max(1u, tex->w >> level); s->h = std::max(1u, tex->h >> level); s->fmt = tex->fmt; s->usage = tex->usage; s->pool = tex->pool;
 	s->pitch = levelPitch(tex->fmt, s->w);
-	s->data = tex->data + tex->levelOff[idx];
+	s->data = tex->data + tex->levelOff[idx];   // refreshed: the texture's storage may have been reclaimed and remade
 	s->size = levelBytes(tex->fmt, s->w, s->h);
-	s->ownsData = false;
-	s->parent = tex->addr;
-	s->level = level; s->face = face;
 	s->rtTex = tex->rtTex;
-	guest::store<uint32_t>(tex->addr + 4, guest::load<uint32_t>(tex->addr + 4));   // keep texture alive while surfaces exist
 	return s;
 }
 
@@ -439,7 +462,7 @@ H("IDirect3DDevice9::GetDisplayMode") { guest::store<uint32_t>(ARG(2), backW); g
 H("IDirect3DDevice9::GetCreationParameters") { uint32_t p = ARG(1); guest::store<uint32_t>(p, 0); guest::store<uint32_t>(p + 4, 1); guest::store<uint32_t>(p + 8, 0x30001); guest::store<uint32_t>(p + 12, 0x40); SET(0); } END;
 H("IDirect3DDevice9::ShowCursor") { SET(0); } END;
 H("IDirect3DDevice9::GetNumberOfSwapChains") { SET(1); } END;
-H("IDirect3DDevice9::GetSwapChain") { Obj* s = newObj(ISwap); writeOut(ARG(2), s); SET(0); } END;
+H("IDirect3DDevice9::GetSwapChain") { static Obj* sc = nullptr; if (!sc) sc = newObj(ISwap); else sc->ref++; writeOut(ARG(2), sc); SET(0); } END;
 H("IDirect3DDevice9::Reset") { uint32_t pp = ARG(1); if (guest::load<uint32_t>(pp) && guest::load<uint32_t>(pp + 4)) { backW = guest::load<uint32_t>(pp); backH = guest::load<uint32_t>(pp + 4); input::setBackSize((int)backW, (int)backH); log("d3d9: Reset to %ux%u", backW, backH); if (gBackBuffer) { gBackBuffer->w = backW; gBackBuffer->h = backH; } if (gDefaultDs) { gDefaultDs->w = backW; gDefaultDs->h = backH; } for (int i = 0; i < 4; i++) dev.vp[i] = 0; glr::resizeBackBuffer(); } SET(0); } END;
 H("IDirect3DDevice9::CreateTexture")
 {
@@ -530,7 +553,7 @@ H("IDirect3DDevice9::GetSoftwareVertexProcessing") { SET(0); } END;
 // ---- resources: textures
 H("IDirect3DTexture9::GetLevelCount") { SET(o->levels); } END;
 H("IDirect3DTexture9::GetLevelDesc") { Obj tmp = *o; tmp.w = std::max(1u, o->w >> ARG(1)); tmp.h = std::max(1u, o->h >> ARG(1)); fillDesc(ARG(2), &tmp); SET(0); } END;
-H("IDirect3DTexture9::GetSurfaceLevel") { writeOut(ARG(2), surfaceOfLevel(o, ARG(1), 0)); SET(0); } END;
+H("IDirect3DTexture9::GetSurfaceLevel") { Obj* s = surfaceOfLevel(o, ARG(1), 0); if (!s) { SET(0x8876086c); return; } writeOut(ARG(2), s); SET(0); } END;
 static void markLocked(Obj* o, uint32_t off, uint32_t size)
 {
 	uint32_t hi = (size == 0 || off + size > o->size) ? o->size : off + size;
@@ -560,7 +583,7 @@ H("IDirect3DVertexBuffer9::Unlock") { o->ver++; SET(0); } END;
 H("IDirect3DIndexBuffer9::Unlock") { o->ver++; SET(0); } END;
 H("IDirect3DCubeTexture9::GetLevelCount") { SET(o->levels); } END;
 H("IDirect3DCubeTexture9::GetLevelDesc") { Obj tmp = *o; tmp.w = tmp.h = std::max(1u, o->w >> ARG(1)); fillDesc(ARG(2), &tmp); SET(0); } END;
-H("IDirect3DCubeTexture9::GetCubeMapSurface") { writeOut(ARG(3), surfaceOfLevel(o, ARG(2), ARG(1))); SET(0); } END;
+H("IDirect3DCubeTexture9::GetCubeMapSurface") { Obj* s = surfaceOfLevel(o, ARG(2), ARG(1)); if (!s) { SET(0x8876086c); return; } writeOut(ARG(3), s); SET(0); } END;
 H("IDirect3DCubeTexture9::LockRect")
 { reviveStorage(o);
 	uint32_t face = ARG(1), lvl = ARG(2), pLocked = ARG(3);
@@ -618,7 +641,7 @@ H("IDirect3DQuery9::GetData")
 	SET(0);
 } END;
 H("IDirect3DQuery9::GetDataSize") { SET(4); } END;
-H("IDirect3DSwapChain9::GetBackBuffer") { Obj* s = makeSurface(backW, backH, 22, 1, 0); writeOut(ARG(3), s); SET(0); } END;
+H("IDirect3DSwapChain9::GetBackBuffer") { if (!gBackBuffer) gBackBuffer = makeSurface(backW, backH, 22, 1, 0); else gBackBuffer->ref++; writeOut(ARG(3), gBackBuffer); SET(0); } END;
 H("ID3DXBuffer::GetBufferPointer") { SET(o->data); } END;
 H("ID3DXBuffer::GetBufferSize") { SET(o->size); } END;
 

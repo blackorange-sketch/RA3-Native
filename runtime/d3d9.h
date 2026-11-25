@@ -53,6 +53,7 @@ struct Obj
 	bool mipDirty = false;            // auto-mipmapped render target drawn to since its mip chain was last generated
 	uint32_t lastUse = 0;             // frame of the last draw / attachment use
 	bool released = false;            // refcount reached zero: queued for reclamation
+	std::vector<Obj*> levelSurf;      // texture / cube: the surface of each level and face, made on first GetSurfaceLevel
 };
 
 using Handler = void (*)(CPU*, Obj*);
@@ -62,6 +63,7 @@ void noteReleased(Obj* o);                 // refcount hit zero
 std::vector<Obj*> takeReleased();          // hand the queue to the renderer (which frees GL names and storage)
 void requeueReleased(Obj* o);
 Obj* newObj(Iface i);
+std::string objStats();                    // objects made so far, per interface (for the periodic memory line)
 void allocLevels(Obj* o, uint32_t faces);
 
 // ---- format helpers (d3d9.cpp)
