@@ -1522,7 +1522,11 @@ struct RNode
 	std::vector<uint32_t> succ;   // local successors (node indices)
 	uint32_t live = 0;            // lanes
 };
-struct RFunc { std::vector<RNode> n; uint32_t entryIdx = 0; int retPop = -1; bool all = false, abi = false, sehProlog = false; };
+struct RFunc { std::vector<RNode> n; uint32_t entryIdx = 0; int retPop = -1; bool all = false, abi = false, sehProlog = false, frame = false; };
+// how far above its return address a function may read or write the stack (its arguments, and through callees and
+// tail jumps): a caller's pushed slot in that range is an argument, not a save, even when it is popped back into
+// the same register ("push ecx; call f; pop ecx" hands f the value of ecx as a cdecl argument)
+constexpr int EXT_ALL = 1 << 24;
 
 struct Slot { int8_t reg; uint32_t push; bool operator==(const Slot& o) const { return reg == o.reg && push == o.push; } };
 struct AState
@@ -1563,10 +1567,17 @@ void eraseRange(AState& s, int lo, int hi, Marks* mk)
 	s.slots.swap(keep);
 }
 // one node's effect on the state; marks (final pass only) record what happens to the slots of pushes
-template <class WF, class PF>
-void transfer(const RFunc& f, uint32_t k, AState& s, Marks* mk, uint8_t& exitMod, WF W, PF retPopOf)
+template <class WF, class PF, class AF>
+void transfer(const RFunc& f, uint32_t k, AState& s, Marks* mk, uint8_t& exitMod, WF W, PF retPopOf, AF AX, int* ext)
 {
 	const RNode& nd = f.n[k];
+	auto grow = [&](int v) { if (ext && v > *ext) *ext = v >= 65536 ? EXT_ALL : v; };
+	// the callee may read and write the slots in [lo, hi): they are arguments, and no longer hold what was pushed
+	// (eax/ecx/edx slots anywhere: never saves, and a cdecl argument pushed from one is often popped back into it)
+	auto handOver = [&](int lo, int hi) {
+		for (auto& x : s.slots)
+			if ((x.first >= lo && x.first < hi) || (x.second.reg >= 0 && x.second.reg <= 2)) { if (mk && x.second.reg >= 0) mk->other[x.second.push] = 1; x.second.reg = -1; }
+	};
 	// reads/writes of a slot through [esp + d] / [ebp + d]
 	if (nd.mb == 4 || nd.mb == 5)
 	{
@@ -1574,6 +1585,8 @@ void transfer(const RFunc& f, uint32_t k, AState& s, Marks* mk, uint8_t& exitMod
 		if (known)
 		{
 			int off = (nd.mb == 4 ? s.esp : s.ebp) + nd.md;
+			if (nd.id == X86_INS_LEA) { if (off >= 0) grow(EXT_ALL); }   // the address of an argument escapes
+			else if (off >= 4) grow(off + 4);
 			for (auto& x : s.slots)
 				if (x.first > off - 4 && x.first < off + 4)
 				{
@@ -1581,6 +1594,7 @@ void transfer(const RFunc& f, uint32_t k, AState& s, Marks* mk, uint8_t& exitMod
 					if (nd.mwr) x.second.reg = -1;
 				}
 		}
+		else if (nd.mb == 4 || f.frame) grow(EXT_ALL);   // somewhere in the frame, maybe the arguments
 	}
 	auto push = [&](int8_t reg) {
 		bool keepE = reg >= 0 && !(s.mod >> reg & 1);
@@ -1616,6 +1630,15 @@ void transfer(const RFunc& f, uint32_t k, AState& s, Marks* mk, uint8_t& exitMod
 		// "jmp [slot]") pops its arguments (thiscall / stdcall: everything pushed since the last call), unless the
 		// caller removes them right after it (cdecl: "add esp, n" / "pop ecx"); a wrong guess shows at the exits
 		s.mod |= nd.kind == RK_CALL ? (uint8_t)(W(nd.tgt) & ~ESPB) : (uint8_t)0x07;
+		{
+			// a direct callee: as far as it reaches; a pointer call (standard convention): what was pushed for it
+			// (a callee reaching anywhere - its arguments' address escapes, va_start, an unknown stack - is taken as
+			// the pointer call; eax/ecx/edx pushes, the "push ecx; call; pop ecx" idiom, never count as saves anyway)
+			int reach = nd.kind == RK_CALL ? AX(nd.tgt) : EXT_ALL;
+			if (reach >= EXT_ALL) reach = std::max(s.pend, 0) + 4;
+			if (s.espK) { int hi = s.esp - 4 + reach; handOver(s.esp, hi); grow(nd.kind == RK_CALL && AX(nd.tgt) >= EXT_ALL ? EXT_ALL : hi); }
+			else if (nd.kind == RK_CALL && reach > 4) grow(EXT_ALL);
+		}
 		int pp = nd.kind == RK_CALL ? retPopOf(nd.tgt) : -1;
 		if (pp < 0) pp = s.pend;
 		if (pp > 0 && nd.hasNext)
@@ -1635,13 +1658,15 @@ void transfer(const RFunc& f, uint32_t k, AState& s, Marks* mk, uint8_t& exitMod
 		s.pend = 0;
 		return;
 	}
-	case RK_FULLCALL: s.mod = 0xef; s.espK = false; s.pend = 0; return;
+	case RK_FULLCALL: handOver(INT32_MIN, EXT_ALL); grow(EXT_ALL); s.mod = 0xef; s.espK = false; s.pend = 0; return;
 	// exits: the stack must be back at the return address, else the model went wrong somewhere: assume nothing kept
 	case RK_RET: exitMod |= s.espK && s.esp == 0 ? s.mod : 0xff; return;
-	case RK_TAIL: exitMod |= (s.espK && s.esp == 0 ? s.mod : 0xff) | W(nd.tgt); return;
-	case RK_CTAIL: exitMod |= (s.espK && s.esp == 0 ? s.mod : 0xff) | W(nd.tgt); return;   // the taken branch; the fallthrough continues
-	case RK_ITAIL: exitMod |= (s.espK && s.esp == 0 ? s.mod : 0xff) | ABI_DEF; return;
-	case RK_FULLEXIT: exitMod = 0xff; return;
+	case RK_TAIL: case RK_CTAIL:   // CTAIL: the taken branch; the fallthrough continues
+		grow(s.espK && AX(nd.tgt) < EXT_ALL ? s.esp + AX(nd.tgt) : EXT_ALL);
+		exitMod |= (s.espK && s.esp == 0 ? s.mod : 0xff) | W(nd.tgt);
+		return;
+	case RK_ITAIL: grow(s.espK ? s.esp + std::max(s.pend, 0) + 12 : EXT_ALL); exitMod |= (s.espK && s.esp == 0 ? s.mod : 0xff) | ABI_DEF; return;
+	case RK_FULLEXIT: grow(EXT_ALL); exitMod = 0xff; return;
 	case RK_TRAP: return;
 	default: break;
 	}
@@ -1793,6 +1818,7 @@ RegSums analyzeRegs(Reader& r, const Options& opt)
 			}
 		}
 		f.retPop = retPop >= 0 ? retPop : -1;
+		for (auto& nd : f.n) if (nd.id == X86_INS_MOV && nd.r0 == 5 && nd.r1 == 4) f.frame = true;
 		f.n.shrink_to_fit();
 	}
 	// functions using the SEH prolog are CRT C functions with the standard convention (ebx/ebp/esi/edi kept)
@@ -1807,6 +1833,9 @@ RegSums analyzeRegs(Reader& r, const Options& opt)
 	auto R = [&](uint32_t t) -> uint8_t { auto it = sum.find(t); return it == sum.end() ? 0xff : it->second.R; };
 	auto W = [&](uint32_t t) -> uint8_t { auto it = sum.find(t); return it == sum.end() ? 0xff : it->second.W; };
 	auto retPopOf = [&](uint32_t t) -> int { auto it = fn.find(t); return it == fn.end() || it->second.all ? -1 : it->second.retPop; };
+	std::map<uint32_t, int> reach;
+	for (auto& [e, f] : fn) reach[e] = f.all || f.abi ? EXT_ALL : 4;
+	auto AX = [&](uint32_t t) -> int { auto it = reach.find(t); return it == reach.end() ? EXT_ALL : it->second; };
 	size_t keepTotal = 0;
 	for (int pass = 0;; pass++)
 	{
@@ -1829,7 +1858,7 @@ RegSums analyzeRegs(Reader& r, const Options& opt)
 				uint32_t k = work.back(); work.pop_back(); queued[k] = 0;
 				AState st = in[k];
 				uint8_t em = 0;
-				transfer(f, k, st, nullptr, em, W, retPopOf);
+				transfer(f, k, st, nullptr, em, W, retPopOf, AX, nullptr);
 				auto flow = [&](uint32_t t) { if (mergeInto(in[t], st) && !queued[t]) { queued[t] = 1; work.push_back(t); } };
 				const RNode& nd = f.n[k];
 				if (nd.hasNext) flow(nd.next);
@@ -1838,20 +1867,22 @@ RegSums analyzeRegs(Reader& r, const Options& opt)
 			bool gaveUp = guard >= 400000;
 			// final pass over the converged states: exits and what happened to each pushed slot
 			Marks mk; mk.restored.assign(N, 0); mk.other.assign(N, 0); mk.restorePush.assign(N, 0);
+			int ext = 4;
 			static const uint32_t traceFn = getenv("RA3_TRACEFN") ? (uint32_t)strtoul(getenv("RA3_TRACEFN"), nullptr, 16) : 0;
 			for (uint32_t k = 0; k < N; k++)
 			{
 				if (!in[k].valid) continue;
 				AState st = in[k];
 				uint8_t em0 = exitMod;
-				transfer(f, k, st, &mk, exitMod, W, retPopOf);
+				transfer(f, k, st, &mk, exitMod, W, retPopOf, AX, &ext);
 				if (e == traceFn) fprintf(stderr, "  %08x in: esp %s%d pend %d mod %02x slots %zu -> exitMod %02x%s\n", f.n[k].va, in[k].espK ? "" : "?", in[k].esp, in[k].pend, in[k].mod, in[k].slots.size(), exitMod, exitMod != em0 ? " *" : "");
 				const RNode& nd = f.n[k];
 				if (!nd.terminal && !nd.hasNext && nd.kind != RK_TRAP) exitMod = 0xff;   // falls off the decoded code
 			}
-			if (gaveUp) exitMod = 0xff;
-			std::vector<uint8_t> save(N, 0);   // save pushes: their slot only ever goes back into the register
-			for (uint32_t k = 0; k < N; k++) save[k] = !gaveUp && mk.restored[k] && !mk.other[k] && f.n[k].id == X86_INS_PUSH && f.n[k].r0 >= 0;
+			if (gaveUp) { exitMod = 0xff; ext = EXT_ALL; }
+			if (ext > reach[e]) { reach[e] = ext; changed = true; }
+			std::vector<uint8_t> save(N, 0);   // save pushes (of ebx/ebp/esi/edi): their slot only ever goes back into the register
+			for (uint32_t k = 0; k < N; k++) save[k] = !gaveUp && mk.restored[k] && !mk.other[k] && f.n[k].id == X86_INS_PUSH && (f.n[k].r0 == 3 || f.n[k].r0 >= 5);
 			// backward: liveness of entry values; a save push reads nothing - unless the value it restores is used
 			uint8_t rr = 0;
 			const uint32_t ALLL = lanesOf(0xff);
@@ -1929,7 +1960,13 @@ RegSums analyzeRegs(Reader& r, const Options& opt)
 			std::sort(roots.rbegin(), roots.rend());
 			for (size_t q = 0; q < roots.size() && q < 25; q++) fprintf(stderr, "  R root %08x (%d direct callers)\n", roots[q].second, roots[q].first);
 		}
-		if (!changed) { fprintf(stderr, "register summaries: %zu functions, %d passes, %zu with save pushes\n", fn.size(), pass + 1, keepTotal); break; }
+		if (!changed)
+		{
+			size_t nAll = 0;
+			for (auto& [e, v] : reach) nAll += v >= EXT_ALL;
+			fprintf(stderr, "register summaries: %zu functions, %d passes, %zu with save pushes, %zu reaching anywhere up the stack\n", fn.size(), pass + 1, keepTotal, nAll);
+			break;
+		}
 	}
 	return sum;
 }
