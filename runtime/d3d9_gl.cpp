@@ -1686,6 +1686,27 @@ static float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, 
 		anchorOf(c, ax, ay);
 		if (!attached) noteRight(c, x0, y0, x1, y1);
 		float s = scaleOf(c);
+		if (attached && gUiScale > s + 0.01f)
+		{
+			// a tooltip of the right column, whose scale is limited so the column fits the screen height: the popup
+			// itself gets the full HUD size (its text as big as everywhere else). It stays at its button - the corner
+			// next to the panel (top right; bottom right for the command bar's) moves with the panel - and is kept
+			// on the screen.
+			float st = gUiScale;
+			float q1 = ax + (x1 - ax) * s, r0 = ay + (y0 - ay) * s, r1 = ay + (y1 - ay) * s;
+			float w = (x1 - x0) * st, h = (y1 - y0) * st;
+			float f1 = q1, f0 = f1 - w;
+			if (f0 < vx) { f0 = (float)vx; f1 = f0 + w; }
+			float g0 = c == 4 ? r1 - h : r0;
+			g0 = std::max((float)vy, std::min(g0, (float)vy + H - h));
+			// the anchor that maps the box (x0, y0) onto (f0, g0) at scale st
+			ax = (f0 - st * x0) / (1.f - st); ay = (g0 - st * y0) / (1.f - st);
+			s = st;
+			addRect(x0, y0, x1, y1, ax, ay, s);
+			if (gUiPieces.size() < 2000) gUiPieces.push_back({x0 - 0.15f * W16, y0, x1, y1, ax, ay, s});
+			axN = (ax - vx) / W * 2.f - 1.f; ayN = 1.f - (ay - vy) / H * 2.f;
+			return s - 1.f;
+		}
 		addRect(x0, y0, x1, y1, ax, ay, s);
 		// a tooltip's text can start left of its box: texts get a wider catch area to the left of attached popups
 		if (gUiPieces.size() < 2000) gUiPieces.push_back({attached ? x0 - 0.15f * W16 : x0, y0, x1, y1, ax, ay, s});
