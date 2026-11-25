@@ -34,6 +34,12 @@ struct Ins
 	unsigned rd = 0, wr = 0;     // flag read / write masks
 	unsigned liveOut = 0;
 	unsigned tailNeed = 0;       // flags the tail-call target reads before writing (handed over through CPU)
+	// guest registers (bit i = regName[i]): read (a partial write counts as a read), fully written, written at all
+	uint8_t ru = 0, rk = 0, rw = 0;
+	// the same per part (lanes: bit 4*reg + 0 low byte, + 1 high byte, + 2 upper half): a write of al kills only
+	// that part, so "mov bl, [m]" does not read ebx
+	uint32_t ruL = 0, rkL = 0;
+	uint8_t liveAfter = 0xff;    // direct calls: registers this function reads after the call (before writing them)
 };
 
 std::string fmt(const char* f, ...)
@@ -71,6 +77,60 @@ bool regInfo(x86_reg r, RegInfo& o)
 	case X86_REG_DH: o = {2, 1, true}; return true; case X86_REG_BH: o = {3, 1, true}; return true;
 	default: return false;
 	}
+}
+
+// ---- guest register reads / writes of an instruction (for the register summaries of functions) -----------------
+// Capstone's lists plus the explicit operands; a write of part of a register keeps the rest, so it counts as a read
+// too, and so does a conditional write (cmov, bsf/bsr with a zero source, cmpxchg).
+uint32_t lanesOf(uint8_t regs) { uint32_t l = 0; for (int k = 0; k < 8; k++) if (regs >> k & 1) l |= 7u << (4 * k); return l; }
+uint8_t regsOf(uint32_t lanes) { uint8_t m = 0; for (int k = 0; k < 8; k++) if (lanes >> (4 * k) & 7) m |= (uint8_t)(1u << k); return m; }
+void regAccess(const cs_insn* insn, Ins& in)
+{
+	auto lane = [](x86_reg r) -> uint32_t {
+		RegInfo ri;
+		if (!regInfo(r, ri)) return 0;
+		uint32_t l = ri.size == 4 ? 7u : ri.size == 2 ? 3u : ri.high ? 2u : 1u;
+		return l << (4 * ri.idx);
+	};
+	cs_regs rr, ww;
+	uint8_t nr = 0, nw = 0;
+	if (cs_regs_access(cs, insn, rr, &nr, ww, &nw) != CS_ERR_OK) { in.ruL = lanesOf(0xff); in.rw = 0xff; in.rkL = 0; in.ru = 0xff; in.rk = 0; return; }
+	for (int i = 0; i < nr; i++) in.ruL |= lane((x86_reg)rr[i]);
+	for (int i = 0; i < nw; i++) in.rkL |= lane((x86_reg)ww[i]);
+	const cs_x86& x = insn->detail->x86;
+	for (int i = 0; i < x.op_count; i++)
+	{
+		const cs_x86_op& o = x.operands[i];
+		if (o.type == X86_OP_REG)
+		{
+			uint32_t l = lane(o.reg);
+			if ((o.access & CS_AC_READ) || !o.access) in.ruL |= l;
+			if (o.access & CS_AC_WRITE) in.rkL |= l;
+		}
+		else if (o.type == X86_OP_MEM) { in.ruL |= lane(o.mem.base) | lane(o.mem.index); }
+	}
+	switch (insn->id)
+	{
+	case X86_INS_CMPXCHG8B: in.ruL |= lanesOf(0x0f); in.rkL |= lanesOf(0x05); break;   // edx:eax against [m], ecx:ebx stored
+	case X86_INS_XLATB: in.ruL |= lanesOf(0x08) | 1u; in.rkL |= 1u; break;              // al = [ebx + al]
+	case X86_INS_CMPXCHG: case X86_INS_BSF: case X86_INS_BSR: in.ruL |= in.rkL; break;   // conditional writes
+	default:
+		if (x.op_count && x.operands[0].type == X86_OP_REG && insn->mnemonic[0] == 'c' && !strncmp(insn->mnemonic, "cmov", 4)) in.ruL |= in.rkL;
+	}
+	// "xor eax, eax", "sub eax, eax", "sbb eax, eax": the result does not depend on the register
+	if ((insn->id == X86_INS_XOR || insn->id == X86_INS_SUB || insn->id == X86_INS_SBB) && x.op_count == 2 && x.operands[0].type == X86_OP_REG &&
+		x.operands[1].type == X86_OP_REG && x.operands[0].reg == x.operands[1].reg)
+		in.ruL &= ~lane(x.operands[0].reg);
+	in.rw = regsOf(in.rkL);
+	in.rkL &= ~(7u << 16);   // esp: always handed over
+	in.ru = regsOf(in.ruL);
+	in.rk = 0;
+	for (int k = 0; k < 8; k++) if ((in.rkL >> (4 * k) & 7) == 7) in.rk |= (uint8_t)(1u << k);
+	// alignment padding ("lea ebx, [ebx]", "mov edi, edi"): no read or write at all
+	if (x.op_count == 2 && x.operands[0].type == X86_OP_REG &&
+		((insn->id == X86_INS_LEA && x.operands[1].type == X86_OP_MEM && x.operands[1].mem.base == x.operands[0].reg && x.operands[1].mem.index == X86_REG_INVALID && x.operands[1].mem.disp == 0) ||
+		 (insn->id == X86_INS_MOV && x.operands[1].type == X86_OP_REG && x.operands[1].reg == x.operands[0].reg && x.operands[0].size == 4)))
+		in.ru = in.rw = in.rk = 0, in.ruL = in.rkL = 0;
 }
 
 // ---- flag read/write tables ----------------------------------------------------------------
@@ -388,6 +448,33 @@ struct Gen
 	uint32_t setjmpSlot = 0;
 	const std::set<uint32_t>* setjmpThunks = nullptr;
 	std::vector<uint32_t> sj;   // return addresses of the _setjmp3 call sites
+	const RegSums* sums = nullptr;   // register summaries: a direct call hands over R and takes back W of the callee
+
+	// SAVE() / LOAD() of only the registers in m (esp and the direction flag always)
+	static std::string saveM(uint8_t m)
+	{
+		if (m == 0xff) return "SAVE();";
+		std::string o;
+		for (int k = 0; k < 8; k++) if ((m | 0x10) >> k & 1) o += fmt("c->r[%d] = %s; ", k, regName[k]);
+		return o + "c->df = df;";
+	}
+	static std::string loadM(uint8_t m)
+	{
+		if (m == 0xff) return "LOAD();";
+		std::string o;
+		for (int k = 0; k < 8; k++) if ((m | 0x10) >> k & 1) o += fmt("%s = c->r[%d]; ", regName[k], k);
+		return o + "df = (uint8_t)c->df;";
+	}
+	std::string directCall(uint32_t ret, uint32_t target, uint8_t liveAfter)
+	{
+		uint8_t sv = 0xff, ld = 0xff;
+		if (sums) if (auto it = sums->find(target); it != sums->end())
+		{
+			ld = (uint8_t)((it->second.W & liveAfter) | 0x10);
+			sv = (uint8_t)(it->second.R | ld);
+		}
+		return fmt("esp -= 4; S32(esp, %s); %s f_%08x(c); %s", hex(ret).c_str(), saveM(sv).c_str(), target, loadM(ld).c_str());
+	}
 
 	bool isLocal(uint32_t t) { return code->count(t) && !(t != entry && funcs && funcs->count(t)); }
 
@@ -1259,7 +1346,7 @@ struct Gen
 						}
 						else unsup.resize(u);
 					}
-					if (!done) e.line(fmt("esp -= 4; S32(esp, %s); SAVE(); f_%08x(c); LOAD();", hex(in.next).c_str(), target));
+					if (!done) e.line(directCall(in.next, target, in.liveAfter));
 				}
 			}
 			else if (setjmpSlot && t.type == X86_OP_MEM && t.mem.base == X86_REG_INVALID && t.mem.index == X86_REG_INVALID && (uint32_t)t.mem.disp == setjmpSlot)
@@ -1332,10 +1419,9 @@ static void noteStats(uint32_t entry, const std::map<uint32_t, Ins>& code)
 	if (f) { fprintf(f, "%08x %u %u %u\n", entry, n, x87, sse); fflush(f); }
 }
 
-Result liftFunction(Reader& r, uint32_t entry, const Options& opt)
+static void decodeFn(Reader& r, uint32_t entry, const Options& opt, std::map<uint32_t, Ins>& code)
 {
 	gReader = &r;
-	std::map<uint32_t, Ins> code;
 	std::vector<uint32_t> work{entry};
 	cs_insn* insn = cs_malloc(cs);
 	auto isEntryOther = [&](uint32_t t) { return t != entry && opt.funcEntries && opt.funcEntries->count(t); };
@@ -1394,6 +1480,7 @@ Result liftFunction(Reader& r, uint32_t entry, const Options& opt)
 				if (!isEntryOther(t)) { in.succ.push_back(t); work.push_back(t); }
 				else in.tailNeed = entryFlagNeed(t);
 			}
+			regAccess(insn, in);
 			code[pc] = in;
 			flagRW(code[pc]);
 			if (in.terminal) break;
@@ -1401,6 +1488,514 @@ Result liftFunction(Reader& r, uint32_t entry, const Options& opt)
 		}
 	}
 	cs_free(insn, 1);
+}
+
+// ---- register summaries ---------------------------------------------------------------------------------------
+// R(F): registers whose entry value F may read (backward liveness; a callee hands over its R). W(F): registers whose
+// value at a return may differ from the one at entry: a forward pass tracks the stack pointer relative to the entry,
+// what each pushed slot holds and which registers still hold their entry value, so a register pushed and popped back
+// (MSVC's callee-saved registers, wherever the push and pop are) counts as kept. Such a "save push" is no read of the
+// register either - unless the restored value is used after the pop.
+namespace
+{
+// RK_ICALL / RK_ITAIL: call / tail jump through a pointer - virtual methods, function pointers, imports - whose
+// targets have a standard calling convention (MSVC compiles every function whose address is taken that way, and the
+// runtime's imports follow it): they read eax/ecx/edx/esp (and the stack), may change eax/ecx/edx and keep
+// ebx/ebp/esi/edi. Not assumed for _setjmp3 (RK_FULLCALL: every register read and written).
+enum : uint8_t { RK_NORM, RK_CALL, RK_FULLCALL, RK_RET, RK_TAIL, RK_FULLEXIT, RK_SWITCH, RK_CTAIL, RK_TRAP, RK_ICALL, RK_ITAIL };
+constexpr uint8_t ABI_USE = 0x17, ABI_DEF = 0x17;   // eax ecx edx esp
+constexpr uint8_t ESPB = 0x10;
+struct RNode
+{
+	uint32_t va = 0, next = 0, tgt = 0;
+	uint8_t rw = 0, kind = RK_NORM;
+	uint32_t ruL = 0, rkL = 0;
+	bool terminal = false, hasNext = false;
+	uint16_t id = 0;
+	int8_t r0 = -1, r1 = -1;      // 32-bit register operands
+	bool imm1 = false;             // second operand is an immediate (imm)
+	int32_t imm = 0;
+	int8_t mb = -1;                // memory operand: base register (4 esp, 5 ebp), no index
+	int32_t md = 0;
+	bool mwr = false;              // memory operand is written
+	bool prologue = false;         // a push in the run of pushes at the entry (saves, "push ecx" for a local): no argument
+	std::vector<uint32_t> succ;   // local successors (node indices)
+	uint32_t live = 0;            // lanes
+};
+struct RFunc { std::vector<RNode> n; uint32_t entryIdx = 0; int retPop = -1; bool all = false, abi = false, sehProlog = false; };
+
+struct Slot { int8_t reg; uint32_t push; bool operator==(const Slot& o) const { return reg == o.reg && push == o.push; } };
+struct AState
+{
+	bool valid = false, espK = true, ebpK = false;
+	int esp = 0, ebp = 0;
+	int pend = 0;      // argument bytes pushed since the last call or stack adjustment (-1 unknown)
+	uint8_t mod = 0;   // registers that may no longer hold their entry value
+	std::vector<std::pair<int, Slot>> slots;   // sorted by offset
+	bool operator==(const AState& o) const { return valid == o.valid && espK == o.espK && ebpK == o.ebpK && (!espK || esp == o.esp) && (!ebpK || ebp == o.ebp) && pend == o.pend && mod == o.mod && slots == o.slots; }
+};
+bool mergeInto(AState& a, const AState& b)
+{
+	if (!b.valid) return false;
+	if (!a.valid) { a = b; return true; }
+	AState o = a;
+	if (!(a.espK && b.espK && a.esp == b.esp)) a.espK = false;
+	if (!(a.ebpK && b.ebpK && a.ebp == b.ebp)) a.ebpK = false;
+	if (a.pend != b.pend) a.pend = -1;
+	a.mod |= b.mod;
+	std::vector<std::pair<int, Slot>> keep;
+	for (auto& s : a.slots) for (auto& t : b.slots) if (s.first == t.first && s.second == t.second) { keep.push_back(s); break; }
+	a.slots.swap(keep);
+	return !(o == a);
+}
+struct Marks { std::vector<uint8_t> restored, other; std::vector<uint32_t> restorePush; };   // per push node; per pop node: its push + 1
+Slot* slotAt(AState& s, int off) { for (auto& x : s.slots) if (x.first == off) return &x.second; return nullptr; }
+void eraseBelow(AState& s, int off, Marks* mk)
+{
+	std::vector<std::pair<int, Slot>> keep;
+	for (auto& x : s.slots) { if (x.first >= off) keep.push_back(x); else if (mk && x.second.reg >= 0) mk->other[x.second.push] = 1; }
+	s.slots.swap(keep);
+}
+void eraseRange(AState& s, int lo, int hi, Marks* mk)
+{
+	std::vector<std::pair<int, Slot>> keep;
+	for (auto& x : s.slots) { if (x.first < lo || x.first >= hi) keep.push_back(x); else if (mk && x.second.reg >= 0) mk->other[x.second.push] = 1; }
+	s.slots.swap(keep);
+}
+// one node's effect on the state; marks (final pass only) record what happens to the slots of pushes
+template <class WF, class PF>
+void transfer(const RFunc& f, uint32_t k, AState& s, Marks* mk, uint8_t& exitMod, WF W, PF retPopOf)
+{
+	const RNode& nd = f.n[k];
+	// reads/writes of a slot through [esp + d] / [ebp + d]
+	if (nd.mb == 4 || nd.mb == 5)
+	{
+		bool known = nd.mb == 4 ? s.espK : s.ebpK;
+		if (known)
+		{
+			int off = (nd.mb == 4 ? s.esp : s.ebp) + nd.md;
+			for (auto& x : s.slots)
+				if (x.first > off - 4 && x.first < off + 4)
+				{
+					if (mk && x.second.reg >= 0) mk->other[x.second.push] = 1;
+					if (nd.mwr) x.second.reg = -1;
+				}
+		}
+	}
+	auto push = [&](int8_t reg) {
+		bool keepE = reg >= 0 && !(s.mod >> reg & 1);
+		// an argument, unless it saves the entry value of a callee-saved register or makes room for a local
+		if (s.pend >= 0 && !(keepE && (reg == 3 || reg >= 5)) && !nd.prologue) s.pend += 4;
+		if (!s.espK) return;
+		s.esp -= 4;
+		Slot sl{keepE ? reg : (int8_t)-1, k};
+		if (Slot* p = slotAt(s, s.esp)) *p = sl;
+		else { s.slots.push_back({s.esp, sl}); std::sort(s.slots.begin(), s.slots.end(), [](auto& a, auto& b) { return a.first < b.first; }); }
+	};
+	auto pop = [&](int8_t reg) {
+		if (s.pend > 0) s.pend -= 4;
+		if (!s.espK) { if (reg >= 0) s.mod |= (uint8_t)(1u << reg); return; }
+		Slot* p = slotAt(s, s.esp);
+		// the slot must be the top of the modelled stack: anything below it means the model went wrong (a callee
+		// popped more or less than assumed)
+		bool top = p && (s.slots.empty() || s.slots.front().first == s.esp);
+		if (reg >= 0)
+		{
+			if (p && top && p->reg == reg) { s.mod &= (uint8_t)~(1u << reg); if (mk) { mk->restored[p->push] = 1; mk->restorePush[k] = p->push + 1; } }
+			else { s.mod |= (uint8_t)(1u << reg); if (mk && p && p->reg >= 0) mk->other[p->push] = 1; }
+		}
+		else if (mk && p && p->reg >= 0) mk->other[p->push] = 1;
+		eraseRange(s, s.esp, s.esp + 4, nullptr);
+		s.esp += 4;
+	};
+	switch (nd.kind)
+	{
+	case RK_CALL: case RK_ICALL:
+	{
+		// a lifted callee pops what its ret says; a pointer call (or a callee without one ret, like an import thunk
+		// "jmp [slot]") pops its arguments (thiscall / stdcall: everything pushed since the last call), unless the
+		// caller removes them right after it (cdecl: "add esp, n" / "pop ecx"); a wrong guess shows at the exits
+		s.mod |= nd.kind == RK_CALL ? (uint8_t)(W(nd.tgt) & ~ESPB) : (uint8_t)0x07;
+		int pp = nd.kind == RK_CALL ? retPopOf(nd.tgt) : -1;
+		if (pp < 0) pp = s.pend;
+		if (pp > 0 && nd.hasNext)
+		{
+			// cdecl: the caller removes the arguments soon after (MSVC schedules a few instructions in between and may
+			// remove those of several calls at once) - look along the straight code that follows
+			uint32_t q = nd.next;
+			for (int look = 0; look < 8; look++)
+			{
+				const RNode& nx = f.n[q];
+				if ((nx.id == X86_INS_ADD && nx.r0 == 4 && nx.imm1 && nx.imm >= pp) || (pp == 4 && nx.id == X86_INS_POP && nx.r0 == 1)) { pp = 0; break; }
+				if (nx.kind != RK_NORM || nx.terminal || !nx.hasNext || !nx.succ.empty() || (nx.rw & ESPB)) break;
+				q = nx.next;
+			}
+		}
+		if (s.espK && pp >= 0) { eraseRange(s, s.esp, s.esp + pp, mk); s.esp += pp; } else s.espK = false;
+		s.pend = 0;
+		return;
+	}
+	case RK_FULLCALL: s.mod = 0xef; s.espK = false; s.pend = 0; return;
+	// exits: the stack must be back at the return address, else the model went wrong somewhere: assume nothing kept
+	case RK_RET: exitMod |= s.espK && s.esp == 0 ? s.mod : 0xff; return;
+	case RK_TAIL: exitMod |= (s.espK && s.esp == 0 ? s.mod : 0xff) | W(nd.tgt); return;
+	case RK_CTAIL: exitMod |= (s.espK && s.esp == 0 ? s.mod : 0xff) | W(nd.tgt); return;   // the taken branch; the fallthrough continues
+	case RK_ITAIL: exitMod |= (s.espK && s.esp == 0 ? s.mod : 0xff) | ABI_DEF; return;
+	case RK_FULLEXIT: exitMod = 0xff; return;
+	case RK_TRAP: return;
+	default: break;
+	}
+	switch (nd.id)
+	{
+	case X86_INS_PUSH: push(nd.r0 == 4 ? (int8_t)-1 : nd.r0); return;
+	case X86_INS_POP: pop(nd.r0 == 4 ? (int8_t)-1 : nd.r0); if (nd.r0 == 5) s.ebpK = false; if (nd.r0 == 4) s.espK = false; return;
+	case X86_INS_PUSHFD: push(-1); return;
+	case X86_INS_POPFD: pop(-1); return;
+	case X86_INS_LEAVE:
+		if (s.ebpK) { s.esp = s.ebp; s.espK = true; eraseBelow(s, s.esp, mk); } else s.espK = false;
+		s.ebpK = false;
+		pop(5);
+		return;
+	default: break;
+	}
+	if (nd.r0 == 4 && (nd.rw & ESPB))
+	{
+		if ((nd.id == X86_INS_ADD || nd.id == X86_INS_SUB) && nd.imm1)
+		{
+			if (nd.id == X86_INS_ADD && s.pend >= 0) s.pend = std::max(0, s.pend - nd.imm);
+			else if (nd.id == X86_INS_SUB) s.pend = 0;
+			if (s.espK) { s.esp += nd.id == X86_INS_ADD ? nd.imm : -nd.imm; if (nd.id == X86_INS_ADD) eraseBelow(s, s.esp, mk); }
+		}
+		else if (nd.id == X86_INS_MOV && nd.r1 == 5) { if (s.ebpK) { s.esp = s.ebp; s.espK = true; eraseBelow(s, s.esp, mk); } else s.espK = false; }
+		else if (nd.id == X86_INS_LEA && nd.mb == 5) { if (s.ebpK) { s.esp = s.ebp + nd.md; s.espK = true; eraseBelow(s, s.esp, mk); } else s.espK = false; }
+		else s.espK = false;
+		s.mod |= (uint8_t)(nd.rw & ~ESPB);
+		return;
+	}
+	if (nd.rw & ESPB) s.espK = false;   // anything else that moves the stack (pushad, enter, ...)
+	if (nd.id == X86_INS_MOV && nd.r0 == 5 && nd.r1 == 4) { s.ebpK = s.espK; s.ebp = s.esp; s.mod |= 0x20; return; }
+	if (nd.rw & 0x20) s.ebpK = false;
+	s.mod |= (uint8_t)(nd.rw & ~ESPB);
+}
+}
+
+RegSums analyzeRegs(Reader& r, const Options& opt)
+{
+	const std::set<uint32_t>& funcs = *opt.funcEntries;
+	const std::set<uint32_t>& hooks = hookSet();
+	std::map<uint32_t, RFunc> fn;
+	auto regIdx = [](x86_reg rg) -> int8_t { RegInfo ri; return regInfo(rg, ri) && ri.size == 4 ? (int8_t)ri.idx : (int8_t)-1; };
+	for (uint32_t e : funcs)
+	{
+		// jumps to other functions' entries are followed: a tail jump continues there with this function's stack
+		// (MSVC splits functions into chunks the analyser lists as functions of their own)
+		std::map<uint32_t, Ins> code;
+		Options o2 = opt;
+		o2.funcEntries = nullptr;
+		decodeFn(r, e, o2, code);
+		RFunc& f = fn[e];
+		if (code.empty() || hooks.count(e) || !code.count(e) || code.size() > 60000) { f.all = true; continue; }
+		auto local = [&](uint32_t t) { return code.count(t) != 0; };
+		std::map<uint32_t, uint32_t> idx;
+		int retPop = -2;
+		for (auto& [va, i] : code)
+		{
+			idx[va] = (uint32_t)f.n.size();
+			RNode nd;
+			nd.va = va; nd.next = i.next; nd.ruL = i.ruL; nd.rkL = i.rkL; nd.rw = i.rw; nd.terminal = i.terminal; nd.id = (uint16_t)i.id;
+			for (uint32_t s2 : i.succ) if (local(s2)) nd.succ.push_back(s2);
+			const cs_x86& x = i.x;
+			if (x.op_count >= 1 && x.operands[0].type == X86_OP_REG) nd.r0 = regIdx(x.operands[0].reg);
+			if (x.op_count >= 2 && x.operands[1].type == X86_OP_REG) nd.r1 = regIdx(x.operands[1].reg);
+			if (x.op_count >= 2 && x.operands[1].type == X86_OP_IMM) { nd.imm1 = true; nd.imm = (int32_t)x.operands[1].imm; }
+			for (int q = 0; q < x.op_count; q++)
+				if (x.operands[q].type == X86_OP_MEM && x.operands[q].mem.index == X86_REG_INVALID && (x.operands[q].mem.base == X86_REG_ESP || x.operands[q].mem.base == X86_REG_EBP))
+				{ nd.mb = x.operands[q].mem.base == X86_REG_ESP ? 4 : 5; nd.md = (int32_t)x.operands[q].mem.disp; nd.mwr = (x.operands[q].access & CS_AC_WRITE) != 0; }
+			unsigned id = i.id;
+			bool jcc = isJcc(id) || id == X86_INS_LOOP || id == X86_INS_LOOPE || id == X86_INS_LOOPNE || id == X86_INS_JECXZ || id == X86_INS_JCXZ;
+			if (id == 0 || id == X86_INS_INT3 || id == X86_INS_UD2 || id == X86_INS_HLT) nd.kind = RK_TRAP;
+			else if (id == X86_INS_CALL)
+			{
+				if (x.op_count == 1 && x.operands[0].type == X86_OP_IMM)
+				{
+					uint32_t t = (uint32_t)x.operands[0].imm;
+					if (t == i.next) { nd.kind = RK_NORM; nd.id = X86_INS_PUSH; nd.r0 = -1; }   // get-PC: a push
+					else if (opt.setjmpThunks.count(t) || !funcs.count(t)) nd.kind = RK_FULLCALL;
+					else { nd.kind = RK_CALL; nd.tgt = t; }
+				}
+				else
+				{
+					// through a register, [register + offset] or a fixed slot (imports - the runtime's own functions, which
+					// read the stack and ecx and set eax/ecx/edx - and global function pointers); not _setjmp3, which reads
+					// ebx/ebp/esi/edi, and not tables indexed by a register
+					const cs_x86_op& o = x.operands[0];
+					bool setjmp = o.type == X86_OP_MEM && o.mem.base == X86_REG_INVALID && o.mem.index == X86_REG_INVALID && opt.setjmpSlot && (uint32_t)o.mem.disp == opt.setjmpSlot;
+					nd.kind = (o.type == X86_OP_REG || (o.type == X86_OP_MEM && o.mem.index == X86_REG_INVALID && !setjmp)) ? RK_ICALL : RK_FULLCALL;
+				}
+			}
+			else if (id == X86_INS_RET)
+			{
+				nd.kind = RK_RET;
+				int pp = x.op_count ? (int)x.operands[0].imm : 0;
+				retPop = retPop == -2 || retPop == pp ? pp : -1;
+			}
+			else if (id == X86_INS_JMP)
+			{
+				if (x.op_count == 1 && x.operands[0].type == X86_OP_IMM)
+				{
+					uint32_t t = (uint32_t)x.operands[0].imm;
+					if (!local(t)) { nd.kind = funcs.count(t) ? RK_TAIL : RK_FULLEXIT; nd.tgt = t; }
+				}
+				else
+				{
+					// a jump table: its cases are local code (the emitted default - a dispatch to an address outside the
+					// table - is never taken by working code)
+					const cs_x86_op& o = x.operands[0];
+					bool viaPtr = o.type == X86_OP_REG || (o.type == X86_OP_MEM && o.mem.index == X86_REG_INVALID && !opt.setjmpThunks.count(e));
+					nd.kind = !nd.succ.empty() ? RK_SWITCH : viaPtr ? RK_ITAIL : RK_FULLEXIT;
+				}
+			}
+			else if (jcc && x.op_count == 1 && x.operands[0].type == X86_OP_IMM)
+			{
+				uint32_t t = (uint32_t)x.operands[0].imm;
+				if (!local(t)) { nd.kind = funcs.count(t) ? RK_CTAIL : RK_FULLEXIT; nd.tgt = t; }
+			}
+			f.n.push_back(std::move(nd));
+		}
+		for (auto& nd : f.n)
+		{
+			nd.hasNext = !nd.terminal && idx.count(nd.next);
+			for (auto& s2 : nd.succ) s2 = idx[s2];
+			if (nd.hasNext) nd.next = idx[nd.next];
+			// a conditional jump to another function: its fallthrough continues here
+			if (nd.kind == RK_FULLEXIT && !nd.terminal) {}
+		}
+		f.entryIdx = idx[e];
+		{
+			// the CRT's __SEH_prolog4 ("push handler; push fs:[0]; ..."): it builds its caller's frame and saves ebx/esi/edi
+			// there, __SEH_epilog4 restores them - beyond what the stack model follows
+			auto i0 = code.find(e);
+			if (i0 != code.end() && i0->second.id == X86_INS_PUSH && i0->second.x.operands[0].type == X86_OP_IMM)
+			{
+				auto i1 = code.find(i0->second.next);
+				if (i1 != code.end() && i1->second.id == X86_INS_PUSH && i1->second.x.operands[0].type == X86_OP_MEM && i1->second.x.operands[0].mem.segment == X86_REG_FS)
+					f.sehProlog = true;
+			}
+		}
+		{
+			std::set<uint32_t> labels;
+			for (auto& nd : f.n) for (uint32_t s2 : nd.succ) labels.insert(s2);
+			for (uint32_t q = f.entryIdx; q < f.n.size() && f.n[q].id == X86_INS_PUSH && f.n[q].kind == RK_NORM && (q == f.entryIdx || !labels.count(q));)
+			{
+				f.n[q].prologue = true;
+				if (!f.n[q].hasNext) break;
+				q = f.n[q].next;
+			}
+		}
+		f.retPop = retPop >= 0 ? retPop : -1;
+		f.n.shrink_to_fit();
+	}
+	// functions using the SEH prolog are CRT C functions with the standard convention (ebx/ebp/esi/edi kept)
+	size_t nSeh = 0;
+	for (auto& [e, f] : fn)
+		if (!f.all)
+			for (auto& nd : f.n)
+				if (nd.kind == RK_CALL) if (auto it = fn.find(nd.tgt); it != fn.end() && it->second.sehProlog) { f.abi = true; nSeh++; break; }
+	if (nSeh) fprintf(stderr, "register summaries: %zu functions with the SEH prolog taken as standard\n", nSeh);
+	RegSums sum;
+	for (auto& [e, f] : fn) sum[e] = f.all ? RegSum{0xff, 0xff} : f.abi ? RegSum{ABI_USE, ABI_DEF} : RegSum{0, 0};
+	auto R = [&](uint32_t t) -> uint8_t { auto it = sum.find(t); return it == sum.end() ? 0xff : it->second.R; };
+	auto W = [&](uint32_t t) -> uint8_t { auto it = sum.find(t); return it == sum.end() ? 0xff : it->second.W; };
+	auto retPopOf = [&](uint32_t t) -> int { auto it = fn.find(t); return it == fn.end() || it->second.all ? -1 : it->second.retPop; };
+	size_t keepTotal = 0;
+	for (int pass = 0;; pass++)
+	{
+		bool changed = false;
+		keepTotal = 0;
+		for (auto& [e, f] : fn)
+		{
+			if (f.all || f.abi) continue;
+			const size_t N = f.n.size();
+			// forward: stack and entry values
+			std::vector<AState> in(N);
+			in[f.entryIdx].valid = true;
+			std::vector<uint32_t> work{f.entryIdx};
+			std::vector<uint8_t> queued(N, 0);
+			queued[f.entryIdx] = 1;
+			uint8_t exitMod = 0;
+			int guard = 0;
+			while (!work.empty() && guard++ < 400000)
+			{
+				uint32_t k = work.back(); work.pop_back(); queued[k] = 0;
+				AState st = in[k];
+				uint8_t em = 0;
+				transfer(f, k, st, nullptr, em, W, retPopOf);
+				auto flow = [&](uint32_t t) { if (mergeInto(in[t], st) && !queued[t]) { queued[t] = 1; work.push_back(t); } };
+				const RNode& nd = f.n[k];
+				if (nd.hasNext) flow(nd.next);
+				for (uint32_t s2 : nd.succ) flow(s2);
+			}
+			bool gaveUp = guard >= 400000;
+			// final pass over the converged states: exits and what happened to each pushed slot
+			Marks mk; mk.restored.assign(N, 0); mk.other.assign(N, 0); mk.restorePush.assign(N, 0);
+			static const uint32_t traceFn = getenv("RA3_TRACEFN") ? (uint32_t)strtoul(getenv("RA3_TRACEFN"), nullptr, 16) : 0;
+			for (uint32_t k = 0; k < N; k++)
+			{
+				if (!in[k].valid) continue;
+				AState st = in[k];
+				uint8_t em0 = exitMod;
+				transfer(f, k, st, &mk, exitMod, W, retPopOf);
+				if (e == traceFn) fprintf(stderr, "  %08x in: esp %s%d pend %d mod %02x slots %zu -> exitMod %02x%s\n", f.n[k].va, in[k].espK ? "" : "?", in[k].esp, in[k].pend, in[k].mod, in[k].slots.size(), exitMod, exitMod != em0 ? " *" : "");
+				const RNode& nd = f.n[k];
+				if (!nd.terminal && !nd.hasNext && nd.kind != RK_TRAP) exitMod = 0xff;   // falls off the decoded code
+			}
+			if (gaveUp) exitMod = 0xff;
+			std::vector<uint8_t> save(N, 0);   // save pushes: their slot only ever goes back into the register
+			for (uint32_t k = 0; k < N; k++) save[k] = !gaveUp && mk.restored[k] && !mk.other[k] && f.n[k].id == X86_INS_PUSH && f.n[k].r0 >= 0;
+			// backward: liveness of entry values; a save push reads nothing - unless the value it restores is used
+			uint8_t rr = 0;
+			const uint32_t ALLL = lanesOf(0xff);
+			for (int round = 0; round < 8; round++)
+			{
+				for (auto& nd : f.n) nd.live = 0;
+				for (bool ch = true; ch;)
+				{
+					ch = false;
+					for (size_t q = N; q-- > 0;)
+					{
+						RNode& nd = f.n[q];
+						uint32_t out = 0, use = nd.ruL, kill = nd.rkL;
+						if (save[q]) use &= ~(7u << (4 * nd.r0));
+						if (nd.hasNext) out |= f.n[nd.next].live;
+						else if (!nd.terminal && nd.kind != RK_TRAP) use = ALLL;
+						for (uint32_t s2 : nd.succ) out |= f.n[s2].live;
+						switch (nd.kind)
+						{
+						case RK_CALL: use |= lanesOf(R(nd.tgt) | ESPB); kill = 0; break;
+						case RK_FULLCALL: case RK_FULLEXIT: use = ALLL; kill = 0; break;
+						case RK_ICALL: case RK_ITAIL: use |= lanesOf(ABI_USE); kill = 0; break;
+						case RK_RET: use |= lanesOf(ESPB); break;
+						case RK_TAIL: case RK_CTAIL: use |= lanesOf(R(nd.tgt) | ESPB); break;
+						default: break;
+						}
+						uint32_t v = use | (out & ~kill);
+						if (v != nd.live) { nd.live = v; ch = true; }
+					}
+				}
+				bool demoted = false;
+				for (uint32_t q = 0; q < N; q++)
+				{
+					uint32_t pk = mk.restorePush[q];
+					if (!pk || !save[pk - 1]) continue;
+					const RNode& pop = f.n[q];
+					uint32_t out = 0;
+					if (pop.hasNext) out |= f.n[pop.next].live;
+					for (uint32_t s2 : pop.succ) out |= f.n[s2].live;
+					if (out >> (4 * pop.r0) & 7) { save[pk - 1] = 0; demoted = true; }   // the restored value is read afterwards
+				}
+				rr = regsOf(f.n[f.entryIdx].live);
+				if (!demoted) break;
+				if (round == 7) rr = 0xff;
+			}
+			for (uint32_t k = 0; k < N; k++) if (save[k]) { keepTotal++; break; }
+			uint8_t w = (uint8_t)(exitMod | ESPB), rv = (uint8_t)(rr | ESPB);
+			RegSum& s2 = sum[e];
+			if ((s2.R | rv) != s2.R || (s2.W | w) != s2.W) { s2.R |= rv; s2.W |= w; changed = true; }
+		}
+		if (!changed && getenv("RA3_WROOT"))
+		{
+			// diagnostics: functions that change a register themselves (not through a callee), by most callers
+			uint8_t bitm = (uint8_t)strtoul(getenv("RA3_WROOT"), nullptr, 16);
+			std::map<uint32_t, int> calls;
+			for (auto& [e, f] : fn) for (auto& nd : f.n) if (nd.kind == RK_CALL) calls[nd.tgt]++;
+			std::vector<std::pair<int, uint32_t>> roots;
+			for (auto& [e, f] : fn)
+			{
+				if (f.all || !(sum[e].W & bitm)) continue;
+				bool viaCallee = false;
+				for (auto& nd : f.n) if ((nd.kind == RK_CALL || nd.kind == RK_TAIL || nd.kind == RK_CTAIL) && (W(nd.tgt) & bitm)) viaCallee = true;
+				if (!viaCallee) roots.push_back({calls[e], e});
+			}
+			std::sort(roots.rbegin(), roots.rend());
+			for (size_t q = 0; q < roots.size() && q < 25; q++) fprintf(stderr, "  W root %08x (%d direct callers)\n", roots[q].second, roots[q].first);
+			roots.clear();
+			for (auto& [e, f] : fn)
+			{
+				if (f.all || f.abi || !(sum[e].R & bitm)) continue;
+				bool viaCallee = false;
+				for (auto& nd : f.n) if ((nd.kind == RK_CALL || nd.kind == RK_TAIL || nd.kind == RK_CTAIL) && (R(nd.tgt) & bitm)) viaCallee = true;
+				if (!viaCallee) roots.push_back({calls[e], e});
+			}
+			std::sort(roots.rbegin(), roots.rend());
+			for (size_t q = 0; q < roots.size() && q < 25; q++) fprintf(stderr, "  R root %08x (%d direct callers)\n", roots[q].second, roots[q].first);
+		}
+		if (!changed) { fprintf(stderr, "register summaries: %zu functions, %d passes, %zu with save pushes\n", fn.size(), pass + 1, keepTotal); break; }
+	}
+	return sum;
+}
+
+Result liftFunction(Reader& r, uint32_t entry, const Options& opt)
+{
+	std::map<uint32_t, Ins> code;
+	decodeFn(r, entry, opt, code);
+
+	// ---- register liveness, for the hand-over at direct calls: after a call only the registers that are read later
+	// and that the callee may change (W) are taken back; and those (with the callee's R) are handed over before it,
+	// so that a callee path leaving one unchanged gives back the right value
+	if (opt.regSums && !getenv("RA3_NO_REGSUM"))
+	{
+		const RegSums& sums = *opt.regSums;
+		auto sumOf = [&](uint32_t t) -> RegSum { auto it = sums.find(t); return it == sums.end() ? RegSum{0xff, 0xff} : it->second; };
+		const uint8_t wSelf = sumOf(entry).W;
+		const uint32_t ALLL = lanesOf(0xff);
+		auto isEntryOther = [&](uint32_t t) { return t != entry && opt.funcEntries && opt.funcEntries->count(t); };
+		std::map<uint32_t, uint32_t> live;   // live-in lanes per instruction
+		auto liveIn = [&](uint32_t va) -> uint32_t { auto it = live.find(va); return it == live.end() ? ALLL : it->second; };
+		for (bool changed = true; changed;)
+		{
+			changed = false;
+			for (auto it = code.rbegin(); it != code.rend(); ++it)
+			{
+				Ins& i = it->second;
+				uint32_t out = 0;
+				if (!i.terminal) out |= code.count(i.next) ? liveIn(i.next) : ALLL;
+				for (uint32_t s2 : i.succ) out |= code.count(s2) && !isEntryOther(s2) ? liveIn(s2) : ALLL;
+				uint32_t use = i.ruL, kill = i.rkL;
+				const cs_x86& x = i.x;
+				bool jcc = isJcc(i.id) || i.id == X86_INS_LOOP || i.id == X86_INS_LOOPE || i.id == X86_INS_LOOPNE || i.id == X86_INS_JECXZ || i.id == X86_INS_JCXZ;
+				if (i.id == 0) { use = 0; kill = 0; }
+				else if (i.id == X86_INS_CALL)
+				{
+					uint32_t t = x.op_count == 1 && x.operands[0].type == X86_OP_IMM ? (uint32_t)x.operands[0].imm : 0;
+					if (t && t == i.next) {}
+					else if (t && opt.funcEntries && opt.funcEntries->count(t) && !opt.setjmpThunks.count(t))
+					{
+						RegSum g = sumOf(t);
+						uint8_t L = regsOf(out);
+						i.liveAfter = L;
+						uint8_t ld = (uint8_t)((g.W & L) | 0x10), sv = (uint8_t)(g.R | ld);
+						use = lanesOf(sv); kill = lanesOf((uint8_t)(ld & ~0x10));
+					}
+					else { use = ALLL; kill = 0; }   // everything handed over and taken back
+				}
+				else if (i.id == X86_INS_RET) { use = lanesOf((uint8_t)(wSelf | 0x10)); kill = 0; out = 0; }
+				else if (i.id == X86_INS_JMP)
+				{
+					bool local = x.op_count == 1 && x.operands[0].type == X86_OP_IMM && code.count((uint32_t)x.operands[0].imm) && !isEntryOther((uint32_t)x.operands[0].imm);
+					if (!local) { use = ALLL; kill = 0; }   // tail call or dispatch: everything handed over
+				}
+				else if (jcc && x.op_count == 1 && x.operands[0].type == X86_OP_IMM)
+				{
+					uint32_t t = (uint32_t)x.operands[0].imm;
+					if (!code.count(t) || isEntryOther(t)) out = ALLL;
+				}
+				else if (i.id == X86_INS_INT3 || i.id == X86_INS_UD2 || i.id == X86_INS_HLT) { use = 0; kill = 0; out = 0; }
+				uint32_t v = use | (out & ~kill);
+				auto f = live.find(it->first);
+				if (f == live.end() || f->second != v) { live[it->first] = v; changed = true; }
+			}
+		}
+	}
 
 	// ---- flag liveness (backward dataflow over instructions)
 	auto liveIn = [&](uint32_t va) -> unsigned {
@@ -1435,6 +2030,7 @@ Result liftFunction(Reader& r, uint32_t entry, const Options& opt)
 	Gen g{opt.funcEntries, entry, &code, {}};
 	g.setjmpSlot = opt.setjmpSlot;
 	g.setjmpThunks = &opt.setjmpThunks;
+	g.sums = getenv("RA3_NO_REGSUM") ? nullptr : opt.regSums;
 	std::string body;
 	if (!code.empty() && code.begin()->first != entry)
 	{

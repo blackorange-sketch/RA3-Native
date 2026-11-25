@@ -98,6 +98,17 @@ int main(int argc, char** argv)
 			if (pe.read(e, b, 6) && b[0] == 0xff && b[1] == 0x25 && memcmp(b + 2, &opt.setjmpSlot, 4) == 0) opt.setjmpThunks.insert(e);
 		}
 	fprintf(stderr, "_setjmp3 IAT slot: %08x, thunks: %zu\n", opt.setjmpSlot, opt.setjmpThunks.size());
+	// register summaries for narrower register hand-over at direct calls (RA3_NO_REGSUM: all registers, as before)
+	lift::RegSums sums;
+	if (!getenv("RA3_NO_REGSUM"))
+	{
+		sums = lift::analyzeRegs(pe, opt);
+		opt.regSums = &sums;
+		size_t nR = 0, nW = 0;
+		for (auto& [e, s] : sums) { nR += __builtin_popcount(s.R); nW += __builtin_popcount(s.W); }
+		if (const char* d = getenv("RA3_SUMDUMP")) { FILE* f = fopen(d, "w"); for (auto& [e, s] : sums) fprintf(f, "%08x %02x %02x\n", e, s.R, s.W); fclose(f); }
+		fprintf(stderr, "register summaries: on average %.2f registers read, %.2f written (of 8)\n", (double)nR / sums.size(), (double)nW / sums.size());
+	}
 	size_t full = 0, total = 0, ins = 0, bad = 0;
 	std::map<std::string, size_t> byMn, funcsByMn;
 	for (uint32_t e : funcs)
