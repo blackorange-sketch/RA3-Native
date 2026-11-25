@@ -125,6 +125,7 @@ uint32_t object(const std::string& version)
 void exNothing(CPU* c)
 {
 	static std::atomic<int> nl{0};
+	if (imports::current && imports::current->name == "SteamAPI_RunCallbacks") { SET(0); return; }
 	if (nl++ < 40) log("steam_api: %s() -> 0", imports::current ? imports::current->name.c_str() : "?");
 	SET(0);
 }
@@ -171,6 +172,12 @@ uint32_t loadLibrary(const std::string& name)
 uint32_t procAddress(uint32_t module, const std::string& n)
 {
 	if (module != kModule) return 0;
+	// the game's callback thread looks SteamAPI_RunCallbacks up again every 100 ms: one stub per export
+	static std::mutex pmu;
+	static std::map<std::string, uint32_t> known;
+	std::lock_guard<std::mutex> pl(pmu);
+	auto it = known.find(n);
+	if (it != known.end()) return it->second;
 	imports::HostFn fn = exNothing;
 	if (n == "SteamInternal_ContextInit") fn = exContextInit;
 	else if (n == "SteamInternal_FindOrCreateUserInterface") fn = exFindUser;
@@ -183,6 +190,6 @@ uint32_t procAddress(uint32_t module, const std::string& n)
 	else if (n == "SteamAPI_GetHSteamPipe") fn = exGetHSteamPipe;
 	else if (n.find("EngineInterface") != std::string::npos) fn = exFindEngine;
 	log("steam_api: %s (%s)", n.c_str(), fn == exNothing ? "answers 0" : "handled");
-	return imports::addDynamic("steam_api.dll", n, fn, 0, 0);
+	return known[n] = imports::addDynamic("steam_api.dll", n, fn, 0, 0);
 }
 }
