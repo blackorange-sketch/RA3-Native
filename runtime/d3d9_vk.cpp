@@ -536,13 +536,14 @@ VkShaderModule module(const std::string& src, bool vertex, uint64_t key)
 	gModules[key] = m;
 	return m;
 }
-VkShaderModule vsModule(ShaderObj* vs)
+VkShaderModule vsModule(ShaderObj* vs, uint32_t intMask, uint32_t uintMask)
 {
-	uint64_t k = vs->hash * 31 + 1;
+	uint64_t k = (vs->hash * 31 + 1) ^ ((uint64_t)intMask << 20) * 0x9e3779b97f4a7c15ull ^ ((uint64_t)uintMask << 40) * 0xc2b2ae3d27d4eb4full;
 	auto it = gModules.find(k);
 	if (it != gModules.end()) return it->second;
-	return module(shdr::composeVk(vs->info), true, k);
+	return module(shdr::composeVk(vs->info, nullptr, false, intMask, uintMask), true, k);
 }
+bool gScaled = false;   // the GPU reads USCALED/SSCALED vertex formats
 VkShaderModule psModule(ShaderObj* ps, ShaderObj* vs, bool precise)
 {
 	uint64_t k = ps->hash * 31 + 2;
@@ -559,10 +560,12 @@ VkFormat attrFormat(uint8_t type)
 	{
 	case 0: return VK_FORMAT_R32_SFLOAT; case 1: return VK_FORMAT_R32G32_SFLOAT; case 2: return VK_FORMAT_R32G32B32_SFLOAT; case 3: return VK_FORMAT_R32G32B32A32_SFLOAT;
 	case 4: return VK_FORMAT_B8G8R8A8_UNORM;   // D3DCOLOR: the hardware swaps red and blue (no u_bgra swizzle)
-	case 5: return VK_FORMAT_R8G8B8A8_USCALED; case 6: return VK_FORMAT_R16G16_SSCALED; case 7: return VK_FORMAT_R16G16B16A16_SSCALED;
+	case 5: return gScaled ? VK_FORMAT_R8G8B8A8_USCALED : VK_FORMAT_R8G8B8A8_UINT;
+	case 6: return gScaled ? VK_FORMAT_R16G16_SSCALED : VK_FORMAT_R16G16_SINT;
+	case 7: return gScaled ? VK_FORMAT_R16G16B16A16_SSCALED : VK_FORMAT_R16G16B16A16_SINT;
 	case 8: return VK_FORMAT_R8G8B8A8_UNORM; case 9: return VK_FORMAT_R16G16_SNORM; case 10: return VK_FORMAT_R16G16B16A16_SNORM;
 	case 11: return VK_FORMAT_R16G16_UNORM; case 12: return VK_FORMAT_R16G16B16A16_UNORM;
-	case 13: return VK_FORMAT_A2B10G10R10_USCALED_PACK32; case 14: return VK_FORMAT_A2B10G10R10_SNORM_PACK32;
+	case 13: return gScaled ? VK_FORMAT_A2B10G10R10_USCALED_PACK32 : VK_FORMAT_A2B10G10R10_UINT_PACK32; case 14: return VK_FORMAT_A2B10G10R10_SNORM_PACK32;
 	case 15: return VK_FORMAT_R16G16_SFLOAT; case 16: return VK_FORMAT_R16G16B16A16_SFLOAT;
 	}
 	return VK_FORMAT_UNDEFINED;
@@ -937,7 +940,9 @@ bool init()
 		gDepthFmt = (fp.optimalTilingFeatures & need) == need ? VK_FORMAT_D24_UNORM_S8_UINT : VK_FORMAT_D32_SFLOAT_S8_UINT;
 		vkGetPhysicalDeviceFormatProperties(H.phys, VK_FORMAT_R8G8B8A8_USCALED, &fp);
 		bool usc = fp.bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT;
-		log("vulkan: depth format %s, scaled vertex formats %s", gDepthFmt == VK_FORMAT_D24_UNORM_S8_UINT ? "D24S8" : "D32S8", usc ? "yes" : "NO");
+		vkGetPhysicalDeviceFormatProperties(H.phys, VK_FORMAT_R16G16_SSCALED, &fp);
+		gScaled = usc && (fp.bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT);
+		log("vulkan: depth format %s, scaled vertex formats %s", gDepthFmt == VK_FORMAT_D24_UNORM_S8_UINT ? "D24S8" : "D32S8", gScaled ? "yes" : "no (integer attributes converted in the shader)");
 	}
 	VmaAllocatorCreateInfo ai{};
 	ai.physicalDevice = H.phys; ai.device = D; ai.instance = H.instance; ai.vulkanApiVersion = VK_API_VERSION_1_1;
@@ -1081,8 +1086,8 @@ void draw(const DrawCall& dc)
 	bool precise = rt::config.fastShaders && vs->info.relC;
 	if (rt::config.fastShaders && !precise)
 		for (int i = 0; i < 16 && !precise; i++) if (ps->info.samplerType[i] && dev.tex[i] && (dev.tex[i]->usage & 3)) precise = true;
-	VkShaderModule vm = vsModule(vs), pm = psModule(ps, vs, precise);
-	if (!vm || !pm) return;
+	VkShaderModule pm = psModule(ps, vs, precise);
+	if (!pm) return;
 
 	// textures: uploaded, mip chains built and in the sampling layout before the pass starts
 	VkImageView views[16]; VkSampler samps[16]; uint32_t mask = 0;
@@ -1122,7 +1127,7 @@ void draw(const DrawCall& dc)
 			if (fq & 0x40000000u) { instCount = std::max<uint32_t>(1, fq & 0x3fffffffu); instanced = true; }
 			else if (fq & 0x80000000u) instanced = true;
 		}
-	uint32_t locs = 0;
+	uint32_t locs = 0, intMask = 0, uintMask = 0;
 	for (uint32_t k = 0; k < nEls; k++)
 	{
 		const DeclElem& e = els[k];
@@ -1134,6 +1139,8 @@ void draw(const DrawCall& dc)
 		if (dc.upVerts ? si != 0 : !dev.streams[si].vb) continue;
 		vl.attr[vl.nAttr++] = {(uint32_t)loc, si, f, e.offset};
 		locs |= 1u << loc;
+		if (f == VK_FORMAT_R16G16_SINT || f == VK_FORMAT_R16G16B16A16_SINT) intMask |= 1u << loc;
+		else if (f == VK_FORMAT_R8G8B8A8_UINT || f == VK_FORMAT_A2B10G10R10_UINT_PACK32) uintMask |= 1u << loc;
 		streamsUsed |= 1u << si;
 	}
 	bool needZero = false;
@@ -1147,6 +1154,8 @@ void draw(const DrawCall& dc)
 		}
 	if (needZero) vl.bind[vl.nBind++] = {15, 0, VK_VERTEX_INPUT_RATE_VERTEX};
 
+	VkShaderModule vm = vsModule(vs, intMask, uintMask);
+	if (!vm) return;
 	// pipeline
 	const uint32_t* rs = dev.rs;
 	PipeKey pk;

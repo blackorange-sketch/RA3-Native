@@ -711,7 +711,9 @@ inline VkConstLayout vkConstLayout(const ShaderInfo& si)
 }
 enum { kVkConstRange = 256 + 256 * 16 };   // the largest block (descriptor range of the dynamic uniform buffers)
 
-inline std::string composeVk(const ShaderInfo& si, const std::set<std::string>* vsOuts = nullptr, bool precise = false)
+// intMask / uintMask (vertex shader): attribute locations fed with signed / unsigned integer formats - GPUs without
+// the "scaled" vertex formats (Adreno) read SHORT2/SHORT4/UBYTE4 as integers, converted to float here
+inline std::string composeVk(const ShaderInfo& si, const std::set<std::string>* vsOuts = nullptr, bool precise = false, uint32_t intMask = 0, uint32_t uintMask = 0)
 {
 	bool fast = !si.isVs && ::rt::config.fastShaders && !precise;
 	const char* st = si.isVs ? "v" : "p";
@@ -733,7 +735,13 @@ inline std::string composeVk(const ShaderInfo& si, const std::set<std::string>* 
 		}
 	if (si.isVs)
 	{
-		for (auto& kv : si.inputs) s += "layout(location = " + std::to_string(kv.second) + ") in vec4 " + kv.first + ";\n";
+		for (auto& kv : si.inputs)
+		{
+			int l = kv.second;
+			bool si_ = l >= 0 && l < 32 && (intMask >> l & 1), ui_ = l >= 0 && l < 32 && (uintMask >> l & 1);
+			if (si_ || ui_) s += "layout(location = " + std::to_string(l) + ") in " + (si_ ? "ivec4 " : "uvec4 ") + kv.first + "_int;\nvec4 " + kv.first + ";\n";
+			else s += "layout(location = " + std::to_string(l) + ") in vec4 " + kv.first + ";\n";
+		}
 		for (auto& n : si.outputs) s += "layout(location = " + std::to_string(varyingLoc(n)) + ") out vec4 " + n + ";\n";
 	}
 	else
@@ -752,6 +760,9 @@ inline std::string composeVk(const ShaderInfo& si, const std::set<std::string>* 
 	s += "void main() {\n";
 	if (si.body.find(std::string(st) + "cb[") != std::string::npos)
 		s += std::string("  bool ") + st + "cb[16];\n  for (int i = 0; i < 16; i++) " + st + "cb[i] = ((" + (si.isVs ? "u_vsb" : "u_psb") + " >> uint(i)) & 1u) != 0u;\n";
+	if (si.isVs)
+		for (auto& kv : si.inputs)
+			if (kv.second >= 0 && kv.second < 32 && ((intMask | uintMask) >> kv.second & 1)) s += "  " + kv.first + " = vec4(" + kv.first + "_int);\n";
 	s += si.body;
 	if (si.isVs) s += "  gl_Position = vec4(oPos.x + u_hp.x * oPos.w, -(oPos.y - u_hp.y * oPos.w), oPos.z, oPos.w);\n  gl_PointSize = oPts.x;\n";
 	s += "}\n";
