@@ -432,6 +432,13 @@ void createRtStorage(Obj* o)   // color or depth render target texture
 	glBindTexture(GL_TEXTURE_2D, o->glTex); gTexBindDirty = true;
 	if (tf.depth) glTexImage2D(GL_TEXTURE_2D, 0, tf.internal, o->w, o->h, 0, tf.format, tf.type, nullptr);
 	else if (tf.convert || tf.compressed || tf.none) glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, o->w, o->h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+	else if (o->fmt == 113 && o->levels <= 1 && o->w == backW && o->h == backH && access("/sdcard/ra3_rt11", F_OK) == 0)
+	{
+		// experiment: the screen-sized HDR scene target in half the memory (no alpha: reads as 1)
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_R11F_G11F_B10F, o->w, o->h, 0, GL_RGB, GL_HALF_FLOAT, nullptr);
+		static int n = 0;
+		if (n++ < 4) log("GL: rt11: %ux%u A16B16G16R16F render target as R11F_G11F_B10F", o->w, o->h);
+	}
 	else glTexImage2D(GL_TEXTURE_2D, 0, tf.internal, o->w, o->h, 0, tf.format, tf.type, nullptr);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, o->levels > 1 ? o->levels - 1 : 0);
 	if (o->levels > 1)
@@ -529,11 +536,14 @@ GLuint ensureBuffer(Obj* o, GLenum target)
 bool isBack(Obj* rt) { return !rt || rt == gBackBuffer; }
 
 // GPU time per render pass (with /sdcard/ra3_prof): a new interval starts on the render thread
+static uint32_t gPassDraws = 0, gPassClear = 0;   // of the current render pass, for the pass list
+static uint32_t passInfo() { uint32_t i = std::min(gPassDraws, 0xffffffu) | gPassClear << 24; gPassDraws = 0; gPassClear = 0; return i; }
 static void gpuMark(int kind, uint32_t w, uint32_t h, uint32_t fmt)
 {
 	if (!gputime::on()) return;
 	uint64_t k = gputime::key(kind, w, h, fmt);
-	if (rec::active()) rec::q([k] { gputime::mark(k); }); else gputime::mark(k);
+	uint32_t info = passInfo();
+	if (rec::active()) rec::q([k, info] { gputime::mark(k, info); }); else gputime::mark(k, info);
 }
 // Tiled GPUs (Adreno, Mali) keep a render pass in on-chip memory and write it out when it ends, and read the old
 // contents back in when a target is bound again without a full clear. The back buffer's depth/stencil is not
@@ -1311,6 +1321,7 @@ void clear(uint32_t count, uint32_t rects, uint32_t flags, uint32_t color, float
 	if (traceFrame()) log("TR clear rt %s flags %x color %08x z %g rects %u", objTag(dev.rt0).c_str(), flags, color, (double)z, count);
 	if (!m) return;
 	if (firstUse && !(count && rects) && (m & GL_DEPTH_BUFFER_BIT) && (m & GL_STENCIL_BUFFER_BIT)) gBackClearedFirst = true;
+	gPassClear |= gPassDraws == 0 ? 8 | (flags & 7) : (flags & 7) << 4;
 	if (count && rects)
 	{
 		glEnable(GL_SCISSOR_TEST);
@@ -2019,7 +2030,7 @@ static void drawImpl(const DrawCall& dc)
 		if (gBatchMerged) log("batch: %.0f draws/frame, %.0f of them merged into the draw before", gBatchDraws / 900.0, gBatchMerged / 900.0);
 		gBatchFrame0 = gFrameNo; gBatchDraws = gBatchMerged = 0;
 	}
-	if (batchAppend(dc)) { if (dev.rs[7] && !gUiNested) gUiWorldDraws++; gDrawsThisFrame++; return; }
+	if (batchAppend(dc)) { if (dev.rs[7] && !gUiNested) gUiWorldDraws++; gDrawsThisFrame++; gPassDraws++; return; }
 	const int instReg = batchEligible(dc);
 	uint64_t t0 = profNow();
 	// fast shaders: a pixel shader that samples one of the game's own render targets keeps full precision
@@ -2618,7 +2629,7 @@ static void drawImpl(const DrawCall& dc)
 	if (dc.primCount <= 2 && traceDump() && (!dev.rt0 || isBack(dev.rt0) || dev.rt0->fmt == 21 || dev.rt0->fmt == 22)) dumpTraced("draw", tw, th);
 	uint64_t t6 = profNow();
 	tProg += t1 - t0; tState += t2 - t1; tUni += t3 - t2; tSamp += t4 - t3; tAttr += t5 - t4; tDraw += t6 - t5; nDraw++;
-	gDrawsThisFrame++;
+	gDrawsThisFrame++; gPassDraws++;
 	if (gDrawsThisFrame <= 3 && gFrameNo < 5) glErr("draw");
 	if (verbose() && (gFrameNo == 700 || gFrameNo == 1800 || gFrameNo == 3600) && !dev.rt0)
 	{
@@ -2816,7 +2827,8 @@ static void presentImpl()
 	}
 	if (rec::active())
 	{
-		rec::q([] { const GLenum a[] = {GL_DEPTH, GL_STENCIL}; ::glInvalidateFramebuffer(GL_FRAMEBUFFER, 2, a); gputime::frameEnd(); uint64_t ts = nowUs(); gfx::swap(); gTSwap += nowUs() - ts; });
+		uint32_t info = passInfo();
+		rec::q([info] { const GLenum a[] = {GL_DEPTH, GL_STENCIL}; ::glInvalidateFramebuffer(GL_FRAMEBUFFER, 2, a); gputime::frameEnd(info); uint64_t ts = nowUs(); gfx::swap(); gTSwap += nowUs() - ts; });
 		uint64_t tw0 = nowUs();
 		rec::endFrame();   // keeps at most one frame queued behind the one on the GPU thread
 		gTWaitRender += nowUs() - tw0;
@@ -2828,7 +2840,7 @@ static void presentImpl()
 			lastT = t; lastLim = lim;
 		}
 	}
-	else { const GLenum a[] = {GL_DEPTH, GL_STENCIL}; ::glInvalidateFramebuffer(GL_FRAMEBUFFER, 2, a); gputime::frameEnd(); uint64_t ts = nowUs(); gfx::swap(); gTSwap += nowUs() - ts; }
+	else { const GLenum a[] = {GL_DEPTH, GL_STENCIL}; ::glInvalidateFramebuffer(GL_FRAMEBUFFER, 2, a); gputime::frameEnd(passInfo()); uint64_t ts = nowUs(); gfx::swap(); gTSwap += nowUs() - ts; }
 	glErr("present");
 	gFrameNo++;
 	if (gFrameNo == 1)
