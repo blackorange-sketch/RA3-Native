@@ -83,6 +83,10 @@ struct VTex
 	uint64_t useSerial = 0;     // last frame whose commands use it
 	uint32_t ver = 0;           // uploaded content version
 	bool rt = false, depth = false, stencil = false, noFilter = false;
+	VkComponentMapping swz{};
+	uint32_t content = 0;       // render target: bumped by every draw / clear into it
+	VTex* fb = nullptr;         // its copy for draws that sample the target they draw to (water reads the scene)
+	uint32_t fbContent = ~0u;
 };
 struct VBuf
 {
@@ -223,6 +227,7 @@ VkImageView makeView(VTex* t, VkImageViewType type, uint32_t level, uint32_t nLe
 void destroyTex(VTex* t)
 {
 	if (!t) return;
+	if (t->fb) { destroyTex(t->fb); t->fb = nullptr; }
 	VkImageView s = t->sampled; auto att = t->att; VkImage img = t->img; VmaAllocation m = t->mem;
 	later([s, att, img, m] {
 		if (s) vkDestroyImageView(D, s, nullptr);
@@ -243,7 +248,7 @@ VTex* createTex(uint32_t w, uint32_t h, uint32_t d, uint32_t levels, uint32_t la
 {
 	VTex* t = new VTex;
 	t->fmt = f.vk; t->w = w; t->h = h; t->d = d; t->levels = std::max(1u, levels); t->layers = layers; t->rt = rt;
-	t->depth = f.depth; t->stencil = f.stencil; t->noFilter = f.noFilter;
+	t->depth = f.depth; t->stencil = f.stencil; t->noFilter = f.noFilter; t->swz = swz;
 	t->aspect = f.depth ? (VK_IMAGE_ASPECT_DEPTH_BIT | (f.stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0)) : VK_IMAGE_ASPECT_COLOR_BIT;
 	VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
 	ii.imageType = vol ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
@@ -746,6 +751,36 @@ VkDescriptorSet allocTexSet()
 	}
 }
 
+// A draw that samples the target it draws to (the water reads the scene for its refraction): OpenGL on a tiled GPU
+// gives it the contents from before the pass, Vulkan would give garbage. It reads a copy instead, made again only
+// when the target has been drawn to since.
+VTex* feedback(VTex* t, uint32_t level, uint32_t layer)
+{
+	uint32_t w = std::max(1u, t->w >> level), h = std::max(1u, t->h >> level);
+	if (t->fb && (t->fb->w != w || t->fb->h != h)) { destroyTex(t->fb); t->fb = nullptr; }
+	if (!t->fb)
+	{
+		Fmt f; f.vk = t->fmt; f.depth = t->depth; f.stencil = t->stencil; f.noFilter = t->noFilter;
+		t->fb = createTex(w, h, 1, 1, 1, false, false, f, false, t->swz);
+		if (!t->fb) return gDummy[0];
+		t->fbContent = ~0u;
+		static int n = 0;
+		if (n++ < 8) log("vulkan: a draw samples its own render target (%ux%u format %d): it reads a copy", w, h, (int)t->fmt);
+	}
+	if (t->fbContent != t->content)
+	{
+		toLayout(t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+		toLayout(t->fb, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+		VkImageCopy c{};
+		c.srcSubresource = {t->aspect, level, layer, 1}; c.dstSubresource = {t->aspect, 0, 0, 1};
+		c.extent = {w, h, 1};
+		vkCmdCopyImage(C, t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t->fb->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+		t->fbContent = t->content;
+		t->useSerial = gSerial;
+	}
+	return t->fb;
+}
+
 // begin rendering into the current target (layouts first: no barrier may fall inside a pass)
 bool beginPass(const Target& t)
 {
@@ -1043,6 +1078,8 @@ void clear(uint32_t count, uint32_t rects, uint32_t flags, uint32_t color, float
 		}
 	else cr.push_back({{{0, 0}, {t.w, t.h}}, 0, 1});
 	if (!cr.empty()) vkCmdClearAttachments(C, na, a, (uint32_t)cr.size(), cr.data());
+	if (t.color && (flags & 1)) t.color->content++;
+	if (t.depth && (flags & 6)) t.depth->content++;
 }
 
 void draw(const DrawCall& dc)
@@ -1103,7 +1140,7 @@ void draw(const DrawCall& dc)
 			Obj* ow = texOwner(o);
 			int okind = ow->iface == ICube ? 1 : ow->iface == IVolume ? 2 : 0;
 			if (okind == kind) tx = ensureTex(o);
-			if (tx && (tx == t.color || tx == t.depth)) tx = nullptr;   // the target itself: not readable while drawn to
+			if (tx && (tx == t.color || tx == t.depth)) tx = feedback(tx, tx == t.color ? t.cLevel : 0, tx == t.color ? t.cLayer : 0);   // reads its own target
 			if (tx && ow->mipDirty && tx->levels > 1 && !tx->depth) { genMips(tx); ow->mipDirty = false; }
 		}
 		if (!tx) tx = gDummy[kind];
@@ -1400,9 +1437,9 @@ void draw(const DrawCall& dc)
 			logged++;
 			char b[256];
 			std::string o;
-			snprintf(b, sizeof b, "vkdiag #%d f%u vs %016llx ps %016llx prim %u n %u idx %d base %d start %u min %u nv %u inst %u up %d vtxOff %d rt %ux%u z %u blend %u |",
+			snprintf(b, sizeof b, "vkdiag #%d f%u vs %016llx ps %016llx prim %u n %u idx %d base %d start %u min %u nv %u inst %u up %d vtxOff %d rt %ux%u f%d z %u blend %u |",
 				logged, fr, (unsigned long long)vs->hash, (unsigned long long)ps->hash, dc.prim, dc.primCount, (int)dc.indexed, (int)dc.baseVertex, dc.startIndex, dc.minIndex, dc.numVertices,
-				instCount, dc.upVerts ? 1 : 0, (int)vtxOff, t.w, t.h, rs[7], rs[27]);
+				instCount, dc.upVerts ? 1 : 0, (int)vtxOff, t.w, t.h, t.color ? (int)t.color->fmt : -1, rs[7], rs[27]);
 			o += b;
 			for (uint32_t k = 0; k < nEls; k++)
 			{
@@ -1423,7 +1460,9 @@ void draw(const DrawCall& dc)
 				if (mask >> i & 1)
 				{
 					Obj* tt = dev.tex[i] ? texOwner(dev.tex[i]) : nullptr;
-					snprintf(b, sizeof b, " %d:%s%ux%u f%u l%u a%u/%u", i, tt ? "" : "none ", tt ? tt->w : 0, tt ? tt->h : 0, tt ? tt->fmt : 0, tt ? tt->levels : 0, dev.samp[i][1], dev.samp[i][2]);
+					VTex* vt = tt ? (VTex*)tt->vk : nullptr;
+					snprintf(b, sizeof b, " %d:%s%ux%u f%u l%u a%u/%u%s%s", i, tt ? "" : "none ", tt ? tt->w : 0, tt ? tt->h : 0, tt ? tt->fmt : 0, tt ? tt->levels : 0, dev.samp[i][1], dev.samp[i][2],
+						vt && vt->rt ? (vt->content ? " RT" : " RT-EMPTY") : "", vt && (vt == t.color || vt == t.depth) ? " SELF" : "");
 					o += b;
 				}
 			log("%s", o.c_str());
@@ -1489,6 +1528,8 @@ void draw(const DrawCall& dc)
 		}
 	}
 	gDraws++; gDrawsTotal++;
+	if (t.color) t.color->content++;
+	if (t.depth) t.depth->content++;
 }
 
 void stretchRect(Obj* src, const int32_t* sr, Obj* dst, const int32_t* dr, uint32_t filter)
