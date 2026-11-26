@@ -72,7 +72,7 @@ uint32_t gDraws = 0, gDrawsTotal = 0;
 struct Stats
 {
 	uint64_t gpuNs = 0, cpuNs = 0, presentNs = 0, phaseNs[8] = {}, renameBytes = 0, copyBytes = 0, ringBytes = 0, convVerts = 0, uploadBytes = 0;
-	uint32_t gpuFrames = 0, frames = 0, draws = 0, passes = 0, clearPasses = 0, barriers = 0, uploads = 0, renames = 0, descSets = 0, texUploads = 0, newPipes = 0, convRebuilds = 0;
+	uint32_t swaps = 0, swapResolves = 0, swapFree = 0, gpuFrames = 0, frames = 0, draws = 0, passes = 0, clearPasses = 0, barriers = 0, uploads = 0, renames = 0, descSets = 0, texUploads = 0, newPipes = 0, convRebuilds = 0;
 } gSt;
 uint64_t nowNs() { return (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 struct CpuTimer { uint64_t t0 = nowNs(); ~CpuTimer() { gSt.cpuNs += nowNs() - t0; } };
@@ -101,6 +101,11 @@ struct VTex
 	uint8_t pendClr = 0;        // a clear not done yet (1 colour, 2 depth, 4 stencil): the load op of its next pass
 	VkClearValue pendColor{}, pendDS{};
 	uint32_t fbContent = ~0u;
+	// copy avoided (StretchRect of a whole render target into a texture of the same kind: the images are swapped):
+	// pendSrc - this target's contents are held by that texture, copied back only if they are needed here before
+	// the target is cleared; pendDst - the target waiting for this texture's contents
+	VTex* pendSrc = nullptr;
+	VTex* pendDst = nullptr;
 };
 struct VBuf
 {
@@ -255,9 +260,13 @@ VkImageView makeView(VTex* t, VkImageViewType type, uint32_t level, uint32_t nLe
 	return v;
 }
 
+void beforeWrite(VTex* t, bool whole);
+VTex* readOf(VTex* t);
 void destroyTex(VTex* t)
 {
 	if (!t) return;
+	beforeWrite(t, true);
+	if (t->pendSrc) { t->pendSrc->pendDst = nullptr; t->pendSrc = nullptr; }
 	if (t->fb) { destroyTex(t->fb); t->fb = nullptr; }
 	VkImageView s = t->sampled; auto att = t->att; VkImage img = t->img; VmaAllocation m = t->mem;
 	later([s, att, img, m] {
@@ -365,6 +374,7 @@ bool dumping()
 void dumpTarget(VTex* t, uint32_t level, uint32_t layer, const char* what)
 {
 	if (!t || t->depth || gDumpPass >= 60) return;
+	t = readOf(t);
 	uint32_t w = std::max(1u, t->w >> level), h = std::max(1u, t->h >> level);
 	uint32_t bpp = t->fmt == VK_FORMAT_R16G16B16A16_SFLOAT ? 8 : t->fmt == VK_FORMAT_R32G32B32A32_SFLOAT ? 16 : (t->fmt == VK_FORMAT_R16_SFLOAT || t->fmt == VK_FORMAT_R5G6B5_UNORM_PACK16) ? 2 : 4;
 	VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
@@ -1143,12 +1153,61 @@ bool blitInPass(VTex* src, const float uv[4], float lod, bool linear, const VkVi
 	src->useSerial = gSerial;
 	return true;
 }
+// ---- copies avoided by swapping images (see VTex::pendSrc)
+VTex* readOf(VTex* t) { return t && t->pendSrc ? t->pendSrc : t; }   // the image holding its contents
+bool blitTo(VTex* src, uint32_t sLevel, const int32_t* sr, VTex* dst, uint32_t dLevel, uint32_t dLayer, const int32_t* dr, bool linear);
+// the target's contents are needed in its own image: copied back from the texture holding them
+void resolvePending(VTex* t)
+{
+	VTex* h = t->pendSrc;
+	if (!h) return;
+	t->pendSrc = nullptr; h->pendDst = nullptr;
+	int32_t r[4] = {0, 0, (int32_t)t->w, (int32_t)t->h};
+	blitTo(h, 0, r, t, 0, 0, r, false);
+	gSt.swapResolves++;
+}
+// about to be written: a target waiting for its contents gets them first; its own pending contents are copied
+// back unless the write covers all of it
+void beforeWrite(VTex* t, bool whole)
+{
+	if (!t) return;
+	if (t->pendDst) resolvePending(t->pendDst);
+	if (t->pendSrc)
+	{
+		if (whole) { t->pendSrc->pendDst = nullptr; t->pendSrc = nullptr; gSt.swapFree++; }
+		else resolvePending(t);
+	}
+}
+// StretchRect of a whole target into a texture of the same size and format: the texture takes the target's image
+// and the target the texture's old one (its contents stay with the texture until the target is cleared or copied back)
+bool swapCopy(VTex* s, VTex* d)
+{
+	static const bool off = access("/sdcard/ra3_noswap", F_OK) == 0;
+	if (off || !s || !d || s == d || s->pendSrc || !s->rt || !d->rt || s->depth || d->depth || s->fmt != d->fmt || s->w != d->w || s->h != d->h
+		|| s->levels != 1 || d->levels != 1 || s->layers != 1 || d->layers != 1 || s->vtype != VK_IMAGE_VIEW_TYPE_2D || d->vtype != VK_IMAGE_VIEW_TYPE_2D
+		|| s->noFilter != d->noFilter || memcmp(&s->swz, &d->swz, sizeof s->swz) != 0)
+		return false;
+	endPass();
+	if (s->pendClr) flushClear(s);
+	beforeWrite(s, false);   // (only a target waiting for s: s has no pending contents here)
+	beforeWrite(d, true);
+	d->pendClr = 0;          // overwritten entirely
+	std::swap(s->img, d->img); std::swap(s->mem, d->mem); std::swap(s->sampled, d->sampled); std::swap(s->att, d->att); std::swap(s->layout, d->layout);
+	s->pendSrc = d; d->pendDst = s;
+	d->content++;
+	s->useSerial = d->useSerial = gSerial;
+	gSt.swaps++;
+	return true;
+}
+
 // a copy between images (rectangles x0, y0, x1, y1 in pixels of the source level / destination level and layer)
 bool blitTo(VTex* src, uint32_t sLevel, const int32_t* sr, VTex* dst, uint32_t dLevel, uint32_t dLayer, const int32_t* dr, bool linear)
 {
 	if (!src || !dst || src->depth || dst->depth || !dst->rt || src->vtype != VK_IMAGE_VIEW_TYPE_2D || src == dst) return false;   // (dst must be renderable)
 	uint32_t sw = std::max(1u, src->w >> sLevel), sh = std::max(1u, src->h >> sLevel), dw = std::max(1u, dst->w >> dLevel), dh = std::max(1u, dst->h >> dLevel);
 	endPass();
+	beforeWrite(dst, dLevel == 0 && dst->levels == 1 && dst->layers == 1 && std::min(dr[0], dr[2]) <= 0 && std::min(dr[1], dr[3]) <= 0 && std::max(dr[0], dr[2]) >= (int32_t)dw && std::max(dr[1], dr[3]) >= (int32_t)dh);
+	src = readOf(src);   // (after: copying back into dst's waiting target may have changed where src's contents are)
 	toLayout(src, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 	toLayout(dst, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 	int32_t x0 = std::max(0, std::min(dr[0], dr[2])), y0 = std::max(0, std::min(dr[1], dr[3]));
@@ -1160,11 +1219,19 @@ bool blitTo(VTex* src, uint32_t sLevel, const int32_t* sr, VTex* dst, uint32_t d
 	ca.loadOp = full ? VK_ATTACHMENT_LOAD_OP_DONT_CARE : VK_ATTACHMENT_LOAD_OP_LOAD; ca.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 	VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
 	ri.renderArea = {{x0, y0}, {(uint32_t)(x1 - x0), (uint32_t)(y1 - y0)}}; ri.layerCount = 1; ri.colorAttachmentCount = 1; ri.pColorAttachments = &ca;
+	bool timed = F->passQ && glr::frameNo() % 900 == 450 && F->nPassQ + 2 <= 256 && !(F->nPassQ & 1);
+	if (timed)
+	{
+		vkCmdWriteTimestamp(C, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, F->passQ, F->nPassQ++);
+		char b[80]; snprintf(b, sizeof b, "copy %ux%u f%d -> %ux%u f%d", sw, sh, (int)src->fmt, dw, dh, (int)dst->fmt);
+		F->passNames.push_back(b);
+	}
 	pBeginRendering(C, &ri);
 	float uv[4] = {(float)sr[0] / sw, (float)sr[1] / sh, (float)sr[2] / sw, (float)sr[3] / sh};
 	VkViewport vp{(float)dr[0], (float)dr[1], (float)(dr[2] - dr[0]), (float)(dr[3] - dr[1]), 0.f, 1.f};
 	bool ok = blitInPass(src, uv, (float)sLevel, linear, vp, ri.renderArea, dst->fmt);
 	pEndRendering(C);
+	if (timed) vkCmdWriteTimestamp(C, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, F->passQ, F->nPassQ++);
 	dst->content++;
 	dst->useSerial = gSerial;
 	return ok;
@@ -1193,7 +1260,15 @@ VTex* feedback(VTex* t, uint32_t level, uint32_t layer)
 		VkImageCopy c{};
 		c.srcSubresource = {t->aspect, level, layer, 1}; c.dstSubresource = {t->aspect, 0, 0, 1};
 		c.extent = {w, h, 1};
+		bool timed = F->passQ && glr::frameNo() % 900 == 450 && F->nPassQ + 2 <= 256 && !(F->nPassQ & 1);
+		if (timed)
+		{
+			vkCmdWriteTimestamp(C, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, F->passQ, F->nPassQ++);
+			char b[64]; snprintf(b, sizeof b, "feedback copy %ux%u f%d", w, h, (int)t->fmt);
+			F->passNames.push_back(b);
+		}
 		vkCmdCopyImage(C, t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t->fb->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+		if (timed) vkCmdWriteTimestamp(C, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, F->passQ, F->nPassQ++);
 		t->fbContent = t->content;
 		t->useSerial = gSerial;
 	}
@@ -1236,6 +1311,12 @@ bool beginPass(const Target& t, const VkClearAttachment* clr = nullptr, uint32_t
 {
 	if (!nClr && gInPass && t.color == gPass.color && t.cLevel == gPass.cLevel && t.cLayer == gPass.cLayer && t.depth == gPass.depth) return true;
 	endPass();
+	if (t.color)
+	{
+		bool whole = (t.color->pendClr & 1) != 0;
+		for (uint32_t i = 0; i < nClr && clr; i++) if (clr[i].aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) whole = true;
+		beforeWrite(t.color, whole && t.cLevel == 0 && t.cLayer == 0);
+	}
 	gPassDraws = 0; gPasses++;
 	if (t.color) toLayout(t.color, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 	if (t.depth) toLayout(t.depth, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
@@ -1570,7 +1651,7 @@ void clear(uint32_t count, uint32_t rects, uint32_t flags, uint32_t color, float
 		if (gInPass && ((t.color && t.color == gPass.color) || (t.depth && t.depth == gPass.depth))) endPass();   // its pass has nothing drawn yet
 		for (uint32_t i = 0; i < na; i++)
 		{
-			if (a[i].aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) { t.color->pendClr |= 1; t.color->pendColor = a[i].clearValue; }
+			if (a[i].aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) { beforeWrite(t.color, true); t.color->pendClr |= 1; t.color->pendColor = a[i].clearValue; }
 			else
 			{
 				uint8_t bits = ((a[i].aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT) ? 2 : 0) | ((a[i].aspectMask & VK_IMAGE_ASPECT_STENCIL_BIT) ? 4 : 0);
@@ -1668,7 +1749,7 @@ void draw(const DrawCall& dc)
 		{
 			Obj* ow = texOwner(o);
 			int okind = ow->iface == ICube ? 1 : ow->iface == IVolume ? 2 : 0;
-			if (okind == kind) tx = ensureTex(o);
+			if (okind == kind) tx = readOf(ensureTex(o));   // (a target whose contents a texture holds: read there)
 			if (tx && (tx == t.color || (tx == t.depth && needDepth))) tx = feedback(tx, tx == t.color ? t.cLevel : 0, tx == t.color ? t.cLayer : 0);   // reads its own target
 			if (tx && ow->mipDirty && tx->levels > 1 && !tx->depth) { genMips(tx); ow->mipDirty = false; }
 		}
@@ -2113,11 +2194,20 @@ void stretchRect(Obj* src, const int32_t* sr, Obj* dst, const int32_t* dr, uint3
 	int32_t a[4] = {0, 0, (int32_t)sw, (int32_t)sh}, b[4] = {0, 0, (int32_t)dw, (int32_t)dh};
 	if (sr) memcpy(a, sr, 16);
 	if (dr) memcpy(b, dr, 16);
+	if (sl == 0 && dl == 0 && sa == 0 && da == 0 && a[0] == 0 && a[1] == 0 && a[2] == (int32_t)sw && a[3] == (int32_t)sh && b[0] == 0 && b[1] == 0 && b[2] == (int32_t)dw && b[3] == (int32_t)dh
+		&& swapCopy(s, d))
+	{
+		if (dumping()) { log("vkdump stretch (swapped) %ux%u f%d -> %ux%u f%d", sw, sh, (int)s->fmt, dw, dh, (int)d->fmt); dumpTarget(d, 0, 0, "copy"); }
+		return;
+	}
 	if (blitTo(s, sl, a, d, dl, da, b, filter == 2))
 	{
 		if (dumping()) { log("vkdump stretch (draw) %ux%u f%d [%d,%d,%d,%d] -> %ux%u f%d [%d,%d,%d,%d]", sw, sh, (int)s->fmt, a[0], a[1], a[2], a[3], dw, dh, (int)d->fmt, b[0], b[1], b[2], b[3]); dumpTarget(d, dl, da, "copy"); }
 		return;
 	}
+	endPass();
+	beforeWrite(d, false);
+	s = readOf(s);
 	toLayout(s, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 	toLayout(d, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 	VkImageBlit bl{};
@@ -2196,7 +2286,7 @@ bool present(int sw, int sh)
 		{
 			static VTex* chain[3] = {};
 			Fmt f; f.vk = VK_FORMAT_B8G8R8A8_UNORM;
-			VTex* prev = gBack;
+			VTex* prev = readOf(gBack);
 			for (int k = 0; k < 3; k++)
 			{
 				uint32_t w = std::max(1u, backW >> (k + 1)), h = std::max(1u, backH >> (k + 1));
@@ -2209,7 +2299,7 @@ bool present(int sw, int sh)
 			}
 			if (prev) { toLayout(prev, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL); blurSrc = prev; }
 		}
-		toLayout(gBack, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		toLayout(readOf(gBack), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		// one pass on the screen image: cleared black, the back buffer drawn into the letterbox, the blurred bars,
 		// the on-screen buttons
 		barrier(C, img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
@@ -2232,7 +2322,7 @@ bool present(int sw, int sh)
 			const float full[4] = {0.f, 0.f, 1.f, 1.f};
 			VkViewport v{(float)vx, (float)vy, (float)vw, (float)vh, 0.f, 1.f};
 			VkRect2D sc{{std::max(0, vx), std::max(0, vy)}, {(uint32_t)std::min(vw, sw - std::max(0, vx)), (uint32_t)std::min(vh, sh - std::max(0, vy))}};
-			blitInPass(gBack, full, 0.f, true, v, sc, fmt);
+			blitInPass(readOf(gBack), full, 0.f, true, v, sc, fmt);
 		}
 		if (blurSrc)
 		{
@@ -2295,7 +2385,7 @@ bool present(int sw, int sh)
 			gSt.gpuFrames ? gSt.gpuNs / 1e6 / gSt.gpuFrames : 0.0, gSt.cpuNs / 1e6 / f, gSt.presentNs / 1e6 / f, gSt.draws / f, gSt.passes / f, gSt.clearPasses / f, gSt.barriers / f, gSt.uploads, gPipes.size(), gSt.newPipes);
 		log("vulkan perf: draw CPU ms per frame: setup %.2f, textures+pass %.2f, pipeline %.2f, state %.2f, constants %.2f, texture sets %.2f (%.0f), vertices+draw %.2f",
 			gSt.phaseNs[0] / 1e6 / f, gSt.phaseNs[1] / 1e6 / f, gSt.phaseNs[2] / 1e6 / f, gSt.phaseNs[3] / 1e6 / f, gSt.phaseNs[4] / 1e6 / f, gSt.phaseNs[5] / 1e6 / f, gSt.descSets / f, gSt.phaseNs[6] / 1e6 / f);
-		log("vulkan perf: clears done on their own %.1f per frame", gClearFlushes / f);
+		log("vulkan perf: clears done on their own %.1f per frame; copies avoided by swapping %.1f per frame (%.1f copied back later, %.1f never needed)", gClearFlushes / f, gSt.swaps / f, gSt.swapResolves / f, gSt.swapFree / f);
 		gClearFlushes = 0;
 		log("vulkan perf: per frame KB: ring %.0f, buffer copies %.0f, buffer renames %.1f (%.0f KB), texture uploads %.1f (%.0f KB), vertices converted %.0f (%u rebuilds)",
 			gSt.ringBytes / 1024.0 / f, gSt.copyBytes / 1024.0 / f, gSt.renames / f, gSt.renameBytes / 1024.0 / f, gSt.texUploads / f, gSt.uploadBytes / 1024.0 / f, gSt.convVerts / f, gSt.convRebuilds);
