@@ -25,7 +25,7 @@ struct Handles
 {
 	VkInstance instance = VK_NULL_HANDLE; VkPhysicalDevice phys = VK_NULL_HANDLE; VkDevice device = VK_NULL_HANDLE;
 	VkQueue queue = VK_NULL_HANDLE; uint32_t family = 0, apiVersion = 0, uboAlign = 256;
-	bool bc = false, aniso = false; float maxAniso = 1.f;
+	bool bc = false, aniso = false; float maxAniso = 1.f, timestampPeriod = 0.f;   // ns per timestamp tick (0: none)
 };
 const Handles& handles();
 std::recursive_mutex& lock();   // held around queue use

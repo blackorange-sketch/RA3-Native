@@ -21,8 +21,10 @@
 #include "vksh.h"
 #include "third_party/vma/vk_mem_alloc.h"
 #include <algorithm>
+#include <unistd.h>
 #include <sys/stat.h>
 #include <cstring>
+#include <chrono>
 #include <functional>
 #include <mutex>
 #include <unordered_map>
@@ -65,6 +67,10 @@ VkPipelineCache gPipeCache = VK_NULL_HANDLE;
 uint32_t gNewPipes = 0;
 uint64_t gSerial = 1, gDone = 0;   // serial of the frame being recorded / of the last one the GPU finished
 uint32_t gDraws = 0, gDrawsTotal = 0;
+// once a minute: GPU time per frame, CPU time in the renderer, passes, barriers
+struct Stats { uint64_t gpuNs = 0, cpuNs = 0; uint32_t gpuFrames = 0, frames = 0, draws = 0, passes = 0, clearPasses = 0, barriers = 0, uploads = 0; } gSt;
+uint64_t nowNs() { return (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+struct CpuTimer { uint64_t t0 = nowNs(); ~CpuTimer() { gSt.cpuNs += nowNs() - t0; } };
 
 struct Push { float ui[4]; float hp[2]; int32_t bgra; uint32_t vsb; float at[4]; uint32_t psb; };
 static_assert(sizeof(Push) == shdr::kVkPushSize, "push constant layout");
@@ -104,6 +110,8 @@ struct Dump { VkBuffer buf; VmaAllocation mem; uint32_t w, h; VkFormat fmt; std:
 struct Frame
 {
 	std::vector<Dump> dumps;
+	VkQueryPool queries = VK_NULL_HANDLE;   // GPU time of the frame: timestamps at its start and end
+	bool timed = false;
 	VkCommandPool pool = VK_NULL_HANDLE;
 	VkCommandBuffer cmd = VK_NULL_HANDLE, up = VK_NULL_HANDLE;
 	bool upUsed = false;
@@ -284,15 +292,35 @@ VkImageView attView(VTex* t, uint32_t level, uint32_t layer)
 	return v;
 }
 
-// ---- layouts: one layout per image (all levels and layers), full barriers (correct first, fast later)
+// ---- layouts: one layout per image (all levels and layers); each barrier waits only for the stages that used the
+// image in its old layout and blocks only those that use it in the new one (a full barrier drains the whole GPU)
+uint32_t gBarriers = 0;
+void stagesOf(VkImageLayout l, bool src, VkPipelineStageFlags& st, VkAccessFlags& ac)
+{
+	switch (l)
+	{
+	case VK_IMAGE_LAYOUT_UNDEFINED: st = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT; ac = 0; break;
+	case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL: st = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT; ac = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | (src ? 0 : VK_ACCESS_COLOR_ATTACHMENT_READ_BIT); break;
+	case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL: st = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+		ac = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | (src ? 0 : VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT); break;
+	case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL: st = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT; ac = src ? 0 : VK_ACCESS_SHADER_READ_BIT; break;
+	case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL: st = VK_PIPELINE_STAGE_TRANSFER_BIT; ac = src ? 0 : VK_ACCESS_TRANSFER_READ_BIT; break;
+	case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL: st = VK_PIPELINE_STAGE_TRANSFER_BIT; ac = VK_ACCESS_TRANSFER_WRITE_BIT; break;
+	case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR: st = src ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT; ac = 0; break;
+	default: st = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT; ac = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT; break;
+	}
+}
 void barrier(VkCommandBuffer cb, VkImage img, VkImageAspectFlags aspect, VkImageLayout from, VkImageLayout to, uint32_t level = 0, uint32_t nLevels = VK_REMAINING_MIP_LEVELS)
 {
 	VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-	b.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT; b.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+	VkPipelineStageFlags ss, ds;
+	stagesOf(from, true, ss, b.srcAccessMask);
+	stagesOf(to, false, ds, b.dstAccessMask);
 	b.oldLayout = from; b.newLayout = to;
 	b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	b.image = img; b.subresourceRange = {aspect, level, nLevels, 0, VK_REMAINING_ARRAY_LAYERS};
-	vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+	vkCmdPipelineBarrier(cb, ss, ds, 0, 0, nullptr, 0, nullptr, 1, &b);
+	gBarriers++;
 }
 
 // ---- render pass state
@@ -841,6 +869,16 @@ void beginFrame()
 		gDone = std::max(gDone, F->serial);
 	}
 	if (!F->dumps.empty()) writeDumps(*F);
+	if (F->timed)
+	{
+		uint64_t ts[2] = {0, 0};
+		if (vkGetQueryPoolResults(D, F->queries, 0, 2, sizeof ts, ts, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS && ts[1] > ts[0])
+		{
+			uint64_t ns = (uint64_t)((ts[1] - ts[0]) * (double)vkb::handles().timestampPeriod);
+			if (ns < 1000000000ull) { gSt.gpuNs += ns; gSt.gpuFrames++; }
+		}
+		F->timed = false;
+	}
 	for (auto& f : F->trash) f();
 	F->trash.clear();
 	vkResetFences(D, 1, &F->fence);
@@ -855,6 +893,11 @@ void beginFrame()
 	b.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 	vkBeginCommandBuffer(F->cmd, &b);
 	C = F->cmd;
+	if (F->queries)
+	{
+		vkCmdResetQueryPool(C, F->queries, 0, 2);
+		vkCmdWriteTimestamp(C, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, F->queries, 0);
+	}
 	S = CmdState();
 	gCC[0].chunk = gCC[1].chunk = ~(size_t)0;
 	gInPass = false;
@@ -912,14 +955,53 @@ VTex* feedback(VTex* t, uint32_t level, uint32_t layer)
 	return t->fb;
 }
 
-// begin rendering into the current target (layouts first: no barrier may fall inside a pass)
-bool beginPass(const Target& t)
+// The bloom's bright-pass (5x5 reads two texels apart from the full-size HDR scene into a target a ninth of its
+// size) reads a half-size copy instead, as in the OpenGL renderer (5.6 ms of GPU time a frame there at 1080p): the
+// same texture coordinates land on the same 2x2 averages. /sdcard/ra3_nohalf: off.
+VTex* brightPassCopy(VTex* src, const Target& t)
 {
-	if (gInPass && t.color == gPass.color && t.cLevel == gPass.cLevel && t.cLayer == gPass.cLayer && t.depth == gPass.depth) return true;
+	static const bool off = access("/sdcard/ra3_nohalf", F_OK) == 0;
+	static VTex* half = nullptr;
+	static VTex* from = nullptr;
+	static uint32_t fromContent = ~0u;
+	if (off || src->fmt != VK_FORMAT_R16G16B16A16_SFLOAT || src->w < 4 * t.w || src->h < 4 * t.h || src->w < 64 || src->h < 64 || src->depth) return src;
+	uint32_t w = src->w / 2, h = src->h / 2;
+	if (half && (half->w != w || half->h != h)) { destroyTex(half); half = nullptr; }
+	if (!half)
+	{
+		Fmt f; f.vk = VK_FORMAT_R16G16B16A16_SFLOAT;
+		half = createTex(w, h, 1, 1, 1, false, false, f, false, VkComponentMapping{});
+		if (!half) return src;
+		from = nullptr;
+		log("vulkan: bloom bright-pass reads a %ux%u copy of the %ux%u scene", w, h, src->w, src->h);
+	}
+	if (from != src || fromContent != src->content)
+	{
+		toLayout(src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+		toLayout(half, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+		VkImageBlit b{};
+		b.srcSubresource = b.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+		b.srcOffsets[1] = {(int32_t)(src->w & ~1u), (int32_t)(src->h & ~1u), 1};
+		b.dstOffsets[1] = {(int32_t)w, (int32_t)h, 1};
+		vkCmdBlitImage(C, src->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, half->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b, VK_FILTER_LINEAR);
+		from = src; fromContent = src->content;
+		src->useSerial = gSerial;
+	}
+	half->useSerial = gSerial;
+	return half;
+}
+
+// begin rendering into the current target (layouts first: no barrier may fall inside a pass)
+uint32_t gPassDraws = 0, gPasses = 0, gPassClears = 0;   // draws since the pass began; passes / passes opened by a clear this frame
+bool beginPass(const Target& t, const VkClearAttachment* clr = nullptr, uint32_t nClr = 0)
+{
+	if (!nClr && gInPass && t.color == gPass.color && t.cLevel == gPass.cLevel && t.cLayer == gPass.cLayer && t.depth == gPass.depth) return true;
 	endPass();
+	gPassDraws = 0; gPasses++;
+	if (nClr) gPassClears++;
 	if (t.color) toLayout(t.color, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 	if (t.depth) toLayout(t.depth, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
-	VkRenderingAttachmentInfo ca{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}, da{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+	VkRenderingAttachmentInfo ca{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}, da{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}, sa{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
 	VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
 	ri.renderArea = {{0, 0}, {t.w, t.h}};
 	ri.layerCount = 1;
@@ -934,9 +1016,17 @@ bool beginPass(const Target& t)
 	{
 		da.imageView = attView(t.depth, 0, 0); da.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 		da.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD; da.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+		sa = da;
 		ri.pDepthAttachment = &da;
-		if (t.depth->stencil) ri.pStencilAttachment = &da;
+		if (t.depth->stencil) ri.pStencilAttachment = &sa;
 		t.depth->useSerial = gSerial;
+	}
+	// a clear at the start of a pass: the attachment is not read from memory at all (tiled GPUs)
+	for (uint32_t i = 0; i < nClr; i++)
+	{
+		if ((clr[i].aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) && t.color) { ca.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; ca.clearValue = clr[i].clearValue; }
+		if ((clr[i].aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT) && t.depth) { da.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; da.clearValue = clr[i].clearValue; }
+		if ((clr[i].aspectMask & VK_IMAGE_ASPECT_STENCIL_BIT) && t.depth) { sa.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; sa.clearValue = clr[i].clearValue; }
 	}
 	pBeginRendering(C, &ri);
 	gInPass = true;
@@ -1161,6 +1251,12 @@ bool init()
 		vkCreateFence(D, &fci, nullptr, &f.fence);
 		VkSemaphoreCreateInfo sci{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
 		vkCreateSemaphore(D, &sci, nullptr, &f.acq);
+		if (H.timestampPeriod > 0.f)
+		{
+			VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+			qi.queryType = VK_QUERY_TYPE_TIMESTAMP; qi.queryCount = 2;
+			vkCreateQueryPool(D, &qi, nullptr, &f.queries);
+		}
 	}
 	gFi = 0;
 	beginFrame();
@@ -1202,6 +1298,16 @@ void clear(uint32_t count, uint32_t rects, uint32_t flags, uint32_t color, float
 		if (as) { a[na].aspectMask = as; a[na].colorAttachment = 0; a[na].clearValue.depthStencil = {z, stencil & 255}; na++; }
 	}
 	if (!na) return;
+	bool samePass = gInPass && t.color == gPass.color && t.cLevel == gPass.cLevel && t.cLayer == gPass.cLayer && t.depth == gPass.depth;
+	if (!(count && rects) && (!samePass || gPassDraws == 0))
+	{
+		// nothing drawn into this pass yet: start it with the clear as its load operation
+		beginPass(t, a, na);
+		if (t.color && (flags & 1)) t.color->content++;
+		if (t.depth && (flags & 6)) t.depth->content++;
+		if (dumping()) log("vkdump pass %d clear (load op) flags %x color %08x z %g rt %ux%u", gDumpPass, flags, color, (double)z, t.w, t.h);
+		return;
+	}
 	beginPass(t);
 	std::vector<VkClearRect> cr;
 	if (count && rects)
@@ -1222,6 +1328,7 @@ void clear(uint32_t count, uint32_t rects, uint32_t flags, uint32_t color, float
 void draw(const DrawCall& dc)
 {
 	std::lock_guard<std::recursive_mutex> l(gMu);
+	CpuTimer ct;
 	if (!gOk) SKIP();
 	ShaderObj *vs = dev.vs, *ps = dev.ps;
 	if (!vs || !ps || !vs->ok || !ps->ok || !dev.vdecl) SKIP();
@@ -1280,6 +1387,7 @@ void draw(const DrawCall& dc)
 			if (tx && (tx == t.color || tx == t.depth)) tx = feedback(tx, tx == t.color ? t.cLevel : 0, tx == t.color ? t.cLayer : 0);   // reads its own target
 			if (tx && ow->mipDirty && tx->levels > 1 && !tx->depth) { genMips(tx); ow->mipDirty = false; }
 		}
+		if (tx && i == 0 && kind == 0 && ps->hash == 0xfc2bc143afb0d7e0ull) tx = brightPassCopy(tx, t);
 		if (!tx) tx = gDummy[kind];
 		if (!tx) SKIP();
 		toLayout(tx, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -1652,7 +1760,7 @@ void draw(const DrawCall& dc)
 			vkCmdDrawIndexed(C, nv, instCount, dc.startIndex, vtxOff, 0);
 		}
 	}
-	gDraws++; gDrawsTotal++;
+	gDraws++; gDrawsTotal++; gPassDraws++;
 	if (dumping())
 	{
 		std::string de;
@@ -1696,11 +1804,13 @@ void stretchRect(Obj* src, const int32_t* sr, Obj* dst, const int32_t* dr, uint3
 	vkCmdBlitImage(C, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, d->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bl, filter == 2 && !s->noFilter ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
 	if (dumping()) { log("vkdump stretch %ux%u f%d [%d,%d,%d,%d] -> %ux%u f%d [%d,%d,%d,%d]", sw, sh, (int)s->fmt, a[0], a[1], a[2], a[3], dw, dh, (int)d->fmt, b[0], b[1], b[2], b[3]); d->layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; dumpTarget(d, dl, da, "copy"); }
 	s->useSerial = d->useSerial = gSerial;
+	d->content++;
 }
 
 bool present(int sw, int sh)
 {
 	std::lock_guard<std::recursive_mutex> l(gMu);
+	CpuTimer ct;
 	if (!gOk) return false;
 	static bool everDrew = false;
 	if (gDrawsTotal) everDrew = true;
@@ -1758,8 +1868,59 @@ bool present(int sw, int sh)
 		bl.srcOffsets[1] = {(int32_t)backW, (int32_t)backH, 1};
 		bl.dstOffsets[0] = {vx, vy, 0}; bl.dstOffsets[1] = {vx + vw, vy + vh, 1};
 		vkCmdBlitImage(C, gBack->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bl, VK_FILTER_LINEAR);
+		// Menus are Flash movies laid out for 16:9: on a wider picture the parts parked off the stage come into view.
+		// Outside a battle everything beyond the centred 16:9 area is covered: blurred (menus) or black (loading
+		// screens, videos). The blur: the back buffer halved three times, its 16:9 stage zoomed to fill the screen
+		// width, stretched into the bars (as the OpenGL renderer's blur shader)
+		bool inGame, blur;
+		sideBars(inGame, blur);
+		int cw = vh * 16 / 9;
+		bool bars = !inGame && vw > cw + 4;
+		int cx = vx + (vw - cw) / 2;
+		bool blurred = false;
+		if (bars && blur)
+		{
+			static VTex* chain[3] = {};
+			Fmt f; f.vk = VK_FORMAT_B8G8R8A8_UNORM;
+			VTex* prev = gBack;
+			bool ok = true;
+			for (int k = 0; k < 3 && ok; k++)
+			{
+				uint32_t w = std::max(1u, backW >> (k + 1)), h = std::max(1u, backH >> (k + 1));
+				if (chain[k] && (chain[k]->w != w || chain[k]->h != h)) { destroyTex(chain[k]); chain[k] = nullptr; }
+				if (!chain[k]) chain[k] = createTex(w, h, 1, 1, 1, false, false, f, false, VkComponentMapping{});
+				if (!chain[k]) { ok = false; break; }
+				toLayout(chain[k], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+				VkImageBlit b{};
+				b.srcSubresource = b.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+				b.srcOffsets[1] = {(int32_t)prev->w, (int32_t)prev->h, 1};
+				b.dstOffsets[1] = {(int32_t)w, (int32_t)h, 1};
+				vkCmdBlitImage(C, prev->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, chain[k]->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b, VK_FILTER_LINEAR);
+				toLayout(chain[k], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+				chain[k]->useSerial = gSerial;
+				prev = chain[k];
+			}
+			if (ok)
+			{
+				float fz = std::min(1.f, (float)backH * 16.f / 9.f / backW), u0 = (1.f - fz) / 2.f;
+				float vspan = std::min(1.f, (float)sh * cw / ((float)vh * sw)), v0 = 0.5f - 0.5f * vspan;
+				auto bar = [&](int x0, int x1) {
+					if (x1 <= x0) return;
+					VkImageBlit b{};
+					b.srcSubresource = b.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+					float pw = (float)prev->w, ph = (float)prev->h;
+					int32_t sx0 = (int32_t)((u0 + fz * x0 / sw) * pw), sx1 = std::max(sx0 + 1, (int32_t)((u0 + fz * x1 / sw) * pw + 0.5f));
+					int32_t sy0 = (int32_t)(v0 * ph), sy1 = std::max(sy0 + 1, (int32_t)((v0 + vspan) * ph + 0.5f));
+					b.srcOffsets[0] = {sx0, sy0, 0}; b.srcOffsets[1] = {std::min(sx1, (int32_t)prev->w), std::min(sy1, (int32_t)prev->h), 1};
+					b.dstOffsets[0] = {x0, 0, 0}; b.dstOffsets[1] = {x1, sh, 1};
+					vkCmdBlitImage(C, prev->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b, VK_FILTER_LINEAR);
+				};
+				bar(0, cx); bar(cx + cw, sw);
+				blurred = true;
+			}
+		}
 		barrier(C, img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-		// the screen pass: side bars outside a battle (black for now), then the on-screen buttons
+		// the screen pass: black side bars where they are not blurred, then the on-screen buttons
 		VkImageView& view = gSwapViews[img];
 		if (!view)
 		{
@@ -1774,12 +1935,8 @@ bool present(int sw, int sh)
 		ri.renderArea = {{0, 0}, ext}; ri.layerCount = 1; ri.colorAttachmentCount = 1; ri.pColorAttachments = &ca;
 		pBeginRendering(C, &ri);
 		{
-			bool inGame, blur;
-			sideBars(inGame, blur);
-			int cw = vh * 16 / 9;
-			if (!inGame && vw > cw + 4)
+			if (bars && !blurred)
 			{
-				int cx = vx + (vw - cw) / 2;
 				VkClearAttachment a{VK_IMAGE_ASPECT_COLOR_BIT, 0, {}};
 				a.clearValue.color = black;
 				VkClearRect cr[2] = {{{{0, 0}, {(uint32_t)std::max(1, cx), (uint32_t)sh}}, 0, 1}, {{{cx + cw, 0}, {(uint32_t)std::max(1, sw - cx - cw), (uint32_t)sh}}, 0, 1}};
@@ -1809,11 +1966,21 @@ bool present(int sw, int sh)
 		pEndRendering(C);
 		barrier(C, img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 	}
+	if (F->queries) { vkCmdWriteTimestamp(C, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, F->queries, 1); F->timed = true; }
 	vkEndCommandBuffer(C);
 	VkCommandBuffer cbs[2]; uint32_t n = 0;
-	if (F->upUsed) { vkEndCommandBuffer(F->up); cbs[n++] = F->up; }
+	if (F->upUsed) { vkEndCommandBuffer(F->up); cbs[n++] = F->up; gSt.uploads++; }
 	cbs[n++] = C;
 	vkb::submit(cbs, n, F->fence, F->acq, have ? (int)idx : -1);
+	gSt.frames++; gSt.draws += gDraws; gSt.passes += gPasses; gSt.clearPasses += gPassClears; gSt.barriers += gBarriers;
+	gPasses = gPassClears = gBarriers = 0;
+	if (gSt.frames >= 900)
+	{
+		double f = gSt.frames;
+		log("vulkan perf: GPU %.2f ms per frame, renderer CPU %.2f ms per frame; per frame %.0f draws, %.1f passes (%.1f begun by a clear), %.1f barriers; frames with uploads %u; %zu pipelines",
+			gSt.gpuFrames ? gSt.gpuNs / 1e6 / gSt.gpuFrames : 0.0, gSt.cpuNs / 1e6 / f, gSt.draws / f, gSt.passes / f, gSt.clearPasses / f, gSt.barriers / f, gSt.uploads, gPipes.size());
+		gSt = Stats();
+	}
 	gSerial++;
 	gFi = (gFi + 1) % kFrames;
 	beginFrame();

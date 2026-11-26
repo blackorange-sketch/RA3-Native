@@ -89,6 +89,7 @@ bool initDevice()
 	H.aniso = f2.features.samplerAnisotropy;
 	H.maxAniso = pp.limits.maxSamplerAnisotropy;
 	H.uboAlign = (uint32_t)pp.limits.minUniformBufferOffsetAlignment;
+	H.timestampPeriod = pp.limits.timestampComputeAndGraphics ? pp.limits.timestampPeriod : 0.f;
 	H.apiVersion = pp.apiVersion;
 	VkPhysicalDeviceVulkan13Features e13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
 	e13.dynamicRendering = VK_TRUE;
