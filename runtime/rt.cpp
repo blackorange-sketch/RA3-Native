@@ -370,6 +370,7 @@ std::string resolveCI(const std::string& root, const std::string& rel)
 }
 }
 
+const char* const kModsDir = "C:\\Users\\player\\Documents\\Red Alert 3\\Mods";   // where the game looks for mods (commandLine)
 std::string hostPath(const std::string& win)
 {
 	std::string p = win;
@@ -385,6 +386,9 @@ std::string hostPath(const std::string& win)
 	// the Steam build sees the game folder inside the Steam library (steam.cpp GetAppInstallDir)
 	static const std::string lib = "steam/steamapps/common/command and conquer red alert 3";
 	if (lp == lib || lp.rfind(lib + "/", 0) == 0) return resolveCI(config.gameRoot, p.size() > lib.size() + 1 ? p.substr(lib.size() + 1) : "");
+	// mods: Documents\Red Alert 3\Mods is the Mods folder of the game folder (copied there by the player)
+	static const std::string mods = "users/player/documents/red alert 3/mods";
+	if (lp == mods || lp.rfind(mods + "/", 0) == 0) return resolveCI(config.gameRoot, "Mods" + p.substr(mods.size()));
 	return resolveCI(config.dataRoot, p);
 }
 }
@@ -477,7 +481,23 @@ void unsupported(CPU* c, uint32_t va, const char* what)
 uint32_t g_eflags_hi = 0;
 uint32_t ra3_stub_tolower = 0xffffffffu;
 
-namespace rt { std::string commandLine() { return std::string("\"C:\\RA3\\Data\\") + gb::kExe + "\" -config RA3_" + config.language + "_" + gb::kVer + ".SkuDef -win"; } }
+namespace rt
+{
+// Mods: the game is started with -modConfig and the mod's .skudef, as the PC launcher does. The mod lives where
+// the PC game keeps mods (Documents\Red Alert 3\Mods), which is mapped to the Mods folder inside the game folder
+// on the phone (hostPath), so that a mod is installed by copying its folder there.
+std::string commandLine()
+{
+	std::string c = std::string("\"C:\\RA3\\Data\\") + gb::kExe + "\" -config RA3_" + config.language + "_" + gb::kVer + ".SkuDef -win";
+	if (!config.mod.empty())
+	{
+		std::string m = config.mod;
+		std::replace(m.begin(), m.end(), '/', '\\');
+		c += " -modConfig \"" + std::string(kModsDir) + "\\" + m + "\"";
+	}
+	return c;
+}
+}
 namespace rt { bool verbose() { static bool v = access("/sdcard/ra3_verbose", F_OK) == 0; return v; } }
 bool ra3_gate(CPU* c, uint32_t fn)
 {

@@ -25,6 +25,7 @@ struct Config
 	std::string logFile;
 	// launcher settings (<app data>/launcher.cfg); the /sdcard flag files still override them
 	std::string language = "russian";   // RA3_<language>_1.12.SkuDef
+	std::string mod;                     // launcher: the mod to start, its .skudef relative to <game folder>/Mods ("" = none)
 	bool playMovies = true;              // cutscenes and videos
 	bool fps60 = false;                  // experimental 60 fps cap
 	float uiScale = 1.f;                 // in-game interface size (HUD panels in the screen corners)

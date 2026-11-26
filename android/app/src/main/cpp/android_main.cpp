@@ -406,6 +406,7 @@ void startGame(const std::string& game)
 	rt::config.gameRoot = leaf == "data" ? dir.substr(0, dir.rfind('/')) : dir;
 	pushLine("game: " + game);
 	pushLine("game root: " + rt::config.gameRoot);
+	if (!rt::config.mod.empty()) rt::log("launcher: mod %s", rt::config.mod.c_str());
 	rt::log("launcher: language %s, cutscenes %d, log %d, fast shaders %d, wide screen %d, buttons %d%% / opacity %d%%, drag the map %d, camera rotation %d%%", rt::config.language.c_str(), (int)rt::config.playMovies, (int)!rt::config.logFile.empty(), (int)rt::config.fastShaders, (int)rt::config.wideScreen, rt::config.buttonSize, rt::config.buttonOpacity, (int)rt::config.panInvert, rt::config.rotateSpeed);
 	patchProfileResolutions();
 	status = "running";
@@ -530,6 +531,7 @@ void android_main(android_app* app)
 			std::string k = l.substr(0, eq), v = l.substr(eq + 1);
 			if (k == "language" && !v.empty() && v.find_first_of("/\\ \"") == std::string::npos) rt::config.language = v;
 			else if (k == "cutscenes") rt::config.playMovies = v == "1";
+			else if (k == "mod") { if (v.find('"') == std::string::npos && v.find("..") == std::string::npos) rt::config.mod = v; }
 			else if (k == "log") { if (v != "1") rt::config.logFile.clear(); }
 			else if (k == "fps60") rt::config.fps60 = v == "1";
 			else if (k == "fast_shaders") rt::config.fastShaders = v == "1";

@@ -54,7 +54,9 @@ public class LauncherActivity extends Activity {
 
     SharedPreferences prefs;
     Typeface condensed, condensedBold;
-    TextView langValue, gameText, playButton, warnText, statusText;
+    TextView langValue, modValue, gameText, playButton, warnText, statusText;
+    // mods: "<folder>/<file>.skudef" under the Mods folder of the game folder; "" = the game without a mod
+    List<String> mods = new ArrayList<>();
     Backdrop backdrop;
     volatile boolean busy;
     List<String> languages = new ArrayList<>();
@@ -176,6 +178,23 @@ public class LauncherActivity extends Activity {
         next.setOnClickListener(v -> stepLanguage(1));
         sel.addView(prev); sel.addView(langValue); sel.addView(next);
         lr.addView(sel);
+
+        // mod
+        LinearLayout mr = optionRow(opts, "MOD", "Mods in the Mods folder of the game folder (copy them there from Documents/Red Alert 3/Mods)");
+        LinearLayout msel = new LinearLayout(this);
+        msel.setGravity(Gravity.CENTER_VERTICAL);
+        TextView mprev = arrow("\u25C0"), mnext = arrow("\u25B6");
+        modValue = label("", 12, TEXT, true, 0.12f);
+        modValue.setGravity(Gravity.CENTER);
+        modValue.setMinWidth(dp(80));
+        modValue.setMaxWidth(dp(220));
+        modValue.setSingleLine(true);
+        modValue.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        mprev.setOnClickListener(v -> stepMod(-1));
+        mnext.setOnClickListener(v -> stepMod(1));
+        msel.addView(mprev); msel.addView(modValue); msel.addView(mnext);
+        mr.addView(msel);
+        showMod();
 
         // HUD size
         LinearLayout ur = optionRow(opts, "HUD SIZE", "Enlarges the minimap, build menu and other corner panels");
@@ -400,7 +419,64 @@ public class LauncherActivity extends Activity {
         String cur = prefs.getString("language", "");
         if (!languages.contains(cur)) prefs.edit().putString("language", languages.contains("english") ? "english" : languages.get(0)).apply();
         showLanguage();
+        scanMods();
         checkFiles();
+    }
+
+    // ---------------------------------------------------------------- mods
+    static File childCI(File dir, String name) {
+        File[] l = dir == null ? null : dir.listFiles();
+        if (l != null) for (File f : l) if (f.getName().equalsIgnoreCase(name)) return f;
+        return null;
+    }
+
+    // a mod folder can hold several versions (Mod_1.0.skudef, Mod_1.1.skudef): the newest one
+    static int cmpVersion(String a, String b) {
+        String[] x = a.split("[^0-9]+"), y = b.split("[^0-9]+");
+        for (int i = 0; i < Math.max(x.length, y.length); i++) {
+            long p = i < x.length && !x[i].isEmpty() ? Long.parseLong(x[i].length() > 12 ? x[i].substring(0, 12) : x[i]) : -1;
+            long q = i < y.length && !y[i].isEmpty() ? Long.parseLong(y[i].length() > 12 ? y[i].substring(0, 12) : y[i]) : -1;
+            if (p != q) return Long.compare(p, q);
+        }
+        return a.compareToIgnoreCase(b);
+    }
+
+    void scanMods() {
+        mods.clear();
+        mods.add("");
+        File md = gamePath.isEmpty() ? null : childCI(new File(gameRoot()), "Mods");
+        File[] dirs = md == null ? null : md.listFiles();
+        if (dirs != null) {
+            List<String> found = new ArrayList<>();
+            for (File d : dirs) {
+                if (!d.isDirectory()) continue;
+                File[] fs = d.listFiles();
+                String best = null;
+                if (fs != null)
+                    for (File f : fs)
+                        if (f.isFile() && f.getName().toLowerCase(Locale.ROOT).endsWith(".skudef") && (best == null || cmpVersion(f.getName(), best) > 0)) best = f.getName();
+                if (best != null) found.add(d.getName() + "/" + best);
+            }
+            Collections.sort(found, String.CASE_INSENSITIVE_ORDER);
+            mods.addAll(found);
+        }
+        if (!mods.contains(prefs.getString("mod", ""))) prefs.edit().putString("mod", "").apply();
+        showMod();
+    }
+
+    void stepMod(int d) {
+        int i = mods.indexOf(prefs.getString("mod", ""));
+        i = ((i < 0 ? 0 : i) + d + mods.size()) % mods.size();
+        prefs.edit().putString("mod", mods.get(i)).apply();
+        showMod();
+    }
+
+    void showMod() {
+        if (modValue == null) return;
+        String m = prefs.getString("mod", "");
+        if (m.isEmpty()) { modValue.setText(mods.size() > 1 ? "NONE" : "NONE FOUND"); return; }
+        String f = m.substring(m.indexOf('/') + 1);
+        modValue.setText(f.substring(0, f.length() - ".skudef".length()).replace('_', ' ').toUpperCase(Locale.ROOT));
     }
 
     // the log is on by default in test builds (nightly) and off in releases (it costs CPU time and storage)
@@ -703,6 +779,7 @@ public class LauncherActivity extends Activity {
         StringBuilder cfg = new StringBuilder();
         cfg.append("language=").append(prefs.getString("language", "russian")).append('\n');
         cfg.append("cutscenes=").append(prefs.getBoolean("cutscenes", true) ? 1 : 0).append('\n');
+        if (!prefs.getString("mod", "").isEmpty()) cfg.append("mod=").append(prefs.getString("mod", "")).append('\n');
         cfg.append("log=").append(prefs.getBoolean("log", logDefault()) ? 1 : 0).append('\n');
         cfg.append("ui_scale=").append(prefs.getInt("ui_scale", 110)).append('\n');
         cfg.append("wide_screen=").append(prefs.getBoolean("wide_screen", false) ? 1 : 0).append('\n');

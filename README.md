@@ -89,6 +89,13 @@ A game on a USB drive must stay connected while you play, and maps load more slo
 > [!TIP]
 > Files the game never uses can be moved out to save space: `Launcher/`, `Support/`, `Trailers/`, the installer files in the root folder and the older `Data/ra3_1.*.game` files (keep `ra3_1.12.game`, and `ra3_1.13.game` for Steam). Keep every `.big` archive and every `.SkuDef` file.
 
+### Mods (experimental)
+
+1. Put each mod in a folder named `Mods` inside the game folder, one folder per mod, as on PC: for example `RA3/Mods/MyMod/MyMod_1.0.skudef` next to the mod's `.big` files. A mod installed on a PC can be copied from `Documents/Red Alert 3/Mods`.
+2. Choose it under **Mod** in the launcher (the newest version of each mod is listed) and tap **Play**. **None** starts the game without a mod.
+
+Most mods are made for patch 1.12 (**RA3 Native**); whether one also runs in RA3 Native Steam depends on the mod. Steam Workshop items are not listed yet; a Workshop mod can be used by copying its folder into `Mods`.
+
 ## Controls
 
 | Gesture | Action |
@@ -115,6 +122,7 @@ The phone's volume keys keep working, and the screen stays on while the game run
 | Option | Default | |
 |---|---|---|
 | Interface language | detected | Every language installed in your game folder (`RA3_<language>_1.12.SkuDef`, Steam: `_1.13`) |
+| Mod | None | A mod from the `Mods` folder of the game folder (see [Mods](#mods-experimental)) |
 | Cutscenes | On | Intro, briefings and campaign videos |
 | Log file | Off in releases, on in nightly builds | Writes `/sdcard/ra3_native.log` (`ra3_native_steam.log` in RA3 Native Steam) — turn it on and attach the file to bug reports |
 | HUD size | 110% | Enlarges the minimap, build menu and other corner panels (100–200% in 10% steps) |
@@ -140,7 +148,7 @@ The game logic itself is capped at 30 fps, like on PC. Rendering runs on its own
 
 - **Online play** — the original GameSpy servers were shut down in 2014. Support for the community C&C:Online servers is planned.
 - **LAN play** is new and largely untested.
-- **Mods, Steam Workshop and Uprising** are not supported yet. *Uprising* is a separate game with its own executable, which would need its own recompiled app.
+- **Mods** are experimental and have been tried with few mods so far. **Steam Workshop** and **Uprising** are not supported yet. *Uprising* is a separate game with its own executable, which would need its own recompiled app.
 - The game runs at **30 fps**, as on PC. An experimental 60 fps mode (`/sdcard/ra3_fps60`) exists but is not usable yet: the game's engine ties its logic and effects to the frame rate.
 
 Found something else? Please [open an issue](https://github.com/blackorange-sketch/RA3-Native/issues) with your device model and the `ra3_native.log` file (`ra3_native_steam.log` for the Steam app).
