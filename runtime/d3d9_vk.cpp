@@ -751,6 +751,10 @@ VkPipeline pipeline(const PipeKey& k, const VtxLayout& vl)
 	vp.viewportCount = 1; vp.scissorCount = 1;
 	VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
 	rs.polygonMode = VK_POLYGON_MODE_FILL; rs.lineWidth = 1.f;
+	// Direct3D's front faces are clockwise on screen, and the frame is laid out as on screen: clockwise in Vulkan's
+	// framebuffer too. Static state: the Adreno driver ignored the dynamic front face (the ground, a single-sided
+	// surface, was culled away until the static default was the right one)
+	rs.frontFace = VK_FRONT_FACE_CLOCKWISE;
 	VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
 	ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 	VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
@@ -764,7 +768,7 @@ VkPipeline pipeline(const PipeKey& k, const VtxLayout& vl)
 	cb.attachmentCount = k.cf != VK_FORMAT_UNDEFINED ? 1 : 0; cb.pAttachments = &ba;
 	const VkDynamicState dyn[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_BLEND_CONSTANTS, VK_DYNAMIC_STATE_DEPTH_BIAS,
 		VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK, VK_DYNAMIC_STATE_STENCIL_REFERENCE, VK_DYNAMIC_STATE_CULL_MODE,
-		VK_DYNAMIC_STATE_FRONT_FACE, VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY, VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE, VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE,
+		VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY, VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE, VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE,
 		VK_DYNAMIC_STATE_DEPTH_COMPARE_OP, VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE, VK_DYNAMIC_STATE_STENCIL_OP, VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE};
 	VkPipelineDynamicStateCreateInfo dy{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
 	dy.dynamicStateCount = sizeof dyn / sizeof dyn[0]; dy.pDynamicStates = dyn;
@@ -1402,20 +1406,8 @@ void draw(const DrawCall& dc)
 		}
 		if (full || memcmp(&sc, &S.sc, sizeof sc)) { vkCmdSetScissor(C, 0, 1, &sc); S.sc = sc; }
 	}
-	// Direct3D's front faces are clockwise on screen. The frame is laid out as on screen (row 0 at the top), and Vulkan
-	// counts the winding with y pointing down: on-screen clockwise is its "counter-clockwise" (frame dump: with
-	// CLOCKWISE the terrain and the water - single-sided surfaces - were culled away, the mirrored reflection kept them)
-	if (full) pSetFrontFace(C, VK_FRONT_FACE_COUNTER_CLOCKWISE);
 	{
-		// test switch /sdcard/ra3_vkcull: "none" draws both sides of every triangle, "flip" swaps the culled side
-		static const int cullTest = [] {
-			int m = 0; char b[16] = {0};
-			if (FILE* f = fopen("/sdcard/ra3_vkcull", "r")) { if (fgets(b, sizeof b, f)) m = strncmp(b, "none", 4) == 0 ? 1 : strncmp(b, "flip", 4) == 0 ? 2 : 0; fclose(f); log("vulkan: cull test mode %d (%s)", m, b); }
-			return m;
-		}();
-		uint32_t cull = rs[22] == 2 ? VK_CULL_MODE_FRONT_BIT : rs[22] == 3 ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;
-		if (cullTest == 1) cull = VK_CULL_MODE_NONE;
-		else if (cullTest == 2 && cull) cull ^= VK_CULL_MODE_FRONT_BIT | VK_CULL_MODE_BACK_BIT;
+		uint32_t cull = rs[22] == 2 ? VK_CULL_MODE_FRONT_BIT : rs[22] == 3 ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;   // D3DCULL_CW culls the front (clockwise) faces
 		if (full || S.cull != cull) { pSetCullMode(C, cull); S.cull = cull; }
 		uint32_t tp = topo(dc.prim);
 		if (full || S.topo != tp) { pSetTopology(C, (VkPrimitiveTopology)tp); S.topo = tp; }
@@ -1630,78 +1622,6 @@ void draw(const DrawCall& dc)
 		}
 	}
 	if (needZero) { VkDeviceSize zo = 0; vkCmdBindVertexBuffers(C, 15, 1, &gZeroVb, &zo); }
-	{
-		// diagnostics while the Vulkan renderer is being brought up: the first draws of each shader / vertex layout
-		// in a battle (frame 900 on): layout, streams, draw parameters and the first vertex as the game wrote it
-		static std::unordered_map<uint64_t, int> seen;
-		static int logged = 0;
-		uint32_t fr = glr::frameNo();
-		uint64_t key = vs->hash ^ fnv(dev.vdecl->blob.data(), dev.vdecl->blob.size()) * 31 ^ (uint64_t)dc.indexed << 63;
-		if (fr >= 900 && logged < 150 && seen[key]++ == 0)
-		{
-			logged++;
-			char b[256];
-			std::string o;
-			snprintf(b, sizeof b, "vkdiag #%d f%u vs %016llx ps %016llx prim %u n %u idx %d base %d start %u min %u nv %u inst %u up %d vtxOff %d rt %ux%u f%d z %u blend %u |",
-				logged, fr, (unsigned long long)vs->hash, (unsigned long long)ps->hash, dc.prim, dc.primCount, (int)dc.indexed, (int)dc.baseVertex, dc.startIndex, dc.minIndex, dc.numVertices,
-				instCount, dc.upVerts ? 1 : 0, (int)vtxOff, t.w, t.h, t.color ? (int)t.color->fmt : -1, rs[7], rs[27]);
-			o += b;
-			for (uint32_t k = 0; k < nEls; k++)
-			{
-				snprintf(b, sizeof b, " s%u+%u:t%u:u%u.%u->L%d", els[k].stream, els[k].offset, els[k].type, els[k].usage, els[k].index, shdr::attrLocation(els[k].usage, els[k].index));
-				o += b;
-			}
-			o += " |";
-			for (uint32_t si = 0; si < 15; si++)
-				if (streamsUsed >> si & 1)
-				{
-					const Stream& st = dev.streams[si];
-					snprintf(b, sizeof b, " stream%u stride %u off %u size %u usage %x freq %x", si, dc.upVerts ? dc.upStride : st.stride, st.offset, st.vb ? st.vb->size : 0, st.vb ? st.vb->usage : 0, st.freq);
-					o += b;
-				}
-			if (dev.ib && dc.indexed && !dc.upIdx) { snprintf(b, sizeof b, " | ib fmt %u size %u usage %x", dev.ib->fmt, dev.ib->size, dev.ib->usage); o += b; }
-			o += " | tex";
-			for (int i = 0; i < 16; i++)
-				if (mask >> i & 1)
-				{
-					Obj* tt = dev.tex[i] ? texOwner(dev.tex[i]) : nullptr;
-					VTex* vt = tt ? (VTex*)tt->vk : nullptr;
-					snprintf(b, sizeof b, " %d:%s%ux%u f%u l%u a%u/%u%s%s", i, tt ? "" : "none ", tt ? tt->w : 0, tt ? tt->h : 0, tt ? tt->fmt : 0, tt ? tt->levels : 0, dev.samp[i][1], dev.samp[i][2],
-						vt && vt->rt ? (vt->content ? " RT" : " RT-EMPTY") : "", vt && (vt == t.color || vt == t.depth) ? " SELF" : "");
-					o += b;
-				}
-			log("%s", o.c_str());
-			// the first three vertices of the position stream
-			for (uint32_t k = 0; k < nEls; k++)
-			{
-				if (els[k].usage != 0 || els[k].index != 0) continue;
-				const Stream& st = dev.streams[els[k].stream < 15 ? els[k].stream : 0];
-				const uint8_t* base = nullptr; uint32_t stride = 0, size = 0;
-				if (dc.upVerts) { base = (const uint8_t*)dc.upVerts; stride = dc.upStride; size = 1u << 30; }
-				else if (st.vb && st.vb->data) { base = (const uint8_t*)guest::host(st.vb->data) + st.offset; stride = st.stride; size = st.vb->size - st.offset; }
-				if (!base) break;
-				std::string v;
-				for (uint32_t q = 0; q < 3; q++)
-				{
-					int64_t vi = dc.indexed ? 0 : (dc.upVerts ? 0 : dc.baseVertex);
-					if (dc.indexed && dev.ib && dev.ib->data && !dc.upIdx)
-					{
-						const uint8_t* ip = (const uint8_t*)guest::host(dev.ib->data);
-						vi = (int64_t)dc.baseVertex + (dev.ib->fmt == 102 ? ((const uint32_t*)ip)[dc.startIndex + q] : ((const uint16_t*)ip)[dc.startIndex + q]);
-					}
-					else vi += q;
-					uint64_t off = (uint64_t)vi * stride + els[k].offset;
-					if (vi < 0 || off + 16 > size) { v += " (out)"; break; }
-					const uint8_t* p = base + off;
-					if (els[k].type <= 3) { float f[4] = {0, 0, 0, 0}; memcpy(f, p, 4 * (els[k].type + 1)); snprintf(b, sizeof b, " v%lld(%g %g %g %g)", (long long)vi, f[0], f[1], f[2], f[3]); }
-					else { int16_t h[4]; memcpy(h, p, 8); snprintf(b, sizeof b, " v%lld[%d %d %d %d]", (long long)vi, h[0], h[1], h[2], h[3]); }
-					v += b;
-				}
-				log("vkdiag   position%s", v.c_str());
-				break;
-			}
-		}
-	}
 	if (!dc.indexed) vkCmdDraw(C, nv, instCount, 0, 0);
 	else if (dc.upIdx)
 	{

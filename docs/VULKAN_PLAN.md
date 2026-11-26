@@ -83,7 +83,9 @@ stays at its 30 fps; the gain is heat, battery and headroom for weaker phones.
 - [ ] 3-5. Resources, pipelines, render passes — first version written (`d3d9_vk.cpp`, VMA in `third_party/vma`):
   textures (BC on Adreno), buffers with a per-frame ring, pipelines on dynamic state, dynamic rendering, StretchRect,
   auto mip maps, present with letterbox and buttons; not yet: blurred side bars, bloom half-size copy, draw merging,
-  GPU timing, load/store optimisation
+  GPU timing, load/store optimisation. Found on Adreno: no USCALED/SSCALED vertex formats (such streams are
+  rewritten as floats on the CPU for now; integer inputs converted in the shader would be cheaper), the dynamic
+  front face is ignored (static in the pipeline). Diagnostics: /sdcard/ra3_vkdump (every pass of one frame as BMP)
 - [ ] 3. Resources
 - [ ] 4. Pipelines
 - [ ] 5. Render passes
