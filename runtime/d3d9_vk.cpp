@@ -26,6 +26,7 @@
 #include <cstring>
 #include <chrono>
 #include <functional>
+#include <map>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
@@ -782,7 +783,7 @@ void convertVerts(const ConvLayout& cl, const uint8_t* src, uint32_t srcStride, 
 		for (uint32_t k = 0; k < cl.n; k++, dst += 4) decodeAttr(cl.type[k], src + cl.off[k], dst);
 }
 struct ConvBuf { uint32_t ver = 0; uint64_t key = 0; VBuf* buf = nullptr; };
-std::unordered_map<Obj*, ConvBuf> gConv;
+std::map<std::pair<Obj*, uint32_t>, ConvBuf> gConv;   // (buffer, stream offset modulo the stride) -> its float copy
 
 struct VtxLayout
 {
@@ -1216,8 +1217,7 @@ void reap(uint32_t frame)
 		for (int i = 0; i < 16 && !bound; i++) bound = dev.tex[i] == o || dev.streams[i].vb == o;
 		if (bound || frame - o->lastUse < 1800 || o->lastUse > frame) { requeueReleased(o); continue; }
 		{
-			auto it = gConv.find(o);
-			if (it != gConv.end()) { destroyBuf(it->second.buf); gConv.erase(it); }
+			for (auto it = gConv.lower_bound({o, 0}); it != gConv.end() && it->first.first == o;) { destroyBuf(it->second.buf); it = gConv.erase(it); }
 		}
 		if (o->vk)
 		{
@@ -1768,13 +1768,16 @@ void draw(const DrawCall& dc)
 			if (!b && (convMask >> si & 1))
 			{
 				// a static buffer rewritten once per version (and per layout)
+				// many terrain patches share one buffer at different offsets: one copy per buffer (and offset phase),
+				// the offset becomes a vertex index into it
 				if (!st.vb->data || !st.stride || st.offset >= st.vb->size) SKIP();
-				ConvBuf& cb = gConv[st.vb];
-				uint64_t key = fnv(&conv[si], sizeof conv[si], st.stride * 1000003ull + st.offset);
+				uint32_t phase = st.offset % st.stride, first = st.offset / st.stride;
+				ConvBuf& cb = gConv[{st.vb, phase}];
+				uint64_t key = fnv(&conv[si], sizeof conv[si], st.stride * 1000003ull + phase);
 				uint32_t outStride = 16 * conv[si].n;
 				if (!cb.buf || cb.ver != st.vb->ver || cb.key != key)
 				{
-					uint32_t n = (st.vb->size - st.offset) / st.stride;
+					uint32_t n = (st.vb->size - phase) / st.stride;
 					VBuf* nb = new VBuf;
 					VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
 					bi.size = std::max<VkDeviceSize>(16, (VkDeviceSize)n * outStride); bi.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
@@ -1782,7 +1785,7 @@ void draw(const DrawCall& dc)
 					VmaAllocationInfo inf;
 					if (!vkOk(vmaCreateBuffer(gA, &bi, &ai, &nb->buf, &nb->mem, &inf), "converted vertex buffer")) { delete nb; SKIP(); }
 					nb->map = (uint8_t*)inf.pMappedData; nb->size = (uint32_t)bi.size;
-					convertVerts(conv[si], (const uint8_t*)guest::host(st.vb->data) + st.offset, st.stride, n, (float*)nb->map);
+					convertVerts(conv[si], (const uint8_t*)guest::host(st.vb->data) + phase, st.stride, n, (float*)nb->map);
 					vmaFlushAllocation(gA, nb->mem, 0, VK_WHOLE_SIZE);
 					if (cb.buf) destroyBuf(cb.buf);
 					cb.buf = nb; cb.ver = st.vb->ver; cb.key = key;
@@ -1792,7 +1795,7 @@ void draw(const DrawCall& dc)
 				}
 				st.vb->lastUse = glr::frameNo();
 				b = cb.buf->buf;
-				int64_t base = perInst ? 0 : (dc.indexed ? (int64_t)dc.baseVertex - vtxOff : dc.baseVertex);
+				int64_t base = (int64_t)first + (perInst ? 0 : (dc.indexed ? (int64_t)dc.baseVertex - vtxOff : dc.baseVertex));
 				if (base < 0) SKIP();
 				o = (VkDeviceSize)base * outStride;
 			}
