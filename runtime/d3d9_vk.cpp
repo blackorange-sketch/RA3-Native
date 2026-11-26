@@ -98,6 +98,8 @@ struct VTex
 	VkComponentMapping swz{};
 	uint32_t content = 0;       // render target: bumped by every draw / clear into it
 	VTex* fb = nullptr;         // its copy for draws that sample the target they draw to (water reads the scene)
+	uint8_t pendClr = 0;        // a clear not done yet (1 colour, 2 depth, 4 stencil): the load op of its next pass
+	VkClearValue pendColor{}, pendDS{};
 	uint32_t fbContent = ~0u;
 };
 struct VBuf
@@ -438,12 +440,42 @@ void endPass()
 	}
 	if (dumping()) dumpTarget(gPass.color, gPass.cLevel, gPass.cLayer, "pass");
 }
+void flushClear(VTex* t);
 void toLayout(VTex* t, VkImageLayout l)
 {
+	if (t->pendClr && l != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL && l != VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) flushClear(t);
 	if (t->layout == l) return;
 	endPass();
 	barrier(C, t->img, t->aspect, t->layout, l);
 	t->layout = l;
+}
+
+// a pending clear done on its own (the image is read before anything is drawn into it)
+uint32_t gClearFlushes = 0;
+void flushClear(VTex* t)
+{
+	if (!t->pendClr) return;
+	endPass();
+	VkImageLayout al = t->depth ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	if (t->layout != al) { barrier(C, t->img, t->aspect, t->layout, al); t->layout = al; }
+	VkRenderingAttachmentInfo a{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}, st{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+	a.imageView = attView(t, 0, 0); a.imageLayout = al; a.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+	st = a;
+	VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
+	ri.renderArea = {{0, 0}, {t->w, t->h}}; ri.layerCount = 1;
+	if (t->depth)
+	{
+		a.loadOp = (t->pendClr & 2) ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD; a.clearValue = t->pendDS;
+		st.loadOp = (t->pendClr & 4) ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD; st.clearValue = t->pendDS;
+		ri.pDepthAttachment = &a;
+		if (t->stencil) ri.pStencilAttachment = &st;
+	}
+	else { a.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; a.clearValue = t->pendColor; ri.colorAttachmentCount = 1; ri.pColorAttachments = &a; }
+	pBeginRendering(C, &ri);
+	pEndRendering(C);
+	t->pendClr = 0;
+	t->useSerial = gSerial;
+	gClearFlushes++;
 }
 
 // ---- back buffer
@@ -1193,7 +1225,6 @@ bool beginPass(const Target& t, const VkClearAttachment* clr = nullptr, uint32_t
 	if (!nClr && gInPass && t.color == gPass.color && t.cLevel == gPass.cLevel && t.cLayer == gPass.cLayer && t.depth == gPass.depth) return true;
 	endPass();
 	gPassDraws = 0; gPasses++;
-	if (nClr) gPassClears++;
 	if (t.color) toLayout(t.color, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 	if (t.depth) toLayout(t.depth, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 	VkRenderingAttachmentInfo ca{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}, da{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}, sa{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
@@ -1217,7 +1248,16 @@ bool beginPass(const Target& t, const VkClearAttachment* clr = nullptr, uint32_t
 		t.depth->useSerial = gSerial;
 	}
 	// a clear at the start of a pass: the attachment is not read from memory at all (tiled GPUs)
-	for (uint32_t i = 0; i < nClr; i++)
+	if (t.color && (t.color->pendClr & 1)) { ca.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; ca.clearValue = t.color->pendColor; t.color->pendClr = 0; nClr++; }
+	if (t.depth && (t.depth->pendClr & 6))
+	{
+		if (t.depth->pendClr & 2) { da.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; da.clearValue = t.depth->pendDS; }
+		if (t.depth->pendClr & 4) { sa.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; sa.clearValue = t.depth->pendDS; }
+		t.depth->pendClr = 0;
+		nClr++;
+	}
+	if (nClr) gPassClears++;
+	for (uint32_t i = 0; i < nClr && clr; i++)
 	{
 		if ((clr[i].aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) && t.color) { ca.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; ca.clearValue = clr[i].clearValue; }
 		if ((clr[i].aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT) && t.depth) { da.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; da.clearValue = clr[i].clearValue; }
@@ -1501,14 +1541,38 @@ void clear(uint32_t count, uint32_t rects, uint32_t flags, uint32_t color, float
 		if (as) { a[na].aspectMask = as; a[na].colorAttachment = 0; a[na].clearValue.depthStencil = {z, stencil & 255}; na++; }
 	}
 	if (!na) return;
-	bool samePass = gInPass && t.color == gPass.color && t.cLevel == gPass.cLevel && t.cLayer == gPass.cLayer && t.depth == gPass.depth;
-	if (!(count && rects) && (!samePass || gPassDraws == 0))
+	// a whole-target clear is remembered on the images and becomes the load operation of the next pass that uses
+	// them (unless the open pass already drew into them: then it is done in that pass). Saves writing the cleared
+	// picture out and reading it back in (tiled GPUs), and lets a pass that does not use the depth buffer skip it.
+	bool inUse = gInPass && gPassDraws > 0 && ((t.color && t.color == gPass.color) || (t.depth && t.depth == gPass.depth));
+	bool single = (!t.color || (t.color->levels == 1 && t.color->layers == 1)) && (!t.depth || (t.depth->levels == 1 && t.depth->layers == 1));   // pending clears are per image
+	if (!(count && rects) && !inUse && !single)
 	{
-		// nothing drawn into this pass yet: start it with the clear as its load operation
-		beginPass(t, a, na);
+		beginPass(t, a, na);   // a mip level or cube face: its pass starts with the clear right away
 		if (t.color && (flags & 1)) t.color->content++;
 		if (t.depth && (flags & 6)) t.depth->content++;
-		if (dumping()) log("vkdump pass %d clear (load op) flags %x color %08x z %g rt %ux%u", gDumpPass, flags, color, (double)z, t.w, t.h);
+		return;
+	}
+	if (!(count && rects) && !inUse)
+	{
+		if (gInPass && ((t.color && t.color == gPass.color) || (t.depth && t.depth == gPass.depth))) endPass();   // its pass has nothing drawn yet
+		for (uint32_t i = 0; i < na; i++)
+		{
+			if (a[i].aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) { t.color->pendClr |= 1; t.color->pendColor = a[i].clearValue; }
+			else
+			{
+				uint8_t bits = ((a[i].aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT) ? 2 : 0) | ((a[i].aspectMask & VK_IMAGE_ASPECT_STENCIL_BIT) ? 4 : 0);
+				// a pending depth and a new stencil clear (or the reverse): keep both values
+				VkClearDepthStencilValue v = t.depth->pendDS.depthStencil;
+				if (bits & 2) v.depth = a[i].clearValue.depthStencil.depth;
+				if (bits & 4) v.stencil = a[i].clearValue.depthStencil.stencil;
+				t.depth->pendDS.depthStencil = v;
+				t.depth->pendClr |= bits;
+			}
+		}
+		if (t.color && (flags & 1)) t.color->content++;
+		if (t.depth && (flags & 6)) t.depth->content++;
+		if (dumping()) log("vkdump pass %d clear (pending) flags %x color %08x z %g rt %ux%u", gDumpPass, flags, color, (double)z, t.w, t.h);
 		return;
 	}
 	beginPass(t);
@@ -1571,6 +1635,7 @@ void draw(const DrawCall& dc)
 	}
 	Target t;
 	if (!currentTarget(t)) SKIP();
+	const bool needDepth = t.depth && (dev.rs[7] || dev.rs[14] || dev.rs[52]);
 	PHASE(0);
 	bool precise = rt::config.fastShaders && vs->info.relC;
 	if (rt::config.fastShaders && !precise)
@@ -1592,7 +1657,7 @@ void draw(const DrawCall& dc)
 			Obj* ow = texOwner(o);
 			int okind = ow->iface == ICube ? 1 : ow->iface == IVolume ? 2 : 0;
 			if (okind == kind) tx = ensureTex(o);
-			if (tx && (tx == t.color || tx == t.depth)) tx = feedback(tx, tx == t.color ? t.cLevel : 0, tx == t.color ? t.cLayer : 0);   // reads its own target
+			if (tx && (tx == t.color || (tx == t.depth && needDepth))) tx = feedback(tx, tx == t.color ? t.cLevel : 0, tx == t.color ? t.cLayer : 0);   // reads its own target
 			if (tx && ow->mipDirty && tx->levels > 1 && !tx->depth) { genMips(tx); ow->mipDirty = false; }
 		}
 		if (tx && i == 0 && kind == 0 && ps->hash == 0xfc2bc143afb0d7e0ull) tx = brightPassCopy(tx, t);
@@ -1604,7 +1669,17 @@ void draw(const DrawCall& dc)
 		samps[i] = sampler(dev.samp[i], tx->levels > 1, tx->noFilter);
 		mask |= 1u << i;
 	}
-	beginPass(t);
+	{
+		// a draw that does not use the depth buffer does not open a pass with it (a full-screen effect then neither
+		// reads nor writes the 10 MB depth buffer); it stays in an open pass that has it
+		Target pt = t;
+		if (!needDepth)
+		{
+			if (gInPass && gPass.color == t.color && gPass.cLevel == t.cLevel && gPass.cLayer == t.cLayer && (gPass.depth == t.depth || !gPass.depth)) pt = gPass;
+			else if (t.color) pt.depth = nullptr;
+		}
+		beginPass(pt);
+	}
 	PHASE(1);
 
 	// vertex layout
@@ -1697,8 +1772,8 @@ void draw(const DrawCall& dc)
 	}
 	pk.colorMask = rs[168] & 15;
 	pk.cf = t.color ? t.color->fmt : VK_FORMAT_UNDEFINED;
-	pk.df = t.depth ? t.depth->fmt : VK_FORMAT_UNDEFINED;
-	pk.hasStencil = t.depth && t.depth->stencil;
+	pk.df = gPass.depth ? gPass.depth->fmt : VK_FORMAT_UNDEFINED;
+	pk.hasStencil = gPass.depth && gPass.depth->stencil;
 	pk.topo = topoClass(dc.prim);
 	VkPipeline pipe = pipeline(pk, vl);
 	if (!pipe) SKIP();
@@ -1708,7 +1783,7 @@ void draw(const DrawCall& dc)
 	// dynamic state (only what changed)
 	bool full = !S.valid;
 	S.valid = true;
-	bool hasDepth = t.depth != nullptr;
+	bool hasDepth = gPass.depth != nullptr;
 	{
 		uint32_t vx = dev.vp[0], vy = dev.vp[1], vw = dev.vp[2], vh = dev.vp[3];
 		if (!vw || !vh) { vx = vy = 0; vw = t.w; vh = t.h; }
@@ -2197,6 +2272,8 @@ bool present(int sw, int sh)
 			gSt.gpuFrames ? gSt.gpuNs / 1e6 / gSt.gpuFrames : 0.0, gSt.cpuNs / 1e6 / f, gSt.presentNs / 1e6 / f, gSt.draws / f, gSt.passes / f, gSt.clearPasses / f, gSt.barriers / f, gSt.uploads, gPipes.size(), gSt.newPipes);
 		log("vulkan perf: draw CPU ms per frame: setup %.2f, textures+pass %.2f, pipeline %.2f, state %.2f, constants %.2f, texture sets %.2f (%.0f), vertices+draw %.2f",
 			gSt.phaseNs[0] / 1e6 / f, gSt.phaseNs[1] / 1e6 / f, gSt.phaseNs[2] / 1e6 / f, gSt.phaseNs[3] / 1e6 / f, gSt.phaseNs[4] / 1e6 / f, gSt.phaseNs[5] / 1e6 / f, gSt.descSets / f, gSt.phaseNs[6] / 1e6 / f);
+		log("vulkan perf: clears done on their own %.1f per frame", gClearFlushes / f);
+		gClearFlushes = 0;
 		log("vulkan perf: per frame KB: ring %.0f, buffer copies %.0f, buffer renames %.1f (%.0f KB), texture uploads %.1f (%.0f KB), vertices converted %.0f (%u rebuilds)",
 			gSt.ringBytes / 1024.0 / f, gSt.copyBytes / 1024.0 / f, gSt.renames / f, gSt.renameBytes / 1024.0 / f, gSt.texUploads / f, gSt.uploadBytes / 1024.0 / f, gSt.convVerts / f, gSt.convRebuilds);
 		gSt = Stats();
