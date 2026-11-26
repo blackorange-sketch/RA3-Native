@@ -775,7 +775,7 @@ void decodeAttr(uint8_t t, const uint8_t* p, float* o)
 	}
 }
 // elements of one stream rewritten as float4s: `nEl` elements (types, source offsets)
-struct ConvLayout { uint32_t n = 0; uint8_t type[16]; uint16_t off[16]; };
+struct ConvLayout { uint32_t n = 0; uint8_t type[16] = {}; uint16_t off[16] = {}; };   // no padding: hashed as bytes
 void convertVerts(const ConvLayout& cl, const uint8_t* src, uint32_t srcStride, uint32_t count, float* dst)
 {
 	gSt.convVerts += count;
@@ -1485,7 +1485,7 @@ void draw(const DrawCall& dc)
 		}
 	uint32_t locs = 0, intMask = 0, uintMask = 0;
 	// streams with a format the GPU cannot fetch: rewritten as float4s
-	ConvLayout conv[15];
+	ConvLayout conv[15] = {};   // zeroed: the copies are keyed by its bytes
 	uint32_t convMask = 0;
 	if (!gScaled)
 		for (uint32_t k = 0; k < nEls; k++)
