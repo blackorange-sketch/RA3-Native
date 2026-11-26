@@ -802,6 +802,16 @@ IMP_ID(DX, "D3DXCreateEffectEx", D3DXCreateEffectEx, 40)
 			for (auto& t : info->techs) tl += (tl.empty() ? "" : ",") + t.name + "/" + std::to_string(t.passes.size());
 			log("   effect parsed: %zu params, %zu techniques [%s], hdr %u", info->params.size(), info->techs.size(), tl.c_str(), info->base);
 			d3d::fxrt::initParams(*info);
+			if (gfx::vulkan())   // Vulkan stage 2: every shader of the effect compiled to SPIR-V in the background
+				for (uint32_t t = 0; t < info->techs.size(); t++)
+					for (uint32_t p = 0; p < info->techs[t].passes.size(); p++)
+						for (uint32_t k = 0; k < info->techs[t].passes[p].sts.size(); k++)
+						{
+							auto sc = d3d::fxrt::stateInfo(info->techs[t].passes[p].sts[k].op).cls;
+							d3d::fxrt::ShaderRef r;
+							if ((sc == d3d::fxrt::SC_VS || sc == d3d::fxrt::SC_PS) && d3d::fxrt::resolveShader(*info, t, p, k, r) && r.code && r.size)
+								vksh::check(std::vector<uint8_t>(r.code, r.code + r.size));
+						}
 			if (ARG(5))
 			{
 				std::string skip = rt::gstr(ARG(5)), names;
