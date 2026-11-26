@@ -72,7 +72,7 @@ uint32_t gDraws = 0, gDrawsTotal = 0;
 struct Stats
 {
 	uint64_t gpuNs = 0, cpuNs = 0, presentNs = 0, phaseNs[8] = {}, renameBytes = 0, copyBytes = 0, ringBytes = 0, convVerts = 0, uploadBytes = 0;
-	uint32_t swaps = 0, swapResolves = 0, swapFree = 0, gpuFrames = 0, frames = 0, draws = 0, passes = 0, clearPasses = 0, barriers = 0, uploads = 0, renames = 0, descSets = 0, texUploads = 0, newPipes = 0, convRebuilds = 0;
+	uint32_t batched = 0, batches = 0, swaps = 0, swapResolves = 0, swapFree = 0, gpuFrames = 0, frames = 0, draws = 0, passes = 0, clearPasses = 0, barriers = 0, uploads = 0, renames = 0, descSets = 0, texUploads = 0, newPipes = 0, convRebuilds = 0;
 } gSt;
 uint64_t nowNs() { return (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 struct CpuTimer { uint64_t t0 = nowNs(); ~CpuTimer() { gSt.cpuNs += nowNs() - t0; } };
@@ -438,8 +438,90 @@ void writeDumps(Frame& f)
 	f.dumps.clear();
 }
 
+// ---- draw merging (as the OpenGL renderer): consecutive opaque draws of the same mesh with the same shaders,
+// textures, states and constants that differ only in their World matrix become one instanced draw. The first one is
+// recorded without its draw command; following identical draws only add their World rows (per-instance vertex
+// data); anything else recorded first issues it. /sdcard/ra3_nobatch: off.
+constexpr uint32_t kBatchMax = 64, kInstBinding = 16;
+struct BatchSig
+{
+	ShaderObj* vs; ShaderObj* ps; Obj* decl; Obj* ib; uint32_t ibVer;
+	Obj* vb[16]; uint32_t vbVer[16], off[16], stride[16], freq[16];
+	Obj* tex[16]; uint32_t texVer[16];
+	Obj* rt; Obj* ds; uint32_t vp[4]; float vpZ[2]; int32_t sc[4];
+	uint32_t prim, count, start, minIdx, numV; int32_t base;
+};
+struct Batch
+{
+	bool open = false;
+	int wreg = -1;
+	uint32_t nvs = 0, nps = 0, count = 0, nv = 0, first = 0;
+	int32_t vtxOff = 0;
+	float* rows = nullptr;   // kBatchMax x 12 floats in the ring
+	BatchSig sig;
+	uint32_t rs[256], samp[16][16];
+	float vsF[256 * 4], psF[224 * 4];
+	int32_t vsI[16 * 4], psI[16 * 4], vsB[16], psB[16];
+} gBat;
+bool batchOn()
+{
+	static const bool on = [] { bool off = access("/sdcard/ra3_nobatch", F_OK) == 0; log("vulkan: draw merging %s", off ? "off (ra3_nobatch)" : "on"); return !off; }();
+	return on;
+}
+void batchSig(const DrawCall& dc, BatchSig& g)
+{
+	memset(&g, 0, sizeof g);
+	g.vs = dev.vs; g.ps = dev.ps; g.decl = dev.vdecl; g.ib = dev.ib; g.ibVer = dev.ib ? dev.ib->ver : 0;
+	for (int i = 0; i < 16; i++)
+	{
+		const Stream& st = dev.streams[i];
+		g.vb[i] = st.vb; g.vbVer[i] = st.vb ? st.vb->ver : 0; g.off[i] = st.offset; g.stride[i] = st.stride; g.freq[i] = st.freq;
+		g.tex[i] = dev.tex[i]; g.texVer[i] = dev.tex[i] ? dev.tex[i]->ver : 0;
+	}
+	g.rt = dev.rt0; g.ds = dev.ds; memcpy(g.vp, dev.vp, sizeof g.vp); memcpy(g.vpZ, dev.vpZ, sizeof g.vpZ); memcpy(g.sc, dev.scissor, sizeof g.sc);
+	g.prim = dc.prim; g.count = dc.primCount; g.start = dc.startIndex; g.minIdx = dc.minIndex; g.numV = dc.numVertices; g.base = dc.baseVertex;
+}
+void batchOpen(const DrawCall& dc, int wreg)
+{
+	Batch& b = gBat;
+	b.open = true; b.wreg = wreg; b.count = 1;
+	b.nvs = std::min(256, dev.vs->info.numC); b.nps = dev.ps->info.relC ? 224 : std::min(224, dev.ps->info.numC);
+	batchSig(dc, b.sig);
+	memcpy(b.rs, dev.rs, sizeof b.rs); memcpy(b.samp, dev.samp, sizeof b.samp);
+	memcpy(b.vsF, dev.vsF, 16ull * b.nvs); memcpy(b.psF, dev.psF, 16ull * b.nps);
+	memcpy(b.vsI, dev.vsI, sizeof b.vsI); memcpy(b.psI, dev.psI, sizeof b.psI); memcpy(b.vsB, dev.vsB, sizeof b.vsB); memcpy(b.psB, dev.psB, sizeof b.psB);
+	memcpy(b.rows, dev.vsF + 4 * wreg, 48);
+	gSt.batches++;
+}
+bool batchAppend(const DrawCall& dc)
+{
+	Batch& b = gBat;
+	if (!b.open || b.count >= kBatchMax) return false;
+	BatchSig g;
+	batchSig(dc, g);
+	int w = b.wreg;
+	bool same = !memcmp(&g, &b.sig, sizeof g) && !memcmp(b.rs, dev.rs, sizeof b.rs) && !memcmp(b.samp, dev.samp, sizeof b.samp) &&
+		!memcmp(b.vsF, dev.vsF, 16ull * std::min<uint32_t>(w, b.nvs)) &&
+		(w + 3 >= (int)b.nvs || !memcmp(b.vsF + 4 * (w + 3), dev.vsF + 4 * (w + 3), 16ull * (b.nvs - w - 3))) &&
+		!memcmp(b.psF, dev.psF, 16ull * b.nps) &&
+		!memcmp(b.vsI, dev.vsI, sizeof b.vsI) && !memcmp(b.psI, dev.psI, sizeof b.psI) && !memcmp(b.vsB, dev.vsB, sizeof b.vsB) && !memcmp(b.psB, dev.psB, sizeof b.psB);
+	if (!same) return false;
+	memcpy(b.rows + 12 * b.count, dev.vsF + 4 * w, 48);
+	b.count++;
+	gSt.batched++;
+	return true;
+}
+// the merged draw's command, before anything else is recorded
+void flushBatch()
+{
+	if (!gBat.open) return;
+	gBat.open = false;
+	vkCmdDrawIndexed(C, gBat.nv, gBat.count, gBat.first, gBat.vtxOff, 0);
+}
+
 void endPass()
 {
+	flushBatch();
 	if (!gInPass) return;
 	pEndRendering(C);
 	gInPass = false;
@@ -730,12 +812,37 @@ VkShaderModule module(const std::string& src, bool vertex, uint64_t key)
 	gModules[key] = m;
 	return m;
 }
-VkShaderModule vsModule(ShaderObj* vs, uint32_t intMask, uint32_t uintMask, int worldReg)
+// instLoc (merged draws): the World rows come from per-instance attributes at these three locations instead
+VkShaderModule vsModule(ShaderObj* vs, uint32_t intMask, uint32_t uintMask, int worldReg, const int* instLoc = nullptr)
 {
 	uint64_t k = (vs->hash * 31 + 1) ^ ((uint64_t)intMask << 20) * 0x9e3779b97f4a7c15ull ^ ((uint64_t)uintMask << 40) * 0xc2b2ae3d27d4eb4full ^ (uint64_t)(worldReg + 2) * 0xff51afd7ed558ccdull;
+	if (instLoc) k ^= 0x2545f4914f6cdd1dull * (uint64_t)(1 + instLoc[0] + 16 * instLoc[1] + 256 * instLoc[2]);
 	auto it = gModules.find(k);
 	if (it != gModules.end()) return it->second;
-	return module(shdr::composeVk(vs->info, nullptr, false, intMask, uintMask, worldReg), true, k);
+	std::string src = shdr::composeVk(vs->info, nullptr, false, intMask, uintMask, worldReg);
+	if (instLoc)
+	{
+		size_t m = src.find("void main()");
+		if (m == std::string::npos) { gModules[k] = VK_NULL_HANDLE; return VK_NULL_HANDLE; }
+		std::string head = src.substr(0, m), body = src.substr(m);
+		for (int j = 0; j < 3; j++)
+		{
+			std::string from = "u_w" + std::to_string(j), to = "i_w" + std::to_string(j);
+			for (size_t at = body.find(from); at != std::string::npos; at = body.find(from, at + to.size())) body.replace(at, from.size(), to);
+			head += "layout(location = " + std::to_string(instLoc[j]) + ") in vec4 " + to + ";\n";
+		}
+		src = head + body;
+	}
+	return module(src, true, k);
+}
+// three attribute locations (0..15) the vertex shader does not read, for the per-instance World rows; false: none
+bool instLocsOf(ShaderObj* vs, int loc[3])
+{
+	uint32_t used = 0;
+	for (auto& kv : vs->info.inputs) if (kv.second >= 0 && kv.second < 16) used |= 1u << kv.second;
+	int n = 0;
+	for (int l = 15; l >= 0 && n < 3; l--) if (!(used >> l & 1)) loc[n++] = l;
+	return n == 3;
 }
 // register of a vertex shader's World matrix (three rows, from its constant table), -1 none (as the OpenGL renderer)
 int worldRegOf(ShaderObj* vs)
@@ -851,8 +958,8 @@ std::map<std::pair<Obj*, uint32_t>, ConvBuf> gConv;   // (buffer, stream offset 
 struct VtxLayout
 {
 	uint32_t nAttr = 0, nBind = 0;
-	VkVertexInputAttributeDescription attr[16];
-	VkVertexInputBindingDescription bind[17];
+	VkVertexInputAttributeDescription attr[20];
+	VkVertexInputBindingDescription bind[18];
 };
 struct PipeKey
 {
@@ -1617,6 +1724,7 @@ void clear(uint32_t count, uint32_t rects, uint32_t flags, uint32_t color, float
 {
 	std::lock_guard<std::recursive_mutex> l(gMu);
 	if (!gOk) return;
+	flushBatch();
 	Target t;
 	if (!currentTarget(t)) return;
 	VkClearAttachment a[2]; uint32_t na = 0;
@@ -1699,6 +1807,16 @@ void draw(const DrawCall& dc)
 	// the frame's statistics the interface code relies on (as the OpenGL renderer)
 	if (dev.rs[7] && !gUiNested) gUiWorldDraws++;
 	if (!gUiNested) { if (vs->hash == kAptVs) gAptDraws++; else if (vs->hash == kVideoVs) gVideoDraws++; }
+	if (gBat.open)
+	{
+		if (!dc.upVerts && !gUiNested && batchAppend(dc))
+		{
+			gDraws++; gDrawsTotal++; gPassDraws++;
+			if (Target t; currentTarget(t)) { if (t.color) t.color->content++; if (t.depth) t.depth->content++; }
+			return;
+		}
+		flushBatch();
+	}
 	DeclElem els[64];
 	uint32_t nEls = 0;
 	{
@@ -1738,6 +1856,7 @@ void draw(const DrawCall& dc)
 
 	// textures: uploaded, mip chains built and in the sampling layout before the pass starts
 	VkImageView views[16]; VkSampler samps[16]; uint32_t mask = 0;
+	bool selfRead = false;
 	for (int i = 0; i < 16; i++)
 	{
 		int st = ps->info.samplerType[i] ? ps->info.samplerType[i] : vs->info.samplerType[i];
@@ -1750,6 +1869,7 @@ void draw(const DrawCall& dc)
 			Obj* ow = texOwner(o);
 			int okind = ow->iface == ICube ? 1 : ow->iface == IVolume ? 2 : 0;
 			if (okind == kind) tx = readOf(ensureTex(o));   // (a target whose contents a texture holds: read there)
+			if (tx && (tx == t.color || tx == t.depth)) selfRead = true;
 			if (tx && (tx == t.color || (tx == t.depth && needDepth))) tx = feedback(tx, tx == t.color ? t.cLevel : 0, tx == t.color ? t.cLayer : 0);   // reads its own target
 			if (tx && ow->mipDirty && tx->levels > 1 && !tx->depth) { genMips(tx); ow->mipDirty = false; }
 		}
@@ -1835,7 +1955,19 @@ void draw(const DrawCall& dc)
 
 	int wreg = worldRegOf(vs);
 	if (wreg >= 0 && wreg + 3 > std::min(vs->info.numC, 256)) wreg = -1;
-	VkShaderModule vm = vsModule(vs, intMask, uintMask, wreg);
+	// can this draw start a merged draw
+	int iloc[3] = {-1, -1, -1};
+	bool batching = wreg >= 0 && batchOn() && !dc.upVerts && dc.indexed && !dc.upIdx && dev.ib && !(dev.ib->usage & 0x200) && !dev.rs[27] && !instanced
+		&& !convMask && kUi == 0.f && !gUiNested && !selfRead && !dumping() && vl.nAttr + 3 <= 20 && instLocsOf(vs, iloc);
+	for (uint32_t si = 0; si < 15 && batching; si++) if ((streamsUsed >> si & 1) && (dev.streams[si].vb->usage & 0x200)) batching = false;
+	RingPos instRp{};
+	if (batching && !ringAlloc(kBatchMax * 48, 16, instRp)) batching = false;
+	if (batching)
+	{
+		for (int j = 0; j < 3; j++) vl.attr[vl.nAttr++] = {(uint32_t)iloc[j], kInstBinding, VK_FORMAT_R32G32B32A32_SFLOAT, 16u * j};
+		vl.bind[vl.nBind++] = {kInstBinding, 48, VK_VERTEX_INPUT_RATE_INSTANCE};
+	}
+	VkShaderModule vm = vsModule(vs, intMask, uintMask, wreg, batching ? iloc : nullptr);
 	if (!vm) SKIP();
 	// pipeline
 	const uint32_t* rs = dev.rs;
@@ -1989,7 +2121,7 @@ void draw(const DrawCall& dc)
 		p.bgra = 0;
 		for (int i = 0; i < 16; i++) { if (dev.vsB[i]) p.vsb |= 1u << i; if (dev.psB[i]) p.psb |= 1u << i; }
 		p.at[0] = rs[15] ? (float)rs[25] : 0.f; p.at[1] = (rs[24] & 255) / 255.f;
-		if (wreg >= 0) memcpy(p.w, dev.vsF + 4 * wreg, 48);
+		if (wreg >= 0 && !batching) memcpy(p.w, dev.vsF + 4 * wreg, 48);
 		if (!S.pushValid || memcmp(&p, &S.push, sizeof p)) { vkCmdPushConstants(C, gLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof p, &p); S.push = p; S.pushValid = true; }
 	}
 	PHASE(4);
@@ -2128,6 +2260,7 @@ void draw(const DrawCall& dc)
 		}
 	}
 	if (needZero) { VkDeviceSize zo = 0; vkCmdBindVertexBuffers(C, 15, 1, &gZeroVb, &zo); }
+	if (batching) { VkDeviceSize io = instRp.off; vkCmdBindVertexBuffers(C, kInstBinding, 1, &instRp.buf, &io); }
 	if (!dc.indexed) vkCmdDraw(C, nv, instCount, 0, 0);
 	else if (dc.upIdx)
 	{
@@ -2155,7 +2288,12 @@ void draw(const DrawCall& dc)
 			VBuf* ib = ensureBuf(dev.ib, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
 			if (!ib) SKIP();
 			vkCmdBindIndexBuffer(C, ib->buf, 0, it);
-			vkCmdDrawIndexed(C, nv, instCount, dc.startIndex, vtxOff, 0);
+			if (batching)
+			{
+				gBat.rows = (float*)instRp.ptr; gBat.nv = nv; gBat.first = dc.startIndex; gBat.vtxOff = vtxOff;
+				batchOpen(dc, wreg);
+			}
+			else vkCmdDrawIndexed(C, nv, instCount, dc.startIndex, vtxOff, 0);
 		}
 	}
 	gDraws++; gDrawsTotal++; gPassDraws++;
@@ -2177,6 +2315,7 @@ void stretchRect(Obj* src, const int32_t* sr, Obj* dst, const int32_t* dr, uint3
 {
 	std::lock_guard<std::recursive_mutex> l(gMu);
 	if (!gOk) return;
+	flushBatch();
 	ensureBack();
 	auto side = [&](Obj* o, VTex*& t, uint32_t& level, uint32_t& layer, uint32_t& w, uint32_t& h) {
 		if (isBack(o)) { t = gBack; level = layer = 0; w = backW; h = backH; return; }
@@ -2223,6 +2362,7 @@ void stretchRect(Obj* src, const int32_t* sr, Obj* dst, const int32_t* dr, uint3
 bool present(int sw, int sh)
 {
 	std::lock_guard<std::recursive_mutex> l(gMu);
+	flushBatch();
 	CpuTimer ct;
 	struct PresentTimer { uint64_t t0 = nowNs(); ~PresentTimer() { gSt.presentNs += nowNs() - t0; } } pt;
 	if (!gOk) return false;
@@ -2385,6 +2525,7 @@ bool present(int sw, int sh)
 			gSt.gpuFrames ? gSt.gpuNs / 1e6 / gSt.gpuFrames : 0.0, gSt.cpuNs / 1e6 / f, gSt.presentNs / 1e6 / f, gSt.draws / f, gSt.passes / f, gSt.clearPasses / f, gSt.barriers / f, gSt.uploads, gPipes.size(), gSt.newPipes);
 		log("vulkan perf: draw CPU ms per frame: setup %.2f, textures+pass %.2f, pipeline %.2f, state %.2f, constants %.2f, texture sets %.2f (%.0f), vertices+draw %.2f",
 			gSt.phaseNs[0] / 1e6 / f, gSt.phaseNs[1] / 1e6 / f, gSt.phaseNs[2] / 1e6 / f, gSt.phaseNs[3] / 1e6 / f, gSt.phaseNs[4] / 1e6 / f, gSt.phaseNs[5] / 1e6 / f, gSt.descSets / f, gSt.phaseNs[6] / 1e6 / f);
+		log("vulkan perf: merged draws: %.0f per frame added to %.0f instanced draws", gSt.batched / f, gSt.batches / f);
 		log("vulkan perf: clears done on their own %.1f per frame; copies avoided by swapping %.1f per frame (%.1f copied back later, %.1f never needed)", gClearFlushes / f, gSt.swaps / f, gSt.swapResolves / f, gSt.swapFree / f);
 		gClearFlushes = 0;
 		log("vulkan perf: per frame KB: ring %.0f, buffer copies %.0f, buffer renames %.1f (%.0f KB), texture uploads %.1f (%.0f KB), vertices converted %.0f (%u rebuilds)",
