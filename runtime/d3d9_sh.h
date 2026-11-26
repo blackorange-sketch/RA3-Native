@@ -463,7 +463,12 @@ struct Translator
 			{
 				if (!S(a)) return false;
 				char buf[96];
-				snprintf(buf, sizeof buf, "for (int rep%d = 0; rep%d < int((%s).x); rep%d++) {", repN, repN, a.c_str(), repN);
+				// a constant count (defi): a literal bound, so that the GLSL compiler can unroll the loop (a 5x5
+				// bright-pass loop of texture reads ran several times slower with the bound read through a constant)
+				int ci = -1, cnt[4] = {0, 0, 0, 0};
+				if (sscanf(a.c_str(), "vec4(di%d)", &ci) == 1 && defI.count(ci) && sscanf(defI[ci].c_str(), "ivec4(%d, %d, %d, %d)", &cnt[0], &cnt[1], &cnt[2], &cnt[3]) == 4 && cnt[0] >= 0 && cnt[0] <= 255)
+					snprintf(buf, sizeof buf, "for (int rep%d = 0; rep%d < %d; rep%d++) {", repN, repN, cnt[0], repN);
+				else snprintf(buf, sizeof buf, "for (int rep%d = 0; rep%d < int((%s).x); rep%d++) {", repN, repN, a.c_str(), repN);
 				repN++;
 				line(buf);
 				indent++;

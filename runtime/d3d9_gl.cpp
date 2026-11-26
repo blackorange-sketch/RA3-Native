@@ -2017,6 +2017,11 @@ static void drawImpl(const DrawCall& dc)
 		if (noShader++ < 5) log("d3d9: draw without shaders (fixed function not implemented): fvf %x vdecl %p", dev.fvf, (void*)dev.vdecl);
 		return;
 	}
+	{
+		// diagnostics: /sdcard/ra3_skipps holding a pixel shader hash (as in the frame trace) leaves its draws out
+		static const uint64_t skipPs = [] { uint64_t h = 0; if (FILE* f = fopen("/sdcard/ra3_skipps", "r")) { if (fscanf(f, "%llx", (unsigned long long*)&h) != 1) h = 0; fclose(f); } if (h) log("d3d9: draws with pixel shader %016llx left out (ra3_skipps)", (unsigned long long)h); return h; }();
+		if (skipPs && ps->hash == skipPs) return;
+	}
 	gBatchDraws++;
 	if (gFrameNo - gBatchFrame0 >= 900)
 	{
