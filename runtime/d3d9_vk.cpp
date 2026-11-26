@@ -592,6 +592,48 @@ VkStencilOp stOp(uint32_t o) { switch (o) { case 2: return VK_STENCIL_OP_ZERO; c
 VkPrimitiveTopology topo(uint32_t p) { switch (p) { case 1: return VK_PRIMITIVE_TOPOLOGY_POINT_LIST; case 2: return VK_PRIMITIVE_TOPOLOGY_LINE_LIST; case 3: return VK_PRIMITIVE_TOPOLOGY_LINE_STRIP; case 5: return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP; case 6: return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN; default: return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; } }
 int topoClass(uint32_t p) { return p == 1 ? 0 : (p == 2 || p == 3) ? 1 : 2; }
 
+// ---- vertex formats the GPU cannot fetch (Adreno has no USCALED/SSCALED): the stream is rewritten on the CPU with
+// every element as four floats, as Direct3D expands them
+float h2f(uint16_t h)
+{
+	uint32_t s = (uint32_t)(h & 0x8000) << 16, e = (h >> 10) & 31, m = h & 1023, f;
+	if (e == 0) { if (!m) f = s; else { e = 127 - 15 + 1; while (!(m & 1024)) { m <<= 1; e--; } m &= 1023; f = s | e << 23 | m << 13; } }
+	else if (e == 31) f = s | 0x7f800000u | m << 13;
+	else f = s | (e - 15 + 127) << 23 | m << 13;
+	float r; memcpy(&r, &f, 4); return r;
+}
+uint32_t attrBytes(uint8_t t)
+{
+	static const uint8_t n[] = {4, 8, 12, 16, 4, 4, 4, 8, 4, 4, 8, 4, 8, 4, 4, 4, 8};
+	return t < 17 ? n[t] : 0;
+}
+void decodeAttr(uint8_t t, const uint8_t* p, float* o)
+{
+	o[0] = o[1] = o[2] = 0.f; o[3] = 1.f;
+	switch (t)
+	{
+	case 0: case 1: case 2: case 3: memcpy(o, p, 4 * (t + 1)); break;
+	case 4: o[0] = p[2] / 255.f; o[1] = p[1] / 255.f; o[2] = p[0] / 255.f; o[3] = p[3] / 255.f; break;   // D3DCOLOR
+	case 5: for (int i = 0; i < 4; i++) o[i] = p[i]; break;
+	case 6: case 7: { int16_t v[4]; memcpy(v, p, t == 6 ? 4 : 8); for (int i = 0; i < (t == 6 ? 2 : 4); i++) o[i] = v[i]; break; }
+	case 8: for (int i = 0; i < 4; i++) o[i] = p[i] / 255.f; break;
+	case 9: case 10: { int16_t v[4]; memcpy(v, p, t == 9 ? 4 : 8); for (int i = 0; i < (t == 9 ? 2 : 4); i++) o[i] = std::max(-1.f, v[i] / 32767.f); break; }
+	case 11: case 12: { uint16_t v[4]; memcpy(v, p, t == 11 ? 4 : 8); for (int i = 0; i < (t == 11 ? 2 : 4); i++) o[i] = v[i] / 65535.f; break; }
+	case 13: { uint32_t v; memcpy(&v, p, 4); o[0] = (float)(v & 1023); o[1] = (float)((v >> 10) & 1023); o[2] = (float)((v >> 20) & 1023); o[3] = 1.f; break; }
+	case 14: { uint32_t v; memcpy(&v, p, 4); for (int i = 0; i < 3; i++) { int x = (int)((v >> (10 * i)) & 1023); if (x & 512) x -= 1024; o[i] = std::max(-1.f, x / 511.f); } o[3] = 1.f; break; }
+	case 15: case 16: { uint16_t v[4]; memcpy(v, p, t == 15 ? 4 : 8); for (int i = 0; i < (t == 15 ? 2 : 4); i++) o[i] = h2f(v[i]); break; }
+	}
+}
+// elements of one stream rewritten as float4s: `nEl` elements (types, source offsets)
+struct ConvLayout { uint32_t n = 0; uint8_t type[16]; uint16_t off[16]; };
+void convertVerts(const ConvLayout& cl, const uint8_t* src, uint32_t srcStride, uint32_t count, float* dst)
+{
+	for (uint32_t v = 0; v < count; v++, src += srcStride)
+		for (uint32_t k = 0; k < cl.n; k++, dst += 4) decodeAttr(cl.type[k], src + cl.off[k], dst);
+}
+struct ConvBuf { uint32_t ver = 0; uint64_t key = 0; VBuf* buf = nullptr; };
+std::unordered_map<Obj*, ConvBuf> gConv;
+
 struct VtxLayout
 {
 	uint32_t nAttr = 0, nBind = 0;
@@ -928,6 +970,10 @@ void reap(uint32_t frame)
 		bool bound = o == dev.ib || o == dev.rt0 || o == dev.ds || o == gBackBuffer;
 		for (int i = 0; i < 16 && !bound; i++) bound = dev.tex[i] == o || dev.streams[i].vb == o;
 		if (bound || frame - o->lastUse < 1800 || o->lastUse > frame) { requeueReleased(o); continue; }
+		{
+			auto it = gConv.find(o);
+			if (it != gConv.end()) { destroyBuf(it->second.buf); gConv.erase(it); }
+		}
 		if (o->vk)
 		{
 			if (o->iface == IVB || o->iface == IIB) destroyBuf((VBuf*)o->vk);
@@ -1165,6 +1211,15 @@ void draw(const DrawCall& dc)
 			else if (fq & 0x80000000u) instanced = true;
 		}
 	uint32_t locs = 0, intMask = 0, uintMask = 0;
+	// streams with a format the GPU cannot fetch: rewritten as float4s
+	ConvLayout conv[15];
+	uint32_t convMask = 0;
+	if (!gScaled)
+		for (uint32_t k = 0; k < nEls; k++)
+		{
+			uint8_t ty = els[k].type;
+			if ((ty == 5 || ty == 6 || ty == 7 || ty == 13) && shdr::attrLocation(els[k].usage, els[k].index) >= 0) convMask |= 1u << (els[k].stream < 15 ? els[k].stream : 0);
+		}
 	for (uint32_t k = 0; k < nEls; k++)
 	{
 		const DeclElem& e = els[k];
@@ -1174,6 +1229,16 @@ void draw(const DrawCall& dc)
 		if (f == VK_FORMAT_UNDEFINED) continue;
 		uint32_t si = e.stream < 15 ? e.stream : 0;
 		if (dc.upVerts ? si != 0 : !dev.streams[si].vb) continue;
+		if (convMask >> si & 1)
+		{
+			ConvLayout& c = conv[si];
+			if (c.n >= 16) continue;
+			vl.attr[vl.nAttr++] = {(uint32_t)loc, si, VK_FORMAT_R32G32B32A32_SFLOAT, 16 * c.n};
+			c.type[c.n] = e.type; c.off[c.n] = e.offset; c.n++;
+			locs |= 1u << loc;
+			streamsUsed |= 1u << si;
+			continue;
+		}
 		vl.attr[vl.nAttr++] = {(uint32_t)loc, si, f, e.offset};
 		locs |= 1u << loc;
 		if (f == VK_FORMAT_R16G16_SINT || f == VK_FORMAT_R16G16B16A16_SINT) intMask |= 1u << loc;
@@ -1187,7 +1252,8 @@ void draw(const DrawCall& dc)
 		if (streamsUsed >> si & 1)
 		{
 			bool perInst = instanced && (dev.streams[si].freq & 0x80000000u);
-			vl.bind[vl.nBind++] = {si, dc.upVerts ? dc.upStride : dev.streams[si].stride, perInst ? VK_VERTEX_INPUT_RATE_INSTANCE : VK_VERTEX_INPUT_RATE_VERTEX};
+			uint32_t stride = (convMask >> si & 1) ? 16 * conv[si].n : dc.upVerts ? dc.upStride : dev.streams[si].stride;
+			vl.bind[vl.nBind++] = {si, stride, perInst ? VK_VERTEX_INPUT_RATE_INSTANCE : VK_VERTEX_INPUT_RATE_VERTEX};
 		}
 	if (needZero) vl.bind[vl.nBind++] = {15, 0, VK_VERTEX_INPUT_RATE_VERTEX};
 
@@ -1370,8 +1436,16 @@ void draw(const DrawCall& dc)
 	{
 		uint32_t nverts = dc.indexed ? dc.minIndex + dc.numVertices : nv;
 		RingPos rp;
-		if (!ringAlloc((VkDeviceSize)nverts * dc.upStride, 16, rp)) return;
-		memcpy(rp.ptr, dc.upVerts, (size_t)nverts * dc.upStride);
+		if (convMask & 1)
+		{
+			if (!ringAlloc((VkDeviceSize)nverts * 16 * conv[0].n, 16, rp)) return;
+			convertVerts(conv[0], (const uint8_t*)dc.upVerts, dc.upStride, nverts, (float*)rp.ptr);
+		}
+		else
+		{
+			if (!ringAlloc((VkDeviceSize)nverts * dc.upStride, 16, rp)) return;
+			memcpy(rp.ptr, dc.upVerts, (size_t)nverts * dc.upStride);
+		}
 		VkDeviceSize o = rp.off;
 		vkCmdBindVertexBuffers(C, 0, 1, &rp.buf, &o);
 		vtxOff = 0;
@@ -1405,11 +1479,44 @@ void draw(const DrawCall& dc)
 				int64_t avail = ((int64_t)st.vb->size - (int64_t)st.offset) / (int64_t)st.stride - first;
 				if (count > avail) count = avail;
 				RingPos rp;
-				if (first >= 0 && count > 0 && ringAlloc((VkDeviceSize)count * st.stride, 16, rp))
+				bool cv = convMask >> si & 1;
+				if (first >= 0 && count > 0 && ringAlloc((VkDeviceSize)count * (cv ? 16 * conv[si].n : st.stride), 16, rp))
 				{
-					memcpy(rp.ptr, (const uint8_t*)guest::host(st.vb->data) + st.offset + (uint64_t)first * st.stride, (size_t)count * st.stride);
+					const uint8_t* src = (const uint8_t*)guest::host(st.vb->data) + st.offset + (uint64_t)first * st.stride;
+					if (cv) convertVerts(conv[si], src, st.stride, (uint32_t)count, (float*)rp.ptr);
+					else memcpy(rp.ptr, src, (size_t)count * st.stride);
 					b = rp.buf; o = rp.off;
 				}
+			}
+			if (!b && (convMask >> si & 1))
+			{
+				// a static buffer rewritten once per version (and per layout)
+				if (!st.vb->data || !st.stride || st.offset >= st.vb->size) return;
+				ConvBuf& cb = gConv[st.vb];
+				uint64_t key = fnv(&conv[si], sizeof conv[si], st.stride * 1000003ull + st.offset);
+				uint32_t outStride = 16 * conv[si].n;
+				if (!cb.buf || cb.ver != st.vb->ver || cb.key != key)
+				{
+					uint32_t n = (st.vb->size - st.offset) / st.stride;
+					VBuf* nb = new VBuf;
+					VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+					bi.size = std::max<VkDeviceSize>(16, (VkDeviceSize)n * outStride); bi.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+					VmaAllocationCreateInfo ai{}; ai.usage = VMA_MEMORY_USAGE_AUTO; ai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+					VmaAllocationInfo inf;
+					if (!vkOk(vmaCreateBuffer(gA, &bi, &ai, &nb->buf, &nb->mem, &inf), "converted vertex buffer")) { delete nb; return; }
+					nb->map = (uint8_t*)inf.pMappedData; nb->size = (uint32_t)bi.size;
+					convertVerts(conv[si], (const uint8_t*)guest::host(st.vb->data) + st.offset, st.stride, n, (float*)nb->map);
+					vmaFlushAllocation(gA, nb->mem, 0, VK_WHOLE_SIZE);
+					if (cb.buf) destroyBuf(cb.buf);
+					cb.buf = nb; cb.ver = st.vb->ver; cb.key = key;
+					static int nl = 0;
+					if (nl++ < 6) log("vulkan: vertex buffer of %u vertices rewritten as floats (%u elements)", n, conv[si].n);
+				}
+				st.vb->lastUse = glr::frameNo();
+				b = cb.buf->buf;
+				int64_t base = perInst ? 0 : (dc.indexed ? (int64_t)dc.baseVertex - vtxOff : dc.baseVertex);
+				if (base < 0) return;
+				o = (VkDeviceSize)base * outStride;
 			}
 			if (!b)
 			{
