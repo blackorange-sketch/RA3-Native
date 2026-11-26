@@ -4,6 +4,7 @@
 // so it is visible which passes (shadow map, reflections, the scene, post-processing) the GPU spends its time on.
 // Runs on the render thread with the raw driver functions (no glrec.h here).
 #include "gputime.h"
+#include "hud.h"
 #include "rt.h"
 #include <GLES3/gl3.h>
 #include <GLES2/gl2ext.h>
@@ -40,7 +41,7 @@ static uint32_t gSeqFrame = ~0u;
 
 bool on()
 {
-	static const bool v = access("/sdcard/ra3_prof", F_OK) == 0;
+	static const bool v = access("/sdcard/ra3_prof", F_OK) == 0 || hud::overlayOn();   // the overlay shows the GPU time too
 	return v;
 }
 
@@ -134,6 +135,12 @@ void frameEnd(uint32_t lastInfo)
 		else { GLuint v = 0; glGetQueryObjectuiv(gPend[i].q, GL_QUERY_RESULT, &v); ns = v; }
 		if (disjoint || ns > 1000000000ull) gDropped++;   // a garbage result once in a while (20 million seconds)
 		else { auto& a = gAcc[gPend[i].key]; a.ns += ns; a.n++; gTotalNs += ns; }
+		{
+			// whole frames for the overlay: results of one frame come back together, in order
+			static uint32_t accFrame = ~0u; static uint64_t accNs = 0;
+			if (gPend[i].frame != accFrame) { if (accFrame != ~0u && accNs) hud::setGpuNs(accNs); accFrame = gPend[i].frame; accNs = 0; }
+			if (!disjoint && ns <= 1000000000ull) accNs += ns;
+		}
 		if (!gSeq.empty() && gPend[i].frame != gSeqFrame) logSeq();
 		if (gPend[i].frame == gSeqFrame) gSeq.push_back({gPend[i].key, ns, gPend[i].info, gPend[i].id});
 		gFree.push_back(gPend[i].q);

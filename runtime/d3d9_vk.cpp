@@ -985,7 +985,7 @@ void beginFrame()
 		if (vkGetQueryPoolResults(D, F->queries, 0, 2, sizeof ts, ts, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS && ts[1] > ts[0])
 		{
 			uint64_t ns = (uint64_t)((ts[1] - ts[0]) * (double)vkb::handles().timestampPeriod);
-			if (ns < 1000000000ull) { gSt.gpuNs += ns; gSt.gpuFrames++; }
+			if (ns < 1000000000ull) { gSt.gpuNs += ns; gSt.gpuFrames++; hud::setGpuNs(ns); }
 		}
 		F->timed = false;
 	}
@@ -2285,6 +2285,7 @@ bool present(int sw, int sh)
 	if (F->upUsed) { vkEndCommandBuffer(F->up); cbs[n++] = F->up; gSt.uploads++; }
 	cbs[n++] = C;
 	vkb::submit(cbs, n, F->fence, F->acq, have ? (int)idx : -1);
+	{ static uint64_t lastCpu = 0; uint64_t c = gSt.cpuNs; if (c >= lastCpu && lastCpu) hud::setRenderNs(c - lastCpu); lastCpu = c; }
 	gSt.frames++; gSt.draws += gDraws; gSt.passes += gPasses; gSt.clearPasses += gPassClears; gSt.barriers += gBarriers;
 	gPasses = gPassClears = gBarriers = 0;
 	if (gSt.frames >= 900)

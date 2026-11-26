@@ -29,6 +29,7 @@ struct Config
 	std::string mod;                     // launcher: the mod to start, its .skudef relative to <game folder>/Mods ("" = none)
 	bool playMovies = true;              // cutscenes and videos
 	bool fps60 = false;                  // experimental 60 fps cap
+	bool perfOverlay = false;            // launcher: frame time and GPU time under the FPS counter (/sdcard/ra3_overlay also)
 	float uiScale = 1.f;                 // in-game interface size (HUD panels in the screen corners)
 	bool fastShaders = false;
 	int rotateSpeed = 300;               // launcher: two-finger camera rotation speed, percent of the map pan speed

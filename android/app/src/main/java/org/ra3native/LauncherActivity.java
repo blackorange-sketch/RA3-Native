@@ -216,6 +216,7 @@ public class LauncherActivity extends Activity {
         toggleRow(opts, "DRAG THE MAP", "Swipe moves the map under your finger (off: swipe moves the camera, like the mouse)", "pan_invert", false);
         toggleRow(opts, "CUTSCENES", "Intro, briefings and campaign videos", "cutscenes", true);
         toggleRow(opts, "WIDE SCREEN", "The game fills the whole screen instead of 16:9 (more of the map, buttons on top)", "wide_screen", false);
+        toggleRow(opts, "PERFORMANCE OVERLAY", "Frame time and GPU time under the FPS counter", "perf_overlay", false);
         toggleRow(opts, "FAST SHADERS", "Lower precision in pixel shaders: faster on Mali and weaker GPUs, rare visual glitches", "fast_shaders", false);
         toggleRow(opts, "LOG FILE", "Writes /sdcard/" + (BuildConfig.STEAM ? "ra3_native_steam.log" : "ra3_native.log") + " for bug reports", "log", logDefault());
 
@@ -785,6 +786,7 @@ public class LauncherActivity extends Activity {
         cfg.append("log=").append(prefs.getBoolean("log", logDefault()) ? 1 : 0).append('\n');
         cfg.append("ui_scale=").append(prefs.getInt("ui_scale", 110)).append('\n');
         cfg.append("wide_screen=").append(prefs.getBoolean("wide_screen", false) ? 1 : 0).append('\n');
+        cfg.append("perf_overlay=").append(prefs.getBoolean("perf_overlay", false) ? 1 : 0).append('\n');
         cfg.append("fast_shaders=").append(prefs.getBoolean("fast_shaders", false) ? 1 : 0).append('\n');
         cfg.append("button_size=").append(prefs.getInt("button_size", 100)).append('\n');
         cfg.append("button_opacity=").append(prefs.getInt("button_opacity", 100)).append('\n');

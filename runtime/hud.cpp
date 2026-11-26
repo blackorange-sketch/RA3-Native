@@ -7,6 +7,7 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <unistd.h>
 
 #include "rt.h"
 
@@ -79,11 +80,12 @@ const uint8_t* glyph(char ch)
 		{0x63,0x14,0x08,0x14,0x63},{0x07,0x08,0x70,0x08,0x07},{0x61,0x51,0x49,0x45,0x43}};
 	static const uint8_t blank[5] = {0, 0, 0, 0, 0};
 	static const uint8_t plus[5] = {0x08,0x08,0x3E,0x08,0x08}, minus[5] = {0x08,0x08,0x08,0x08,0x08}, up[5] = {0x04,0x02,0x01,0x02,0x04}, dn[5] = {0x10,0x20,0x40,0x20,0x10},
-		lt[5] = {0x08,0x14,0x22,0x41,0x00}, gt[5] = {0x00,0x41,0x22,0x14,0x08}, colon[5] = {0x00,0x36,0x36,0x00,0x00}, slash[5] = {0x20,0x10,0x08,0x04,0x02};
+		lt[5] = {0x08,0x14,0x22,0x41,0x00}, gt[5] = {0x00,0x41,0x22,0x14,0x08}, colon[5] = {0x00,0x36,0x36,0x00,0x00}, slash[5] = {0x20,0x10,0x08,0x04,0x02},
+		dot[5] = {0x00,0x60,0x60,0x00,0x00};
 	if (ch >= '0' && ch <= '9') return digits[ch - '0'];
 	if (ch >= 'A' && ch <= 'Z') return letters[ch - 'A'];
 	if (ch >= 'a' && ch <= 'z') return letters[ch - 'a'];
-	switch (ch) { case '+': return plus; case '-': return minus; case '^': return up; case 'v': return dn; case '<': return lt; case '>': return gt; case ':': return colon; case '/': return slash; }
+	switch (ch) { case '+': return plus; case '-': return minus; case '^': return up; case 'v': return dn; case '<': return lt; case '>': return gt; case ':': return colon; case '/': return slash; case '.': return dot; }
 	return blank;
 }
 
@@ -340,20 +342,56 @@ static void box(const DrawRect& rect, const R& r, float fr, float fg, float fb, 
 	rect(r.x, r.y + 2, 2, r.h - 4, fr, fg, fb); rect(r.x + r.w - 2, r.y + 2, 2, r.h - 4, fr, fg, fb);
 	rect(r.x + 2, r.y + 2, r.w - 4, r.h - 4, r2, g2, b2);
 }
+static std::atomic<uint64_t> gGpuNs{0}, gRenNs{0};
+static std::atomic<uint32_t> gGpuN{0}, gRenN{0};
+bool overlayOn()
+{
+	static const bool v = rt::config.perfOverlay || access("/sdcard/ra3_overlay", F_OK) == 0;
+	return v;
+}
+void setGpuNs(uint64_t ns) { gGpuNs += ns; gGpuN++; }
+void setRenderNs(uint64_t ns) { gRenNs += ns; gRenN++; }
+
 void draw(const DrawRect& rect)
 {
 	std::lock_guard<std::mutex> g(mu);
 	load(); buildPages();
 	{
-		// small frames-per-second counter in the top right corner (averaged over about half a second)
-		static auto t0 = std::chrono::steady_clock::now();
+		// small frames-per-second counter in the top right corner (averaged over about half a second);
+		// with the overlay on, two more lines under it: frame time (average / worst) and GPU time (+ renderer CPU)
+		static auto t0 = std::chrono::steady_clock::now(), tl = t0;
 		static int frames = 0, shown = 0;
+		static double worst = 0, shownMs = 0, shownWorst = 0, shownGpu = -1, shownRen = -1;
+		auto now = std::chrono::steady_clock::now();
+		double fd = std::chrono::duration<double, std::milli>(now - tl).count(); tl = now;
+		worst = std::max(worst, fd);
 		frames++;
-		double dt = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-		if (dt >= 0.5) { shown = (int)(frames / dt + 0.5); frames = 0; t0 = std::chrono::steady_clock::now(); }
+		double dt = std::chrono::duration<double>(now - t0).count();
+		if (dt >= 0.5)
+		{
+			shown = (int)(frames / dt + 0.5); shownMs = dt * 1000 / frames; shownWorst = worst;
+			uint64_t gn = gGpuNs.exchange(0), rn = gRenNs.exchange(0); uint32_t gc = gGpuN.exchange(0), rc = gRenN.exchange(0);
+			shownGpu = gc ? gn / 1e6 / gc : -1; shownRen = rc ? rn / 1e6 / rc : -1;
+			frames = 0; worst = 0; t0 = now;
+		}
 		int h = std::max(18, scrH / 36), w = h * 2;
 		rect(scrW - w - 6, 6, w, h, 0.05f, 0.05f, 0.06f);
 		text(rect, std::to_string(shown), {scrW - w - 6, 6, w, h}, shown >= 28 ? 0.45f : 0.95f, shown >= 28 ? 0.95f : (shown >= 20 ? 0.85f : 0.35f), 0.35f);
+		if (overlayOn())
+		{
+			char l1[40], l2[40];
+			snprintf(l1, sizeof l1, "%.1f MS MAX %.0f", shownMs, shownWorst);
+			if (shownGpu < 0) snprintf(l2, sizeof l2, "GPU -");
+			else if (shownRen < 0) snprintf(l2, sizeof l2, "GPU %.1f MS", shownGpu);
+			else snprintf(l2, sizeof l2, "GPU %.1f CPU %.1f", shownGpu, shownRen);
+			int lh = h, lw = h * 8;
+			R b1 = {scrW - lw - 6, 6 + h + 2, lw, lh}, b2 = {scrW - lw - 6, 6 + h + 2 + lh, lw, lh};
+			rect(b1.x, b1.y, lw, lh * 2, 0.05f, 0.05f, 0.06f);
+			text(rect, l1, b1, 0.85f, 0.85f, 0.9f);
+			// GPU time red when it alone does not fit a 30 fps frame
+			bool slow = shownGpu > 33.3;
+			text(rect, l2, b2, slow ? 0.95f : 0.85f, slow ? 0.45f : 0.85f, slow ? 0.35f : 0.9f);
+		}
 	}
 	R e = editRect();
 	box(rect, e, editing ? 0.95f : 0.6f, editing ? 0.75f : 0.6f, editing ? 0.1f : 0.65f, 0.12f, 0.12f, 0.14f);

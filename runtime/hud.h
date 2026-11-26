@@ -1,5 +1,6 @@
 // Custom on-screen keyboard buttons (side panels) with an in-game editor.
 #pragma once
+#include <cstdint>
 #include <functional>
 #include <vector>
 
@@ -12,6 +13,10 @@ void setScreen(int sw, int sh);
 // Touch handling; returns true when the event belongs to the HUD (it is then not passed to the game). Key events to inject go to out.
 bool onTouch(int action, int idx, int count, const float* xs, const float* ys, std::vector<KeyEv>& out);
 void draw(const DrawRect& rect);
+// Performance overlay (launcher option or /sdcard/ra3_overlay): renderers report per-frame times from any thread.
+bool overlayOn();
+void setGpuNs(uint64_t ns);        // GPU time of one finished frame
+void setRenderNs(uint64_t ns);     // renderer CPU time of one frame (Vulkan)
 // Screen width taken by the button columns on the left and right (wide screen mode keeps the game picture out of them).
 void reserves(int sw, int sh, int& left, int& right);
 bool editingNow();

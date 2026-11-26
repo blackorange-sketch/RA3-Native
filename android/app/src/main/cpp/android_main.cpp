@@ -535,6 +535,7 @@ void android_main(android_app* app)
 			else if (k == "mod") { if (v.find('"') == std::string::npos && v.find("..") == std::string::npos) rt::config.mod = v; }
 			else if (k == "log") { if (v != "1") rt::config.logFile.clear(); }
 			else if (k == "fps60") rt::config.fps60 = v == "1";
+			else if (k == "perf_overlay") rt::config.perfOverlay = v == "1";
 			else if (k == "fast_shaders") rt::config.fastShaders = v == "1";
 			else if (k == "wide_screen") rt::config.wideScreen = v == "1";
 			else if (k == "button_size") { int pc = atoi(v.c_str()); if (pc >= 50 && pc <= 300) rt::config.buttonSize = pc; }
