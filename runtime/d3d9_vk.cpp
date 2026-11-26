@@ -21,6 +21,7 @@
 #include "vksh.h"
 #include "third_party/vma/vk_mem_alloc.h"
 #include <algorithm>
+#include <sys/stat.h>
 #include <cstring>
 #include <functional>
 #include <mutex>
@@ -99,8 +100,10 @@ struct VBuf
 
 // ---- per-frame resources
 struct Chunk { VkBuffer buf = VK_NULL_HANDLE; VmaAllocation mem = VK_NULL_HANDLE; uint8_t* map = nullptr; VkDeviceSize size = 0, pos = 0; VkDescriptorSet constSet = VK_NULL_HANDLE; };
+struct Dump { VkBuffer buf; VmaAllocation mem; uint32_t w, h; VkFormat fmt; std::string name; };
 struct Frame
 {
+	std::vector<Dump> dumps;
 	VkCommandPool pool = VK_NULL_HANDLE;
 	VkCommandBuffer cmd = VK_NULL_HANDLE, up = VK_NULL_HANDLE;
 	bool upUsed = false;
@@ -296,11 +299,92 @@ void barrier(VkCommandBuffer cb, VkImage img, VkImageAspectFlags aspect, VkImage
 struct Target { VTex* color = nullptr; uint32_t cLevel = 0, cLayer = 0; VTex* depth = nullptr; uint32_t w = 0, h = 0; };
 bool gInPass = false;
 Target gPass;
+// ---- frame dump (/sdcard/ra3_vkdump, optionally holding a frame number; default 1800): every render pass of that
+// frame saved to /sdcard/ra3_dump/vkNN_*.bmp when it ends, and its draws logged
+uint32_t gDumpFrame = 0;
+int gDumpPass = 0;
+bool dumping()
+{
+	static const uint32_t f = [] {
+		uint32_t n = 0;
+		if (FILE* fp = fopen("/sdcard/ra3_vkdump", "r")) { if (fscanf(fp, "%u", &n) != 1 || n < 10) n = 1800; fclose(fp); mkdir("/sdcard/ra3_dump", 0777); log("vulkan: frame %u will be dumped to /sdcard/ra3_dump", n); }
+		return n;
+	}();
+	gDumpFrame = f;
+	return f && glr::frameNo() == f;
+}
+void dumpTarget(VTex* t, uint32_t level, uint32_t layer, const char* what)
+{
+	if (!t || t->depth || gDumpPass >= 60) return;
+	uint32_t w = std::max(1u, t->w >> level), h = std::max(1u, t->h >> level);
+	uint32_t bpp = t->fmt == VK_FORMAT_R16G16B16A16_SFLOAT ? 8 : t->fmt == VK_FORMAT_R32G32B32A32_SFLOAT ? 16 : (t->fmt == VK_FORMAT_R16_SFLOAT || t->fmt == VK_FORMAT_R5G6B5_UNORM_PACK16) ? 2 : 4;
+	VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+	bi.size = (VkDeviceSize)w * h * bpp; bi.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+	VmaAllocationCreateInfo ai{}; ai.usage = VMA_MEMORY_USAGE_AUTO; ai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+	Dump d; d.w = w; d.h = h; d.fmt = t->fmt;
+	if (vmaCreateBuffer(gA, &bi, &ai, &d.buf, &d.mem, nullptr) != VK_SUCCESS) return;
+	VkImageLayout l = t->layout;
+	barrier(C, t->img, t->aspect, l, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+	VkBufferImageCopy c{};
+	c.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, 1}; c.imageExtent = {w, h, 1};
+	vkCmdCopyImageToBuffer(C, t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, d.buf, 1, &c);
+	barrier(C, t->img, t->aspect, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, l);
+	char nm[96];
+	snprintf(nm, sizeof nm, "/sdcard/ra3_dump/vk%02d_%s_%ux%u_f%d.bmp", gDumpPass++, what, w, h, (int)t->fmt);
+	d.name = nm;
+	F->dumps.push_back(d);
+}
+float hf(uint16_t h)
+{
+	uint32_t s = (uint32_t)(h & 0x8000) << 16, e = (h >> 10) & 31, m = h & 1023, f;
+	if (e == 0) f = s; else if (e == 31) f = s | 0x7f800000u; else f = s | (e - 15 + 127) << 23 | m << 13;
+	float r; memcpy(&r, &f, 4); return r;
+}
+void writeDumps(Frame& f)
+{
+	for (Dump& d : f.dumps)
+	{
+		VmaAllocationInfo inf; vmaGetAllocationInfo(gA, d.mem, &inf);
+		vmaInvalidateAllocation(gA, d.mem, 0, VK_WHOLE_SIZE);
+		const uint8_t* px = (const uint8_t*)inf.pMappedData;
+		uint32_t sc = d.w > 1200 ? 2 : 1, ow = d.w / sc, oh = d.h / sc, rowB = (ow * 3 + 3) & ~3u, imgB = rowB * oh;
+		std::vector<uint8_t> bmp(54 + imgB, 0);
+		auto w32 = [&](size_t o, uint32_t v) { memcpy(&bmp[o], &v, 4); };
+		bmp[0] = 'B'; bmp[1] = 'M'; w32(2, 54 + imgB); w32(10, 54); w32(14, 40); w32(18, ow); w32(22, oh); bmp[26] = 1; bmp[28] = 24; w32(34, imgB);
+		float lo = 1e30f, hi = -1e30f;
+		if (d.fmt == VK_FORMAT_R32_SFLOAT)
+			for (uint32_t i = 0; i < d.w * d.h; i++) { float v; memcpy(&v, px + 4 * i, 4); if (v == v && v > -1e20f && v < 1e20f) { lo = std::min(lo, v); hi = std::max(hi, v); } }
+		for (uint32_t y = 0; y < oh; y++)
+			for (uint32_t x = 0; x < ow; x++)
+			{
+				size_t i = (size_t)(sc * y) * d.w + sc * x;
+				float r = 0, g = 0, b = 0;
+				switch (d.fmt)
+				{
+				case VK_FORMAT_B8G8R8A8_UNORM: b = px[4 * i] / 255.f; g = px[4 * i + 1] / 255.f; r = px[4 * i + 2] / 255.f; break;
+				case VK_FORMAT_R8G8B8A8_UNORM: r = px[4 * i] / 255.f; g = px[4 * i + 1] / 255.f; b = px[4 * i + 2] / 255.f; break;
+				case VK_FORMAT_R16G16B16A16_SFLOAT: { uint16_t v[4]; memcpy(v, px + 8 * i, 8); r = hf(v[0]); g = hf(v[1]); b = hf(v[2]); break; }
+				case VK_FORMAT_R32_SFLOAT: { float v; memcpy(&v, px + 4 * i, 4); r = g = b = hi > lo ? (v - lo) / (hi - lo) : 0.f; break; }
+				case VK_FORMAT_R16G16_SFLOAT: { uint16_t v[2]; memcpy(v, px + 4 * i, 4); r = hf(v[0]); g = hf(v[1]); break; }
+				default: { uint8_t v = px[4 * i]; r = g = b = v / 255.f; break; }
+				}
+				uint8_t* o = &bmp[54 + (size_t)(oh - 1 - y) * rowB + x * 3];
+				auto cl = [](float v) { return (uint8_t)std::max(0.f, std::min(255.f, v * 255.f)); };
+				o[0] = cl(b); o[1] = cl(g); o[2] = cl(r);
+			}
+		writeWhole(d.name, bmp);
+		log("vulkan: dumped %s%s", d.name.c_str(), d.fmt == VK_FORMAT_R32_SFLOAT ? (" (R32F range " + std::to_string(lo) + ".." + std::to_string(hi) + ")").c_str() : "");
+		vmaDestroyBuffer(gA, d.buf, d.mem);
+	}
+	f.dumps.clear();
+}
+
 void endPass()
 {
 	if (!gInPass) return;
 	pEndRendering(C);
 	gInPass = false;
+	if (dumping()) dumpTarget(gPass.color, gPass.cLevel, gPass.cLayer, "pass");
 }
 void toLayout(VTex* t, VkImageLayout l)
 {
@@ -752,6 +836,7 @@ void beginFrame()
 		vkWaitForFences(D, 1, &F->fence, VK_TRUE, UINT64_MAX);
 		gDone = std::max(gDone, F->serial);
 	}
+	if (!F->dumps.empty()) writeDumps(*F);
 	for (auto& f : F->trash) f();
 	F->trash.clear();
 	vkResetFences(D, 1, &F->fence);
@@ -1124,6 +1209,7 @@ void clear(uint32_t count, uint32_t rects, uint32_t flags, uint32_t color, float
 		}
 	else cr.push_back({{{0, 0}, {t.w, t.h}}, 0, 1});
 	if (!cr.empty()) vkCmdClearAttachments(C, na, a, (uint32_t)cr.size(), cr.data());
+	if (dumping()) log("vkdump pass %d clear flags %x color %08x z %g rects %u rt %ux%u", gDumpPass, flags, color, (double)z, count, t.w, t.h);
 	if (t.color && (flags & 1)) t.color->content++;
 	if (t.depth && (flags & 6)) t.depth->content++;
 }
@@ -1635,6 +1721,10 @@ void draw(const DrawCall& dc)
 		}
 	}
 	gDraws++; gDrawsTotal++;
+	if (dumping())
+		log("vkdump pass %d draw: vs %016llx ps %016llx prim %u n %u rt %ux%u f%d depth %d | z %u zw %u zf %u cull %u blend %u %u/%u cw %x st %u at %u/%u bias %x/%x vp %u,%u,%u,%u sc %u",
+			gDumpPass, (unsigned long long)vs->hash, (unsigned long long)ps->hash, dc.prim, dc.primCount, t.w, t.h, t.color ? (int)t.color->fmt : -1, t.depth ? (int)t.depth->fmt : -1,
+			rs[7], rs[14], rs[23], rs[22], rs[27], rs[19], rs[20], rs[168], rs[52], rs[15], rs[24], rs[195], rs[175], dev.vp[0], dev.vp[1], dev.vp[2], dev.vp[3], rs[174]);
 	if (t.color) t.color->content++;
 	if (t.depth) t.depth->content++;
 }
@@ -1667,6 +1757,7 @@ void stretchRect(Obj* src, const int32_t* sr, Obj* dst, const int32_t* dr, uint3
 	bl.srcOffsets[0] = {a[0], a[1], 0}; bl.srcOffsets[1] = {a[2], a[3], 1};
 	bl.dstOffsets[0] = {b[0], b[1], 0}; bl.dstOffsets[1] = {b[2], b[3], 1};
 	vkCmdBlitImage(C, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, d->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bl, filter == 2 && !s->noFilter ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
+	if (dumping()) { log("vkdump stretch %ux%u f%d [%d,%d,%d,%d] -> %ux%u f%d [%d,%d,%d,%d]", sw, sh, (int)s->fmt, a[0], a[1], a[2], a[3], dw, dh, (int)d->fmt, b[0], b[1], b[2], b[3]); d->layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; dumpTarget(d, dl, da, "copy"); }
 	s->useSerial = d->useSerial = gSerial;
 }
 
