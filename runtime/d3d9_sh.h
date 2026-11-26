@@ -698,19 +698,31 @@ inline int varyingLoc(const std::string& n)
 	return 29;   // psize, depth, sample...: shaders of this game do not pass them
 }
 
+// the constant block of a stage: the int registers (when the shader reads any) first, then the float registers
+struct VkConstLayout { bool ints = false; int nc = 0; uint32_t cOff = 0, size = 0; };
+inline VkConstLayout vkConstLayout(const ShaderInfo& si)
+{
+	VkConstLayout l;
+	l.ints = si.body.find(std::string(si.isVs ? "v" : "p") + "ci[") != std::string::npos;
+	l.nc = std::max(0, std::min(si.numC, si.isVs ? 256 : 224));
+	l.cOff = l.ints ? 256 : 0;
+	l.size = l.cOff + 16u * (uint32_t)l.nc;
+	return l;
+}
+enum { kVkConstRange = 256 + 256 * 16 };   // the largest block (descriptor range of the dynamic uniform buffers)
+
 inline std::string composeVk(const ShaderInfo& si, const std::set<std::string>* vsOuts = nullptr, bool precise = false)
 {
 	bool fast = !si.isVs && ::rt::config.fastShaders && !precise;
 	const char* st = si.isVs ? "v" : "p";
 	std::string s = std::string("#version 450\nprecision ") + (fast ? "mediump" : "highp") + " float;\nprecision highp int;\n";
 	s += "layout(push_constant, std430) uniform PushC { vec4 u_ui; vec2 u_hp; int u_bgra; uint u_vsb; vec4 u_at; uint u_psb; };\n";
-	bool ints = si.body.find(std::string(st) + "ci[") != std::string::npos;
-	int nc = std::min(si.numC, si.isVs ? 256 : 224);
-	if (nc > 0 || ints)
+	VkConstLayout cl = vkConstLayout(si);
+	if (cl.size)
 	{
 		s += std::string("layout(set = 0, binding = ") + (si.isVs ? "0" : "1") + ", std140) uniform " + (si.isVs ? "VsConst" : "PsConst") + " {";
-		if (nc > 0) s += " vec4 " + std::string(st) + "c[" + std::to_string(nc) + "];";
-		if (ints) s += " ivec4 " + std::string(st) + "ci[16];";
+		if (cl.ints) s += " ivec4 " + std::string(st) + "ci[16];";
+		if (cl.nc > 0) s += " vec4 " + std::string(st) + "c[" + std::to_string(cl.nc) + "];";
 		s += " };\n";
 	}
 	for (int i = 0; i < 16; i++)

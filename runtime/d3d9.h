@@ -54,6 +54,7 @@ struct Obj
 	uint32_t lastUse = 0;             // frame of the last draw / attachment use
 	bool released = false;            // refcount reached zero: queued for reclamation
 	std::vector<Obj*> levelSurf;      // texture / cube: the surface of each level and face, made on first GetSurfaceLevel
+	void* vk = nullptr;               // Vulkan renderer's image or buffer (d3d9_vk.cpp)
 };
 
 using Handler = void (*)(CPU*, Obj*);

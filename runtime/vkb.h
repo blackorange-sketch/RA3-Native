@@ -5,6 +5,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 
 namespace vkb
 {
@@ -17,4 +18,20 @@ const char* failure();                 // why setWindow failed
 struct Rect { int x, y, w, h; float r, g, b, a; };
 void postPicture(const uint32_t* rgba, int w, int h);   // the console picture (kept, shown by present when asked)
 void present(const Rect* rects, size_t n, bool picture); // black frame, the console picture if asked, then the rectangles
+
+#ifdef VK_VERSION_1_0
+// ---- for the renderer (d3d9_vk.cpp): the device, and frames it records itself
+struct Handles
+{
+	VkInstance instance = VK_NULL_HANDLE; VkPhysicalDevice phys = VK_NULL_HANDLE; VkDevice device = VK_NULL_HANDLE;
+	VkQueue queue = VK_NULL_HANDLE; uint32_t family = 0, apiVersion = 0, uboAlign = 256;
+	bool bc = false, aniso = false; float maxAniso = 1.f;
+};
+const Handles& handles();
+std::recursive_mutex& lock();   // held around queue use
+// the next swapchain image (signals `signal` when it may be written); false: none (window gone, swapchain rebuilt)
+bool acquire(VkSemaphore signal, uint32_t& idx, VkImage& img, VkExtent2D& ext, VkFormat& fmt, uint32_t& generation);
+// submits the command buffers (fence signalled when done); presentIdx >= 0: waits for waitAcquire, presents that image
+void submit(const VkCommandBuffer* cmds, uint32_t n, VkFence fence, VkSemaphore waitAcquire, int presentIdx);
+#endif
 }

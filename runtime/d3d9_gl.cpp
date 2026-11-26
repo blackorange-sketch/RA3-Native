@@ -37,6 +37,7 @@
 #include "d3d9_ui.h"
 #include "d3d9_tex.h"
 #include "vkb.h"
+#include "d3d9_vk.h"
 namespace rt { extern bool gFps60; uint64_t limiterCpuUs(); }
 namespace d3d { std::atomic<int> gViewProjReg{-1}; }   // vertex shader register of the camera matrix (the engine sets it; found in d3d9_fx)
 
@@ -1202,14 +1203,16 @@ bool init()
 
 // The GL context is bound lazily to the first thread that actually renders (the game creates the device on one thread and draws on another).
 static std::atomic<int> gRenderAcq{-1};
-static bool gVk = false;   // the Vulkan renderer runs: nothing here touches GL (stage 1: black frames with the buttons)
+static bool gVk = false;    // Vulkan mode: nothing here touches GL
+static bool gVkr = false;   // ... and the Vulkan renderer (d3d9_vk.cpp) draws; false: black frames with the buttons
 bool ensureGl()
 {
 	if (!gInit && gfx::vulkan())
 	{
 		gInit = true; gOk = false; gVk = true;
 		bool a = gfx::acquire();
-		log("vulkan: first rendering call on tid %d (screen %d), the game's drawing is not shown yet", (int)gettid(), (int)a);
+		gVkr = a && vkr::init();
+		log("vulkan: first rendering call on tid %d (screen %d), %s", (int)gettid(), (int)a, gVkr ? "the game draws through Vulkan" : "the renderer could not start: black frames");
 		return false;
 	}
 	if (!gInit)
@@ -1262,8 +1265,10 @@ static std::string objTag(Obj* o)
 	char b[64]; snprintf(b, sizeof b, "%x(%s%ux%u f%u)", o->parent ? o->parent : o->addr, o->parent ? "s:" : "", o->w, o->h, o->fmt);
 	return b;
 }
+static bool vkOn() { if (!gInit) ensureGl(); return gVkr; }
 void clear(uint32_t count, uint32_t rects, uint32_t flags, uint32_t color, float z, uint32_t stencil)
 {
+	if (gfx::vulkan()) { if (vkOn()) vkr::clear(count, rects, flags, color, z, stencil); return; }
 	if (!ensureGl()) return;
 	bool firstUse = isBack(dev.rt0) && !gBackUsed;
 	bindTargets();
@@ -1481,6 +1486,7 @@ static void drawImpl(const DrawCall& dc);
 
 void draw(const DrawCall& dc)
 {
+	if (gfx::vulkan()) { if (vkOn()) vkr::draw(dc); return; }
 	// time one draw in 8 (clock reads are not free at ~1000 draws per frame)
 	if ((gNDraws++ & 7) == 0) { uint64_t t0 = nowUs(); drawImpl(dc); gTDraw += (nowUs() - t0) * 8; }
 	else drawImpl(dc);
@@ -2357,17 +2363,21 @@ void present()
 		start = t; f0 = gFrameNo; gTDraw = gTUpload = gTPresent = gNDraws = gNUploads = gTWaitRender = 0; gTSwap = 0;
 	}
 }
-// Vulkan, stage 1: the frame is black with the console picture and the on-screen buttons; the frame bookkeeping
-// (frame number, HUD scaling state) goes on as with OpenGL so the interface code keeps working
+// Vulkan: the renderer's frame, or (before the game has drawn anything, or without the renderer) a black frame
+// with the console picture and the on-screen buttons; the frame bookkeeping (frame number, HUD scaling state) goes
+// on as with OpenGL so the interface code keeps working
 static void presentVk()
 {
 	int sw = gfx::width(), sh = gfx::height();
-	static std::vector<HudRect> rects;
-	static std::vector<vkb::Rect> vr;
-	hudRects(sw, sh, rects);
-	vr.clear();
-	for (const HudRect& q : rects) vr.push_back({q.x, q.y, q.w, q.h, q.r, q.g, q.b, q.a});
-	vkb::present(vr.data(), vr.size(), true);
+	if (!(gVkr && vkr::present(sw, sh)))
+	{
+		static std::vector<HudRect> rects;
+		static std::vector<vkb::Rect> vr;
+		hudRects(sw, sh, rects);
+		vr.clear();
+		for (const HudRect& q : rects) vr.push_back({q.x, q.y, q.w, q.h, q.r, q.g, q.b, q.a});
+		vkb::present(vr.data(), vr.size(), true);
+	}
 	gFrameNo++;
 	ui::uiEndFrame(gFrameNo);
 	if (gFrameNo == 1 || gFrameNo % 3600 == 0) log("vulkan: frame %u presented, screen %dx%d", gFrameNo, sw, sh);
@@ -2654,6 +2664,7 @@ static void reapReleased(uint32_t frame)
 
 void stretchRect(Obj* src, const int32_t* sr, Obj* dst, const int32_t* dr, uint32_t filter)
 {
+	if (gfx::vulkan()) { if (vkOn()) vkr::stretchRect(src, sr, dst, dr, filter); return; }
 	if (!ensureGl()) return;
 	uint32_t sw, sh, dw, dh;
 	targetSize(src, sw, sh);

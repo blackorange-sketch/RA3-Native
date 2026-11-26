@@ -80,6 +80,10 @@ stays at its 30 fps; the gain is heat, battery and headroom for weaker phones.
 - [ ] 2. Shaders — written: Vulkan dialect (`shdr::composeVk`; all 710 shader passes of the game's effects compile
   with glslang on the host), glslang 15.0.0 built into the app, SPIR-V cache (`vksh.cpp`); in Vulkan mode every
   shader the game creates is compiled in the background and counted in the log. Pipeline/descriptor layout: stage 4
+- [ ] 3-5. Resources, pipelines, render passes — first version written (`d3d9_vk.cpp`, VMA in `third_party/vma`):
+  textures (BC on Adreno), buffers with a per-frame ring, pipelines on dynamic state, dynamic rendering, StretchRect,
+  auto mip maps, present with letterbox and buttons; not yet: blurred side bars, bloom half-size copy, draw merging,
+  GPU timing, load/store optimisation
 - [ ] 3. Resources
 - [ ] 4. Pipelines
 - [ ] 5. Render passes

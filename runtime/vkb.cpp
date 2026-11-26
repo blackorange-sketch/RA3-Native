@@ -1,10 +1,10 @@
 // Vulkan renderer, stage 1: see vkb.h
 #ifdef __ANDROID__
-#include "vkb.h"
-#include "rt.h"
 #include <android/native_window.h>
 #define VK_USE_PLATFORM_ANDROID_KHR
 #include <vulkan/vulkan.h>
+#include "vkb.h"
+#include "rt.h"
 #include <algorithm>
 #include <cstring>
 #include <mutex>
@@ -18,8 +18,9 @@ namespace vkb
 {
 namespace
 {
-std::mutex mu;
+std::recursive_mutex mu;
 std::string why;
+Handles H;
 VkInstance inst = VK_NULL_HANDLE;
 VkPhysicalDevice phys = VK_NULL_HANDLE;
 VkDevice dev = VK_NULL_HANDLE;
@@ -39,7 +40,8 @@ VkFence fence = VK_NULL_HANDLE;
 VkSemaphore semAcquire = VK_NULL_HANDLE;
 std::vector<VkSemaphore> semDone;   // one per swapchain image: the present of an image may still wait on its semaphore
 ANativeWindow* win = nullptr;
-bool dirty = false;   // swapchain out of date: rebuilt before the next frame
+bool dirty = false;
+uint32_t gen = 0;   // bumped with every new swapchain   // swapchain out of date: rebuilt before the next frame
 // staging buffer for the console picture
 VkBuffer stage = VK_NULL_HANDLE;
 VkDeviceMemory stageMem = VK_NULL_HANDLE;
@@ -61,7 +63,7 @@ bool initDevice()
 {
 	if (dev) return true;
 	VkApplicationInfo ai{VK_STRUCTURE_TYPE_APPLICATION_INFO};
-	ai.pApplicationName = "RA3 Native"; ai.apiVersion = VK_API_VERSION_1_1;
+	ai.pApplicationName = "RA3 Native"; ai.apiVersion = VK_API_VERSION_1_3;
 	const char* iext[] = {VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_ANDROID_SURFACE_EXTENSION_NAME};
 	VkInstanceCreateInfo ici{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
 	ici.pApplicationInfo = &ai; ici.enabledExtensionCount = 2; ici.ppEnabledExtensionNames = iext;
@@ -74,6 +76,28 @@ bool initDevice()
 	phys = pds[0];
 	VkPhysicalDeviceProperties pp;
 	vkGetPhysicalDeviceProperties(phys, &pp);
+	log("vulkan: %s, Vulkan %u.%u.%u, driver %u.%u.%u", pp.deviceName, VK_VERSION_MAJOR(pp.apiVersion), VK_VERSION_MINOR(pp.apiVersion), VK_VERSION_PATCH(pp.apiVersion),
+		VK_VERSION_MAJOR(pp.driverVersion), VK_VERSION_MINOR(pp.driverVersion), VK_VERSION_PATCH(pp.driverVersion));
+	// the renderer draws with dynamic rendering and extended dynamic state: core in Vulkan 1.3
+	if (pp.apiVersion < VK_API_VERSION_1_3) { why = "Vulkan 1.3 is needed"; return false; }
+	VkPhysicalDeviceVulkan13Features f13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+	VkPhysicalDeviceFeatures2 f2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+	f2.pNext = &f13;
+	vkGetPhysicalDeviceFeatures2(phys, &f2);
+	if (!f13.dynamicRendering) { why = "no dynamic rendering"; return false; }
+	H.bc = f2.features.textureCompressionBC;
+	H.aniso = f2.features.samplerAnisotropy;
+	H.maxAniso = pp.limits.maxSamplerAnisotropy;
+	H.uboAlign = (uint32_t)pp.limits.minUniformBufferOffsetAlignment;
+	H.apiVersion = pp.apiVersion;
+	VkPhysicalDeviceVulkan13Features e13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+	e13.dynamicRendering = VK_TRUE;
+	e13.synchronization2 = f13.synchronization2;
+	VkPhysicalDeviceFeatures2 e2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+	e2.pNext = &e13;
+	e2.features.textureCompressionBC = H.bc;
+	e2.features.samplerAnisotropy = H.aniso;
+	e2.features.independentBlend = f2.features.independentBlend;
 	uint32_t qn = 0;
 	vkGetPhysicalDeviceQueueFamilyProperties(phys, &qn, nullptr);
 	std::vector<VkQueueFamilyProperties> qs(qn);
@@ -87,6 +111,7 @@ bool initDevice()
 	const char* dext[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
 	VkDeviceCreateInfo dci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
 	dci.queueCreateInfoCount = 1; dci.pQueueCreateInfos = &qci; dci.enabledExtensionCount = 1; dci.ppEnabledExtensionNames = dext;
+	dci.pNext = &e2;
 	if (!check(vkCreateDevice(phys, &dci, nullptr, &dev), "vkCreateDevice")) return false;
 	vkGetDeviceQueue(dev, qfam, 0, &queue);
 	VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
@@ -100,8 +125,8 @@ bool initDevice()
 	vkCreateFence(dev, &fci, nullptr, &fence);
 	VkSemaphoreCreateInfo sci{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
 	vkCreateSemaphore(dev, &sci, nullptr, &semAcquire);
-	log("vulkan: %s, Vulkan %u.%u.%u, driver %u.%u.%u", pp.deviceName, VK_VERSION_MAJOR(pp.apiVersion), VK_VERSION_MINOR(pp.apiVersion), VK_VERSION_PATCH(pp.apiVersion),
-		VK_VERSION_MAJOR(pp.driverVersion), VK_VERSION_MINOR(pp.driverVersion), VK_VERSION_PATCH(pp.driverVersion));
+	H.instance = inst; H.phys = phys; H.device = dev; H.queue = queue; H.family = qfam;
+	log("vulkan: BC textures %d, anisotropy %d (max %g), uniform alignment %u", (int)H.bc, (int)H.aniso, (double)H.maxAniso, H.uboAlign);
 	return true;
 }
 
@@ -180,6 +205,7 @@ bool makeSwapchain()
 	}
 	log("vulkan: swapchain %ux%u, %u images, format %d, transform %u (surface %u)", ext.width, ext.height, ni, (int)fmt, (unsigned)sci.preTransform, (unsigned)caps.currentTransform);
 	dirty = false;
+	gen++;
 	return true;
 }
 
@@ -256,7 +282,7 @@ bool wanted()
 
 bool setWindow(void* w)
 {
-	std::lock_guard<std::mutex> l(mu);
+	std::lock_guard<std::recursive_mutex> l(mu);
 	if (!w)
 	{
 		dropSwapchain();
@@ -272,21 +298,21 @@ bool setWindow(void* w)
 	return makeSwapchain();
 }
 
-bool ready() { std::lock_guard<std::mutex> l(mu); return swap != VK_NULL_HANDLE; }
+bool ready() { std::lock_guard<std::recursive_mutex> l(mu); return swap != VK_NULL_HANDLE; }
 int width() { return (int)ext.width; }
 int height() { return (int)ext.height; }
 const char* failure() { return why.c_str(); }
 
 void postPicture(const uint32_t* rgba, int w, int h)
 {
-	std::lock_guard<std::mutex> l(mu);
+	std::lock_guard<std::recursive_mutex> l(mu);
 	pic.assign(rgba, rgba + (size_t)w * h);
 	picW = w; picH = h; picDirty = true;
 }
 
 void present(const Rect* rects, size_t n, bool picture)
 {
-	std::lock_guard<std::mutex> l(mu);
+	std::lock_guard<std::recursive_mutex> l(mu);
 	picture = picture && !pic.empty();
 	if (picture && !ensureStage((VkDeviceSize)picW * picH * 4)) picture = false;
 	frame([&](uint32_t idx) {
@@ -330,6 +356,38 @@ void present(const Rect* rects, size_t n, bool picture)
 		}
 		vkCmdEndRenderPass(cmd);
 	});
+}
+
+const Handles& handles() { return H; }
+std::recursive_mutex& lock() { return mu; }
+
+bool acquire(VkSemaphore signal, uint32_t& idx, VkImage& img, VkExtent2D& e, VkFormat& f, uint32_t& generation)
+{
+	std::lock_guard<std::recursive_mutex> l(mu);
+	if (!swap || !dev) return false;
+	if (dirty) { dropSwapchain(); if (!makeSwapchain()) return false; }
+	VkResult r = vkAcquireNextImageKHR(dev, swap, UINT64_MAX, signal, VK_NULL_HANDLE, &idx);
+	if (r == VK_ERROR_OUT_OF_DATE_KHR) { dirty = true; return false; }
+	if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) { check(r, "vkAcquireNextImageKHR"); return false; }
+	img = images[idx]; e = ext; f = fmt; generation = gen;
+	return true;
+}
+
+void submit(const VkCommandBuffer* cmds, uint32_t n, VkFence fence, VkSemaphore waitAcquire, int presentIdx)
+{
+	std::lock_guard<std::recursive_mutex> l(mu);
+	VkPipelineStageFlags ws = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+	VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+	bool pres = presentIdx >= 0 && swap && presentIdx < (int)semDone.size();
+	if (pres) { si.waitSemaphoreCount = 1; si.pWaitSemaphores = &waitAcquire; si.pWaitDstStageMask = &ws; si.signalSemaphoreCount = 1; si.pSignalSemaphores = &semDone[presentIdx]; }
+	si.commandBufferCount = n; si.pCommandBuffers = cmds;
+	if (!check(vkQueueSubmit(queue, 1, &si, fence), "vkQueueSubmit")) return;
+	if (!pres) return;
+	uint32_t idx = (uint32_t)presentIdx;
+	VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+	pi.waitSemaphoreCount = 1; pi.pWaitSemaphores = &semDone[idx]; pi.swapchainCount = 1; pi.pSwapchains = &swap; pi.pImageIndices = &idx;
+	VkResult r = vkQueuePresentKHR(queue, &pi);
+	if (r == VK_ERROR_OUT_OF_DATE_KHR) dirty = true;
 }
 }
 #endif
