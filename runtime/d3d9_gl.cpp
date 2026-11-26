@@ -432,13 +432,6 @@ void createRtStorage(Obj* o)   // color or depth render target texture
 	glBindTexture(GL_TEXTURE_2D, o->glTex); gTexBindDirty = true;
 	if (tf.depth) glTexImage2D(GL_TEXTURE_2D, 0, tf.internal, o->w, o->h, 0, tf.format, tf.type, nullptr);
 	else if (tf.convert || tf.compressed || tf.none) glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, o->w, o->h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-	else if (o->fmt == 113 && o->levels <= 1 && o->w == backW && o->h == backH && access("/sdcard/ra3_rt11", F_OK) == 0)
-	{
-		// experiment: the screen-sized HDR scene target in half the memory (no alpha: reads as 1)
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_R11F_G11F_B10F, o->w, o->h, 0, GL_RGB, GL_HALF_FLOAT, nullptr);
-		static int n = 0;
-		if (n++ < 4) log("GL: rt11: %ux%u A16B16G16R16F render target as R11F_G11F_B10F", o->w, o->h);
-	}
 	else glTexImage2D(GL_TEXTURE_2D, 0, tf.internal, o->w, o->h, 0, tf.format, tf.type, nullptr);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, o->levels > 1 ? o->levels - 1 : 0);
 	if (o->levels > 1)
@@ -538,12 +531,12 @@ bool isBack(Obj* rt) { return !rt || rt == gBackBuffer; }
 // GPU time per render pass (with /sdcard/ra3_prof): a new interval starts on the render thread
 static uint32_t gPassDraws = 0, gPassClear = 0;   // of the current render pass, for the pass list
 static uint32_t passInfo() { uint32_t i = std::min(gPassDraws, 0xffffffu) | gPassClear << 24; gPassDraws = 0; gPassClear = 0; return i; }
-static void gpuMark(int kind, uint32_t w, uint32_t h, uint32_t fmt)
+static void gpuMark(int kind, uint32_t w, uint32_t h, uint32_t fmt, uint32_t id = 0)
 {
 	if (!gputime::on()) return;
 	uint64_t k = gputime::key(kind, w, h, fmt);
 	uint32_t info = passInfo();
-	if (rec::active()) rec::q([k, info] { gputime::mark(k, info); }); else gputime::mark(k, info);
+	if (rec::active()) rec::q([k, info, id] { gputime::mark(k, info, id); }); else gputime::mark(k, info, id);
 }
 // Tiled GPUs (Adreno, Mali) keep a render pass in on-chip memory and write it out when it ends, and read the old
 // contents back in when a target is bound again without a full clear. The back buffer's depth/stencil is not
@@ -610,7 +603,7 @@ void bindTargets()
 		uint32_t lvl0 = rt->iface == ISurface ? rt->level : 0;
 		if (!gFboDirty && lastRt == rt && lastDs == ds0 && lastTex == tex && lastDt == dt0 && lastLvl == lvl0) return;
 		lastRt = rt; lastDs = ds0; lastTex = tex; lastDt = dt0; lastLvl = lvl0; gFboDirty = false;
-		if (gputime::on()) { uint32_t w, h; targetSize(rt, w, h); gpuMark(1, w, h, texOwner(rt)->fmt); }
+		if (gputime::on()) { uint32_t w, h; targetSize(rt, w, h); gpuMark(1, w, h, texOwner(rt)->fmt, texOwner(rt)->addr | lvl0); }
 	}
 	glBindFramebuffer(GL_FRAMEBUFFER, gDrawFbo);
 	uint32_t lvl = rt->iface == ISurface ? rt->level : 0;

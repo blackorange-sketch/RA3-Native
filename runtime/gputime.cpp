@@ -22,18 +22,19 @@ namespace gputime
 static bool gOn = false, gInit = false, gOk = false;
 static PFNGLGETQUERYOBJECTUI64VEXTPROC pGet64 = nullptr;
 
-struct Pending { GLuint q; uint64_t key; uint32_t frame; uint32_t info; };
+struct Pending { GLuint q; uint64_t key; uint32_t frame; uint32_t info, id; };
 static std::vector<GLuint> gFree;
 static std::vector<Pending> gPend;
 static GLuint gCur = 0;
 static uint64_t gCurKey = 0;
+static uint32_t gCurId = 0, gCurInfo = 0;   // the target object; draws and clears of passes merged into this interval
 static uint32_t gFrame = 0, gFrames = 0;
 struct Acc { uint64_t ns = 0; uint32_t n = 0; };
 static std::unordered_map<uint64_t, Acc> gAcc;
 static uint64_t gTotalNs = 0;
 static uint32_t gDropped = 0;
 // one frame in every 900, pass by pass in order: target, GPU time, draws, clears
-struct SeqE { uint64_t key, ns; uint32_t info; };
+struct SeqE { uint64_t key, ns; uint32_t info, id; };
 static std::vector<SeqE> gSeq;
 static uint32_t gSeqFrame = ~0u;
 
@@ -72,12 +73,13 @@ static bool init()
 	return gOk;
 }
 
+static uint32_t addInfo(uint32_t a, uint32_t b) { return std::min((a & 0xffffff) + (b & 0xffffff), 0xffffffu) | ((a | b) & 0xff000000u); }
 static void endCur(uint32_t info)
 {
 	if (!gCur) return;
 	glEndQuery(GL_TIME_ELAPSED_EXT);
-	gPend.push_back({gCur, gCurKey, gFrame, info});
-	gCur = 0;
+	gPend.push_back({gCur, gCurKey, gFrame, addInfo(gCurInfo, info), gCurId});
+	gCur = 0; gCurInfo = 0;
 }
 
 static void logSeq()
@@ -91,25 +93,25 @@ static void logSeq()
 		std::string cl;
 		if (c & 8) { cl = " clear"; if (c & 1) cl += "C"; if (c & 2) cl += "Z"; if (c & 4) cl += "S"; }
 		if (c & 0x70) { cl += " later-clear"; if (c & 0x10) cl += "C"; if (c & 0x20) cl += "Z"; if (c & 0x40) cl += "S"; }
-		snprintf(b, sizeof b, "\n    %-22s %6.2f ms %5u draws%s", label(e.key).c_str(), e.ns / 1e6, d, cl.c_str());
+		snprintf(b, sizeof b, "\n    %-22s %08x %6.2f ms %5u draws%s", label(e.key).c_str(), e.id, e.ns / 1e6, d, cl.c_str());
 		s += b; tot += e.ns;
 	}
 	log("gputime: passes of frame %u (%zu passes, %.2f ms):%s", gSeqFrame, gSeq.size(), tot / 1e6, s.c_str());
 	gSeq.clear();
 }
 
-void mark(uint64_t k, uint32_t prevInfo)
+void mark(uint64_t k, uint32_t prevInfo, uint32_t id)
 {
 	if (!gOn && !(gOn = on())) return;
 	if (!init()) return;
-	if (gCur && k == gCurKey) return;
+	if (gCur && k == gCurKey && id == gCurId) { gCurInfo = addInfo(gCurInfo, prevInfo); return; }
 	endCur(prevInfo);
 	if (gPend.size() > 4096) return;   // results not coming back: stop adding
 	GLuint q;
 	if (!gFree.empty()) { q = gFree.back(); gFree.pop_back(); }
 	else glGenQueries(1, &q);
 	glBeginQuery(GL_TIME_ELAPSED_EXT, q);
-	gCur = q; gCurKey = k;
+	gCur = q; gCurKey = k; gCurId = id;
 }
 
 void frameEnd(uint32_t lastInfo)
@@ -133,7 +135,7 @@ void frameEnd(uint32_t lastInfo)
 		if (disjoint) gDropped++;
 		else { auto& a = gAcc[gPend[i].key]; a.ns += ns; a.n++; gTotalNs += ns; }
 		if (!gSeq.empty() && gPend[i].frame != gSeqFrame) logSeq();
-		if (gPend[i].frame == gSeqFrame) gSeq.push_back({gPend[i].key, ns, gPend[i].info});
+		if (gPend[i].frame == gSeqFrame) gSeq.push_back({gPend[i].key, ns, gPend[i].info, gPend[i].id});
 		gFree.push_back(gPend[i].q);
 	}
 	if (i) gPend.erase(gPend.begin(), gPend.begin() + i);
