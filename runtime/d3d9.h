@@ -118,6 +118,13 @@ struct DrawCall
 	const void* upIdx = nullptr;
 	uint32_t upIdxFmt = 101;
 };
+// a vertex declaration element (D3DVERTEXELEMENT9) and the vertex count of a primitive run (renderer-independent)
+struct DeclElem { uint16_t stream, offset; uint8_t type, method, usage, index; };
+inline int primVertices(uint32_t prim, uint32_t n)
+{
+	switch (prim) { case 1: return n; case 2: return 2 * n; case 3: return n + 1; case 4: return 3 * n; case 5: case 6: return n + 2; }
+	return 0;
+}
 namespace glr
 {
 bool init();
