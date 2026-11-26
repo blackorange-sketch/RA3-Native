@@ -68,7 +68,11 @@ uint32_t gNewPipes = 0;
 uint64_t gSerial = 1, gDone = 0;   // serial of the frame being recorded / of the last one the GPU finished
 uint32_t gDraws = 0, gDrawsTotal = 0;
 // once a minute: GPU time per frame, CPU time in the renderer, passes, barriers
-struct Stats { uint64_t gpuNs = 0, cpuNs = 0; uint32_t gpuFrames = 0, frames = 0, draws = 0, passes = 0, clearPasses = 0, barriers = 0, uploads = 0; } gSt;
+struct Stats
+{
+	uint64_t gpuNs = 0, cpuNs = 0, presentNs = 0, phaseNs[8] = {}, renameBytes = 0, copyBytes = 0, ringBytes = 0, convVerts = 0, uploadBytes = 0;
+	uint32_t gpuFrames = 0, frames = 0, draws = 0, passes = 0, clearPasses = 0, barriers = 0, uploads = 0, renames = 0, descSets = 0, texUploads = 0, newPipes = 0, convRebuilds = 0;
+} gSt;
 uint64_t nowNs() { return (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 struct CpuTimer { uint64_t t0 = nowNs(); ~CpuTimer() { gSt.cpuNs += nowNs() - t0; } };
 
@@ -112,6 +116,9 @@ struct Frame
 	std::vector<Dump> dumps;
 	VkQueryPool queries = VK_NULL_HANDLE;   // GPU time of the frame: timestamps at its start and end
 	bool timed = false;
+	VkQueryPool passQ = VK_NULL_HANDLE;     // one frame in 900: GPU time of each render pass
+	uint32_t nPassQ = 0;
+	std::vector<std::string> passNames;
 	VkCommandPool pool = VK_NULL_HANDLE;
 	VkCommandBuffer cmd = VK_NULL_HANDLE, up = VK_NULL_HANDLE;
 	bool upUsed = false;
@@ -182,6 +189,7 @@ bool ringAlloc(VkDeviceSize size, VkDeviceSize align, RingPos& out, VkDeviceSize
 		if (at + size + reserve <= c.size)
 		{
 			c.pos = at + size;
+			gSt.ringBytes += size;
 			out = {c.buf, at, c.map + at, F->chunk};
 			return true;
 		}
@@ -327,6 +335,7 @@ void barrier(VkCommandBuffer cb, VkImage img, VkImageAspectFlags aspect, VkImage
 struct Target { VTex* color = nullptr; uint32_t cLevel = 0, cLayer = 0; VTex* depth = nullptr; uint32_t w = 0, h = 0; };
 bool gInPass = false;
 Target gPass;
+uint32_t gPassDraws = 0, gPasses = 0, gPassClears = 0;   // draws since the pass began; passes / passes opened by a clear this frame
 // ---- frame dump (/sdcard/ra3_vkdump, optionally holding a frame number; default 1800): every render pass of that
 // frame saved to /sdcard/ra3_dump/vkNN_*.bmp when it ends, and its draws logged
 uint32_t gDumpFrame = 0;
@@ -412,6 +421,11 @@ void endPass()
 	if (!gInPass) return;
 	pEndRendering(C);
 	gInPass = false;
+	if (F->nPassQ & 1)
+	{
+		vkCmdWriteTimestamp(C, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, F->passQ, F->nPassQ++);
+		char b[24]; snprintf(b, sizeof b, " %u draws", gPassDraws); F->passNames.back() += b;
+	}
 	if (dumping()) dumpTarget(gPass.color, gPass.cLevel, gPass.cLayer, "pass");
 }
 void toLayout(VTex* t, VkImageLayout l)
@@ -458,13 +472,23 @@ void upload(Obj* o, VTex* t, const Fmt& f)
 			regs.push_back({total, l, fc, w, h, d});
 			total += sz;
 		}
-	VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-	bi.size = std::max<VkDeviceSize>(total, 16); bi.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-	VmaAllocationCreateInfo ai{};
-	ai.usage = VMA_MEMORY_USAGE_AUTO; ai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
-	VkBuffer sb; VmaAllocation sm; VmaAllocationInfo inf;
-	if (!vkOk(vmaCreateBuffer(gA, &bi, &ai, &sb, &sm, &inf), "staging buffer")) return;
-	uint8_t* map = (uint8_t*)inf.pMappedData;
+	// staging: the frame's ring for anything up to 4 MB (the shroud and other textures the game rewrites every
+	// frame), a buffer of its own for bigger ones
+	VkBuffer sb = VK_NULL_HANDLE; VmaAllocation sm = VK_NULL_HANDLE;
+	uint8_t* map = nullptr;
+	VkDeviceSize base = 0;
+	RingPos rp;
+	if (total <= (4u << 20) && ringAlloc(std::max<VkDeviceSize>(total, 16), 16, rp)) { sb = rp.buf; base = rp.off; map = rp.ptr; }
+	else
+	{
+		VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+		bi.size = std::max<VkDeviceSize>(total, 16); bi.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+		VmaAllocationCreateInfo ai{};
+		ai.usage = VMA_MEMORY_USAGE_AUTO; ai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+		VmaAllocationInfo inf;
+		if (!vkOk(vmaCreateBuffer(gA, &bi, &ai, &sb, &sm, &inf), "staging buffer")) return;
+		map = (uint8_t*)inf.pMappedData;
+	}
 	std::vector<VkBufferImageCopy> copies;
 	for (auto& r : regs)
 	{
@@ -480,7 +504,7 @@ void upload(Obj* o, VTex* t, const Fmt& f)
 		}
 		else memcpy(map + r.off, src, (size_t)levelBytes(o->fmt, r.w, r.h) * r.d);
 		VkBufferImageCopy c{};
-		c.bufferOffset = r.off;
+		c.bufferOffset = base + r.off;
 		c.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, r.level, r.layer, 1};
 		c.imageExtent = {r.w, r.h, r.d};
 		copies.push_back(c);
@@ -496,7 +520,8 @@ void upload(Obj* o, VTex* t, const Fmt& f)
 	vkCmdCopyBufferToImage(F->up, sb, t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, (uint32_t)copies.size(), copies.data());
 	barrier(F->up, t->img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 	t->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-	later([sb, sm] { vmaDestroyBuffer(gA, sb, sm); });
+	if (sm) later([sb, sm] { vmaDestroyBuffer(gA, sb, sm); });
+	gSt.texUploads++; gSt.uploadBytes += total;
 }
 
 VTex* ensureTex(Obj* o0)
@@ -554,11 +579,11 @@ VBuf* ensureBuf(Obj* o, VkBufferUsageFlags usage)
 		if (inFlight)
 		{
 			VBuf* n = make();
-			if (n) { destroyBuf(b); b = n; o->vk = b; o->dirtyLo = 0xffffffffu; }
+			if (n) { destroyBuf(b); b = n; o->vk = b; o->dirtyLo = 0xffffffffu; gSt.renames++; gSt.renameBytes += o->size; }
 		}
 		const uint8_t* src = (const uint8_t*)guest::host(o->data);
-		if (!inFlight && b->ver && o->dirtyLo < o->dirtyHi && o->dirtyHi <= o->size) memcpy(b->map + o->dirtyLo, src + o->dirtyLo, o->dirtyHi - o->dirtyLo);
-		else memcpy(b->map, src, o->size);
+		if (!inFlight && b->ver && o->dirtyLo < o->dirtyHi && o->dirtyHi <= o->size) { memcpy(b->map + o->dirtyLo, src + o->dirtyLo, o->dirtyHi - o->dirtyLo); gSt.copyBytes += o->dirtyHi - o->dirtyLo; }
+		else { memcpy(b->map, src, o->size); gSt.copyBytes += o->size; }
 		vmaFlushAllocation(gA, b->mem, 0, VK_WHOLE_SIZE);
 		o->dirtyLo = 0xffffffffu; o->dirtyHi = 0;
 		b->ver = o->ver;
@@ -661,7 +686,19 @@ VkShaderModule vsModule(ShaderObj* vs, uint32_t intMask, uint32_t uintMask)
 	return module(shdr::composeVk(vs->info, nullptr, false, intMask, uintMask), true, k);
 }
 bool gScaled = false;   // the GPU reads USCALED/SSCALED vertex formats
+struct PairKey { ShaderObj* ps; ShaderObj* vs; bool precise; bool operator==(const PairKey& o) const { return ps == o.ps && vs == o.vs && precise == o.precise; } };
+struct PairHash { size_t operator()(const PairKey& k) const { return std::hash<void*>()(k.ps) * 31 ^ std::hash<void*>()(k.vs) ^ k.precise; } };
+std::unordered_map<PairKey, VkShaderModule, PairHash> gPsPair;
+VkShaderModule psModuleSlow(ShaderObj* ps, ShaderObj* vs, bool precise);
 VkShaderModule psModule(ShaderObj* ps, ShaderObj* vs, bool precise)
+{
+	auto it = gPsPair.find({ps, vs, precise});
+	if (it != gPsPair.end()) return it->second;
+	VkShaderModule m = psModuleSlow(ps, vs, precise);
+	gPsPair[{ps, vs, precise}] = m;
+	return m;
+}
+VkShaderModule psModuleSlow(ShaderObj* ps, ShaderObj* vs, bool precise)
 {
 	uint64_t k = ps->hash * 31 + 2;
 	for (auto& n : vs->info.outputs) k = fnv(n.data(), n.size(), k);
@@ -740,6 +777,7 @@ void decodeAttr(uint8_t t, const uint8_t* p, float* o)
 struct ConvLayout { uint32_t n = 0; uint8_t type[16]; uint16_t off[16]; };
 void convertVerts(const ConvLayout& cl, const uint8_t* src, uint32_t srcStride, uint32_t count, float* dst)
 {
+	gSt.convVerts += count;
 	for (uint32_t v = 0; v < count; v++, src += srcStride)
 		for (uint32_t k = 0; k < cl.n; k++, dst += 4) decodeAttr(cl.type[k], src + cl.off[k], dst);
 }
@@ -811,7 +849,7 @@ VkPipeline pipeline(const PipeKey& k, const VtxLayout& vl)
 	VkPipeline p = VK_NULL_HANDLE;
 	vkOk(vkCreateGraphicsPipelines(D, gPipeCache, 1, &pi, nullptr, &p), "vkCreateGraphicsPipelines");
 	gPipes[h] = p;
-	gNewPipes++;
+	gNewPipes++; gSt.newPipes++;
 	static int n = 0;
 	if (n++ < 6 || gPipes.size() % 100 == 0) log("vulkan: %zu pipelines", gPipes.size());
 	return p;
@@ -879,6 +917,27 @@ void beginFrame()
 		}
 		F->timed = false;
 	}
+	if (F->nPassQ >= 2)
+	{
+		uint32_t n = F->nPassQ & ~1u;
+		std::vector<uint64_t> ts(n);
+		if (vkGetQueryPoolResults(D, F->passQ, 0, n, n * 8, ts.data(), 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS)
+		{
+			double per = vkb::handles().timestampPeriod / 1e6, tot = 0;
+			std::string o;
+			char b[160];
+			for (uint32_t i = 0; i + 1 < n; i += 2)
+			{
+				double ms = (ts[i + 1] - ts[i]) * per, gap = i ? (ts[i] - ts[i - 1]) * per : 0.0;
+				tot += ms;
+				snprintf(b, sizeof b, "\n    %6.2f ms (gap before %.2f) %s", ms, gap, i / 2 < F->passNames.size() ? F->passNames[i / 2].c_str() : "?");
+				o += b;
+			}
+			log("vulkan gpu: passes of one frame (%u passes, %.2f ms in passes, %.2f ms first to last):%s", n / 2, tot, (ts[n - 1] - ts[0]) * per, o.c_str());
+		}
+	}
+	F->nPassQ = 0;
+	F->passNames.clear();
 	for (auto& f : F->trash) f();
 	F->trash.clear();
 	vkResetFences(D, 1, &F->fence);
@@ -893,6 +952,7 @@ void beginFrame()
 	b.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 	vkBeginCommandBuffer(F->cmd, &b);
 	C = F->cmd;
+	if (F->passQ) vkCmdResetQueryPool(C, F->passQ, 0, 256);
 	if (F->queries)
 	{
 		vkCmdResetQueryPool(C, F->queries, 0, 2);
@@ -992,7 +1052,6 @@ VTex* brightPassCopy(VTex* src, const Target& t)
 }
 
 // begin rendering into the current target (layouts first: no barrier may fall inside a pass)
-uint32_t gPassDraws = 0, gPasses = 0, gPassClears = 0;   // draws since the pass began; passes / passes opened by a clear this frame
 bool beginPass(const Target& t, const VkClearAttachment* clr = nullptr, uint32_t nClr = 0)
 {
 	if (!nClr && gInPass && t.color == gPass.color && t.cLevel == gPass.cLevel && t.cLayer == gPass.cLayer && t.depth == gPass.depth) return true;
@@ -1027,6 +1086,13 @@ bool beginPass(const Target& t, const VkClearAttachment* clr = nullptr, uint32_t
 		if ((clr[i].aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) && t.color) { ca.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; ca.clearValue = clr[i].clearValue; }
 		if ((clr[i].aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT) && t.depth) { da.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; da.clearValue = clr[i].clearValue; }
 		if ((clr[i].aspectMask & VK_IMAGE_ASPECT_STENCIL_BIT) && t.depth) { sa.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; sa.clearValue = clr[i].clearValue; }
+	}
+	if (F->passQ && glr::frameNo() % 900 == 450 && F->nPassQ + 2 <= 256)
+	{
+		vkCmdWriteTimestamp(C, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, F->passQ, F->nPassQ++);
+		char b[80];
+		snprintf(b, sizeof b, "%ux%u f%d%s%s", t.w, t.h, t.color ? (int)t.color->fmt : -1, t.depth ? "+depth" : "", nClr ? " cleared" : "");
+		F->passNames.push_back(b);
 	}
 	pBeginRendering(C, &ri);
 	gInPass = true;
@@ -1256,6 +1322,8 @@ bool init()
 			VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
 			qi.queryType = VK_QUERY_TYPE_TIMESTAMP; qi.queryCount = 2;
 			vkCreateQueryPool(D, &qi, nullptr, &f.queries);
+			qi.queryCount = 256;
+			vkCreateQueryPool(D, &qi, nullptr, &f.passQ);
 		}
 	}
 	gFi = 0;
@@ -1329,6 +1397,10 @@ void draw(const DrawCall& dc)
 {
 	std::lock_guard<std::recursive_mutex> l(gMu);
 	CpuTimer ct;
+	static uint32_t sampleCtr = 0;
+	const bool smp = (++sampleCtr & 7) == 0;
+	uint64_t phT = smp ? nowNs() : 0;
+#define PHASE(k) do { if (smp) { uint64_t pn_ = nowNs(); gSt.phaseNs[k] += (pn_ - phT) * 8; phT = pn_; } } while (0)
 	if (!gOk) SKIP();
 	ShaderObj *vs = dev.vs, *ps = dev.ps;
 	if (!vs || !ps || !vs->ok || !ps->ok || !dev.vdecl) SKIP();
@@ -1364,6 +1436,7 @@ void draw(const DrawCall& dc)
 	}
 	Target t;
 	if (!currentTarget(t)) SKIP();
+	PHASE(0);
 	bool precise = rt::config.fastShaders && vs->info.relC;
 	if (rt::config.fastShaders && !precise)
 		for (int i = 0; i < 16 && !precise; i++) if (ps->info.samplerType[i] && dev.tex[i] && (dev.tex[i]->usage & 3)) precise = true;
@@ -1397,6 +1470,7 @@ void draw(const DrawCall& dc)
 		mask |= 1u << i;
 	}
 	beginPass(t);
+	PHASE(1);
 
 	// vertex layout
 	VtxLayout vl;
@@ -1494,6 +1568,7 @@ void draw(const DrawCall& dc)
 	VkPipeline pipe = pipeline(pk, vl);
 	if (!pipe) SKIP();
 	if (S.pipe != pipe) { vkCmdBindPipeline(C, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe); S.pipe = pipe; }
+	PHASE(2);
 
 	// dynamic state (only what changed)
 	bool full = !S.valid;
@@ -1541,6 +1616,7 @@ void draw(const DrawCall& dc)
 		if (full || memcmp(bc, S.blendC, sizeof bc)) { vkCmdSetBlendConstants(C, bc); memcpy(S.blendC, bc, sizeof bc); }
 	}
 
+	PHASE(3);
 	// constants
 	for (int attempt = 0;; attempt++)
 	{
@@ -1601,6 +1677,7 @@ void draw(const DrawCall& dc)
 		p.at[0] = rs[15] ? (float)rs[25] : 0.f; p.at[1] = (rs[24] & 255) / 255.f;
 		if (!S.pushValid || memcmp(&p, &S.push, sizeof p)) { vkCmdPushConstants(C, gLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof p, &p); S.push = p; S.pushValid = true; }
 	}
+	PHASE(4);
 	// textures
 	if (mask)
 	{
@@ -1620,12 +1697,14 @@ void draw(const DrawCall& dc)
 					nw++;
 				}
 			vkUpdateDescriptorSets(D, nw, w, 0, nullptr);
+			gSt.descSets++;
 			vkCmdBindDescriptorSets(C, VK_PIPELINE_BIND_POINT_GRAPHICS, gLayout, 1, 1, &set, 0, nullptr);
 			S.texSet = set; S.texMask = mask;
 			memcpy(S.texViews, views, sizeof views); memcpy(S.texSamp, samps, sizeof samps);
 		}
 	}
 
+	PHASE(5);
 	// vertex and index data
 	const uint32_t nv = (uint32_t)primVertices(dc.prim, dc.primCount);
 	if (!nv) SKIP();
@@ -1707,6 +1786,7 @@ void draw(const DrawCall& dc)
 					vmaFlushAllocation(gA, nb->mem, 0, VK_WHOLE_SIZE);
 					if (cb.buf) destroyBuf(cb.buf);
 					cb.buf = nb; cb.ver = st.vb->ver; cb.key = key;
+					gSt.convRebuilds++;
 					static int nl = 0;
 					if (nl++ < 6) log("vulkan: vertex buffer of %u vertices rewritten as floats (%u elements)", n, conv[si].n);
 				}
@@ -1761,6 +1841,7 @@ void draw(const DrawCall& dc)
 		}
 	}
 	gDraws++; gDrawsTotal++; gPassDraws++;
+	PHASE(6);
 	if (dumping())
 	{
 		std::string de;
@@ -1811,6 +1892,7 @@ bool present(int sw, int sh)
 {
 	std::lock_guard<std::recursive_mutex> l(gMu);
 	CpuTimer ct;
+	struct PresentTimer { uint64_t t0 = nowNs(); ~PresentTimer() { gSt.presentNs += nowNs() - t0; } } pt;
 	if (!gOk) return false;
 	static bool everDrew = false;
 	if (gDrawsTotal) everDrew = true;
@@ -1977,8 +2059,12 @@ bool present(int sw, int sh)
 	if (gSt.frames >= 900)
 	{
 		double f = gSt.frames;
-		log("vulkan perf: GPU %.2f ms per frame, renderer CPU %.2f ms per frame; per frame %.0f draws, %.1f passes (%.1f begun by a clear), %.1f barriers; frames with uploads %u; %zu pipelines",
-			gSt.gpuFrames ? gSt.gpuNs / 1e6 / gSt.gpuFrames : 0.0, gSt.cpuNs / 1e6 / f, gSt.draws / f, gSt.passes / f, gSt.clearPasses / f, gSt.barriers / f, gSt.uploads, gPipes.size());
+		log("vulkan perf: GPU %.2f ms per frame, renderer CPU %.2f ms per frame (present %.2f); per frame %.0f draws, %.1f passes (%.1f begun by a clear), %.1f barriers; frames with uploads %u; %zu pipelines (%u new)",
+			gSt.gpuFrames ? gSt.gpuNs / 1e6 / gSt.gpuFrames : 0.0, gSt.cpuNs / 1e6 / f, gSt.presentNs / 1e6 / f, gSt.draws / f, gSt.passes / f, gSt.clearPasses / f, gSt.barriers / f, gSt.uploads, gPipes.size(), gSt.newPipes);
+		log("vulkan perf: draw CPU ms per frame: setup %.2f, textures+pass %.2f, pipeline %.2f, state %.2f, constants %.2f, texture sets %.2f (%.0f), vertices+draw %.2f",
+			gSt.phaseNs[0] / 1e6 / f, gSt.phaseNs[1] / 1e6 / f, gSt.phaseNs[2] / 1e6 / f, gSt.phaseNs[3] / 1e6 / f, gSt.phaseNs[4] / 1e6 / f, gSt.phaseNs[5] / 1e6 / f, gSt.descSets / f, gSt.phaseNs[6] / 1e6 / f);
+		log("vulkan perf: per frame KB: ring %.0f, buffer copies %.0f, buffer renames %.1f (%.0f KB), texture uploads %.1f (%.0f KB), vertices converted %.0f (%u rebuilds)",
+			gSt.ringBytes / 1024.0 / f, gSt.copyBytes / 1024.0 / f, gSt.renames / f, gSt.renameBytes / 1024.0 / f, gSt.texUploads / f, gSt.uploadBytes / 1024.0 / f, gSt.convVerts / f, gSt.convRebuilds);
 		gSt = Stats();
 	}
 	gSerial++;
