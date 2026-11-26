@@ -30,6 +30,12 @@
 #include <mutex>
 #include <unordered_map>
 #include <vector>
+#include <deque>
+#include <condition_variable>
+#include <thread>
+#include <atomic>
+#include <pthread.h>
+#include <sys/resource.h>
 
 using rt::log;
 
@@ -71,7 +77,7 @@ uint32_t gDraws = 0, gDrawsTotal = 0;
 // once a minute: GPU time per frame, CPU time in the renderer, passes, barriers
 struct Stats
 {
-	uint64_t gpuNs = 0, cpuNs = 0, presentNs = 0, phaseNs[8] = {}, renameBytes = 0, copyBytes = 0, ringBytes = 0, convVerts = 0, uploadBytes = 0;
+	uint64_t recNs = 0, gpuNs = 0, cpuNs = 0, presentNs = 0, phaseNs[8] = {}, renameBytes = 0, copyBytes = 0, ringBytes = 0, convVerts = 0, uploadBytes = 0;
 	uint32_t batched = 0, batches = 0, swaps = 0, swapResolves = 0, swapFree = 0, gpuFrames = 0, frames = 0, draws = 0, passes = 0, clearPasses = 0, barriers = 0, uploads = 0, renames = 0, descSets = 0, texUploads = 0, newPipes = 0, convRebuilds = 0;
 } gSt;
 uint64_t nowNs() { return (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
@@ -131,7 +137,7 @@ struct Frame
 	VkQueryPool passQ = VK_NULL_HANDLE;     // one frame in 900: GPU time of each render pass
 	uint32_t nPassQ = 0;
 	std::vector<std::string> passNames;
-	VkCommandPool pool = VK_NULL_HANDLE;
+	VkCommandPool pool = VK_NULL_HANDLE, upPool = VK_NULL_HANDLE;   // the frame's commands (recording thread) / uploads (game thread)
 	VkCommandBuffer cmd = VK_NULL_HANDLE, up = VK_NULL_HANDLE;
 	bool upUsed = false;
 	VkFence fence = VK_NULL_HANDLE;
@@ -148,6 +154,236 @@ Frame gF[kFrames];
 int gFi = 0;
 Frame* F = nullptr;
 VkCommandBuffer C = VK_NULL_HANDLE;
+
+// ---- recording thread: the frame's command buffer is filled by a thread of its own (as the OpenGL renderer's
+// render thread): the game thread does the state work and queues each command with copies of its arguments; the
+// recording thread replays them into the command buffer and submits the frame. Commands into the upload buffer
+// (F->up, its own pool) stay on the game thread. /sdcard/ra3_vkst: everything on the game thread.
+namespace cq
+{
+bool gOn = false;
+struct Cmd { void (*run)(void*); uint32_t total; uint32_t pad; };
+struct QChunk { uint8_t* buf; size_t cap, used; };
+const size_t kQChunk = 256u << 10;
+std::mutex qm;
+std::condition_variable qcv, dcv;
+std::deque<QChunk*> ready, freeL;
+QChunk* cur = nullptr;
+uint64_t doneSerial = 0, marks = 0, marksDone = 0;   // (qm)
+std::atomic<uint64_t> busyNs{0};
+template <class T> void runDestroy(void* p) { T* t = (T*)p; (*t)(); t->~T(); }
+void publish()
+{
+	if (!cur || !cur->used) return;
+	{ std::lock_guard<std::mutex> l(qm); ready.push_back(cur); }
+	qcv.notify_one();
+	cur = nullptr;
+}
+void* reserve(size_t payload, void (*run)(void*))
+{
+	size_t need = (sizeof(Cmd) + payload + 15) & ~(size_t)15;
+	if (!cur || cur->used + need > cur->cap)
+	{
+		publish();
+		{
+			std::lock_guard<std::mutex> l(qm);
+			if (need <= kQChunk && !freeL.empty()) { cur = freeL.front(); freeL.pop_front(); cur->used = 0; }
+		}
+		if (!cur) { cur = new QChunk; cur->cap = std::max(need, kQChunk); cur->buf = (uint8_t*)malloc(cur->cap); cur->used = 0; }
+	}
+	Cmd* c = (Cmd*)(cur->buf + cur->used);
+	c->run = run; c->total = (uint32_t)need;
+	cur->used += need;
+	return c + 1;
+}
+template <class Fn> void q(Fn&& f)
+{
+	using T = typename std::decay<Fn>::type;
+	void* p = reserve(sizeof(T), &runDestroy<T>);
+	new (p) T(std::forward<Fn>(f));
+}
+void loop()
+{
+	for (;;)
+	{
+		QChunk* c;
+		{
+			std::unique_lock<std::mutex> l(qm);
+			qcv.wait(l, [] { return !ready.empty(); });
+			c = ready.front(); ready.pop_front();
+		}
+		uint64_t t0 = nowNs();
+		for (size_t off = 0; off < c->used;)
+		{
+			Cmd* cmd = (Cmd*)(c->buf + off);
+			off += cmd->total;
+			cmd->run(cmd + 1);
+		}
+		busyNs += nowNs() - t0;
+		{
+			std::lock_guard<std::mutex> l(qm);
+			if (c->cap <= kQChunk && freeL.size() < 16) freeL.push_back(c);
+			else { free(c->buf); delete c; }
+		}
+	}
+}
+void start()
+{
+	gOn = access("/sdcard/ra3_vkst", F_OK) != 0;
+	log("vulkan: commands recorded on %s", gOn ? "a thread of their own" : "the game thread (ra3_vkst)");
+	if (!gOn) return;
+	std::thread([] {
+		pthread_setname_np(pthread_self(), "ra3-vkrecord");
+		setpriority(PRIO_PROCESS, 0, -10);
+		loop();
+	}).detach();
+}
+// the frame with this serial has been submitted (queued after its submit)
+void frameDone(uint64_t serial)
+{
+	if (!gOn) return;
+	q([serial] { { std::lock_guard<std::mutex> l(qm); doneSerial = std::max(doneSerial, serial); } dcv.notify_all(); });
+}
+void waitFrame(uint64_t serial)
+{
+	if (!gOn) return;
+	std::unique_lock<std::mutex> l(qm);
+	if (doneSerial >= serial) return;
+	l.unlock(); publish(); l.lock();
+	dcv.wait(l, [&] { return doneSerial >= serial; });
+}
+// everything queued so far has run
+void waitIdle()
+{
+	if (!gOn) return;
+	uint64_t m;
+	{ std::lock_guard<std::mutex> l(qm); m = ++marks; }
+	q([m] { { std::lock_guard<std::mutex> l(qm); marksDone = std::max(marksDone, m); } dcv.notify_all(); });
+	publish();
+	std::unique_lock<std::mutex> l(qm);
+	dcv.wait(l, [&] { return marksDone >= m; });
+}
+inline bool thr(VkCommandBuffer cb) { return gOn && cb == C; }
+
+// ---- the commands (copies of everything their pointers point to)
+inline void BindPipeline(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipeline p) { if (!thr(cb)) { (vkCmdBindPipeline)(cb, bp, p); return; } q([=] { (vkCmdBindPipeline)(cb, bp, p); }); }
+inline void SetViewport(VkCommandBuffer cb, uint32_t f, uint32_t n, const VkViewport* v) { if (!thr(cb) || n != 1) { (vkCmdSetViewport)(cb, f, n, v); return; } VkViewport c = *v; q([=] { (vkCmdSetViewport)(cb, f, 1, &c); }); }
+inline void SetScissor(VkCommandBuffer cb, uint32_t f, uint32_t n, const VkRect2D* v) { if (!thr(cb) || n != 1) { (vkCmdSetScissor)(cb, f, n, v); return; } VkRect2D c = *v; q([=] { (vkCmdSetScissor)(cb, f, 1, &c); }); }
+inline void SetBlendConstants(VkCommandBuffer cb, const float* v) { if (!thr(cb)) { (vkCmdSetBlendConstants)(cb, v); return; } float c[4] = {v[0], v[1], v[2], v[3]}; q([=] { (vkCmdSetBlendConstants)(cb, c); }); }
+inline void SetDepthBias(VkCommandBuffer cb, float a, float b, float c) { if (!thr(cb)) { (vkCmdSetDepthBias)(cb, a, b, c); return; } q([=] { (vkCmdSetDepthBias)(cb, a, b, c); }); }
+inline void SetStencilCompareMask(VkCommandBuffer cb, VkStencilFaceFlags f, uint32_t v) { if (!thr(cb)) { (vkCmdSetStencilCompareMask)(cb, f, v); return; } q([=] { (vkCmdSetStencilCompareMask)(cb, f, v); }); }
+inline void SetStencilWriteMask(VkCommandBuffer cb, VkStencilFaceFlags f, uint32_t v) { if (!thr(cb)) { (vkCmdSetStencilWriteMask)(cb, f, v); return; } q([=] { (vkCmdSetStencilWriteMask)(cb, f, v); }); }
+inline void SetStencilReference(VkCommandBuffer cb, VkStencilFaceFlags f, uint32_t v) { if (!thr(cb)) { (vkCmdSetStencilReference)(cb, f, v); return; } q([=] { (vkCmdSetStencilReference)(cb, f, v); }); }
+inline void BindDescriptorSets(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipelineLayout lay, uint32_t first, uint32_t n, const VkDescriptorSet* sets, uint32_t nd, const uint32_t* offs)
+{
+	if (!thr(cb) || n != 1 || nd > 2) { (vkCmdBindDescriptorSets)(cb, bp, lay, first, n, sets, nd, offs); return; }
+	VkDescriptorSet st = sets[0]; uint32_t o[2] = {nd > 0 ? offs[0] : 0, nd > 1 ? offs[1] : 0};
+	q([=] { (vkCmdBindDescriptorSets)(cb, bp, lay, first, 1, &st, nd, o); });
+}
+inline void PushConstants(VkCommandBuffer cb, VkPipelineLayout lay, VkShaderStageFlags st, uint32_t off, uint32_t size, const void* data)
+{
+	if (!thr(cb) || size > 128) { (vkCmdPushConstants)(cb, lay, st, off, size, data); return; }
+	struct D128 { uint8_t b[128]; } d; memcpy(d.b, data, size);
+	q([=] { (vkCmdPushConstants)(cb, lay, st, off, size, d.b); });
+}
+inline void BindVertexBuffers(VkCommandBuffer cb, uint32_t first, uint32_t n, const VkBuffer* b, const VkDeviceSize* o)
+{
+	if (!thr(cb) || n != 1) { (vkCmdBindVertexBuffers)(cb, first, n, b, o); return; }
+	VkBuffer bb = b[0]; VkDeviceSize oo = o[0];
+	q([=] { (vkCmdBindVertexBuffers)(cb, first, 1, &bb, &oo); });
+}
+inline void BindIndexBuffer(VkCommandBuffer cb, VkBuffer b, VkDeviceSize o, VkIndexType t) { if (!thr(cb)) { (vkCmdBindIndexBuffer)(cb, b, o, t); return; } q([=] { (vkCmdBindIndexBuffer)(cb, b, o, t); }); }
+inline void Draw(VkCommandBuffer cb, uint32_t a, uint32_t b, uint32_t c, uint32_t d) { if (!thr(cb)) { (vkCmdDraw)(cb, a, b, c, d); return; } q([=] { (vkCmdDraw)(cb, a, b, c, d); }); }
+inline void DrawIndexed(VkCommandBuffer cb, uint32_t a, uint32_t b, uint32_t c, int32_t d, uint32_t e) { if (!thr(cb)) { (vkCmdDrawIndexed)(cb, a, b, c, d, e); return; } q([=] { (vkCmdDrawIndexed)(cb, a, b, c, d, e); }); }
+inline void ResetQueryPool(VkCommandBuffer cb, VkQueryPool p, uint32_t a, uint32_t n) { if (!thr(cb)) { (vkCmdResetQueryPool)(cb, p, a, n); return; } q([=] { (vkCmdResetQueryPool)(cb, p, a, n); }); }
+inline void WriteTimestamp(VkCommandBuffer cb, VkPipelineStageFlagBits st, VkQueryPool p, uint32_t i) { if (!thr(cb)) { (vkCmdWriteTimestamp)(cb, st, p, i); return; } q([=] { (vkCmdWriteTimestamp)(cb, st, p, i); }); }
+inline void PipelineBarrier(VkCommandBuffer cb, VkPipelineStageFlags ss, VkPipelineStageFlags ds, VkDependencyFlags df, uint32_t nm, const VkMemoryBarrier* m, uint32_t nb, const VkBufferMemoryBarrier* bm, uint32_t ni, const VkImageMemoryBarrier* im)
+{
+	if (!thr(cb) || nm || nb || ni != 1) { (vkCmdPipelineBarrier)(cb, ss, ds, df, nm, m, nb, bm, ni, im); return; }
+	VkImageMemoryBarrier b = im[0];
+	q([=] { (vkCmdPipelineBarrier)(cb, ss, ds, df, 0, nullptr, 0, nullptr, 1, &b); });
+}
+inline void BlitImage(VkCommandBuffer cb, VkImage s, VkImageLayout sl, VkImage d, VkImageLayout dl, uint32_t n, const VkImageBlit* r, VkFilter f)
+{
+	if (!thr(cb) || n != 1) { (vkCmdBlitImage)(cb, s, sl, d, dl, n, r, f); return; }
+	VkImageBlit b = r[0];
+	q([=] { (vkCmdBlitImage)(cb, s, sl, d, dl, 1, &b, f); });
+}
+inline void CopyImage(VkCommandBuffer cb, VkImage s, VkImageLayout sl, VkImage d, VkImageLayout dl, uint32_t n, const VkImageCopy* r)
+{
+	if (!thr(cb) || n != 1) { (vkCmdCopyImage)(cb, s, sl, d, dl, n, r); return; }
+	VkImageCopy c = r[0];
+	q([=] { (vkCmdCopyImage)(cb, s, sl, d, dl, 1, &c); });
+}
+inline void CopyImageToBuffer(VkCommandBuffer cb, VkImage s, VkImageLayout sl, VkBuffer d, uint32_t n, const VkBufferImageCopy* r)
+{
+	if (!thr(cb) || n != 1) { (vkCmdCopyImageToBuffer)(cb, s, sl, d, n, r); return; }
+	VkBufferImageCopy c = r[0];
+	q([=] { (vkCmdCopyImageToBuffer)(cb, s, sl, d, 1, &c); });
+}
+inline void CopyBufferToImage(VkCommandBuffer cb, VkBuffer s, VkImage d, VkImageLayout dl, uint32_t n, const VkBufferImageCopy* r)
+{
+	if (!thr(cb)) { (vkCmdCopyBufferToImage)(cb, s, d, dl, n, r); return; }
+	std::vector<VkBufferImageCopy> v(r, r + n);
+	q([=] { (vkCmdCopyBufferToImage)(cb, s, d, dl, (uint32_t)v.size(), v.data()); });
+}
+inline void ClearAttachments(VkCommandBuffer cb, uint32_t na, const VkClearAttachment* a, uint32_t nr, const VkClearRect* r)
+{
+	if (!thr(cb)) { (vkCmdClearAttachments)(cb, na, a, nr, r); return; }
+	std::vector<VkClearAttachment> va(a, a + na); std::vector<VkClearRect> vr(r, r + nr);
+	q([=] { (vkCmdClearAttachments)(cb, (uint32_t)va.size(), va.data(), (uint32_t)vr.size(), vr.data()); });
+}
+inline VkResult EndCommandBuffer(VkCommandBuffer cb) { if (!thr(cb)) return (vkEndCommandBuffer)(cb); q([=] { (vkEndCommandBuffer)(cb); }); return VK_SUCCESS; }
+inline void BeginRendering(VkCommandBuffer cb, const VkRenderingInfo* ri)
+{
+	if (!thr(cb) || ri->colorAttachmentCount > 1 || ri->pNext) { (pBeginRendering)(cb, ri); return; }
+	struct R { VkRenderingInfo ri; VkRenderingAttachmentInfo ca, da, sa; bool c, d, s; } r{};
+	r.ri = *ri; r.c = ri->colorAttachmentCount == 1; r.d = ri->pDepthAttachment != nullptr; r.s = ri->pStencilAttachment != nullptr;
+	if (r.c) r.ca = ri->pColorAttachments[0];
+	if (r.d) r.da = *ri->pDepthAttachment;
+	if (r.s) r.sa = *ri->pStencilAttachment;
+	q([=]() mutable {
+		r.ri.pColorAttachments = r.c ? &r.ca : nullptr; r.ri.pDepthAttachment = r.d ? &r.da : nullptr; r.ri.pStencilAttachment = r.s ? &r.sa : nullptr;
+		(pBeginRendering)(cb, &r.ri);
+	});
+}
+inline void EndRendering(VkCommandBuffer cb) { if (!thr(cb)) { (pEndRendering)(cb); return; } q([=] { (pEndRendering)(cb); }); }
+template <class Fp, class... A> inline void dyn(Fp* fp, VkCommandBuffer cb, A... a) { if (!thr(cb)) { (*fp)(cb, a...); return; } q([=] { (*fp)(cb, a...); }); }
+}   // namespace cq
+#define vkCmdBindPipeline(...) cq::BindPipeline(__VA_ARGS__)
+#define vkCmdSetViewport(...) cq::SetViewport(__VA_ARGS__)
+#define vkCmdSetScissor(...) cq::SetScissor(__VA_ARGS__)
+#define vkCmdSetBlendConstants(...) cq::SetBlendConstants(__VA_ARGS__)
+#define vkCmdSetDepthBias(...) cq::SetDepthBias(__VA_ARGS__)
+#define vkCmdSetStencilCompareMask(...) cq::SetStencilCompareMask(__VA_ARGS__)
+#define vkCmdSetStencilWriteMask(...) cq::SetStencilWriteMask(__VA_ARGS__)
+#define vkCmdSetStencilReference(...) cq::SetStencilReference(__VA_ARGS__)
+#define vkCmdBindDescriptorSets(...) cq::BindDescriptorSets(__VA_ARGS__)
+#define vkCmdPushConstants(...) cq::PushConstants(__VA_ARGS__)
+#define vkCmdBindVertexBuffers(...) cq::BindVertexBuffers(__VA_ARGS__)
+#define vkCmdBindIndexBuffer(...) cq::BindIndexBuffer(__VA_ARGS__)
+#define vkCmdDraw(...) cq::Draw(__VA_ARGS__)
+#define vkCmdDrawIndexed(...) cq::DrawIndexed(__VA_ARGS__)
+#define vkCmdResetQueryPool(...) cq::ResetQueryPool(__VA_ARGS__)
+#define vkCmdWriteTimestamp(...) cq::WriteTimestamp(__VA_ARGS__)
+#define vkCmdPipelineBarrier(...) cq::PipelineBarrier(__VA_ARGS__)
+#define vkCmdBlitImage(...) cq::BlitImage(__VA_ARGS__)
+#define vkCmdCopyImage(...) cq::CopyImage(__VA_ARGS__)
+#define vkCmdCopyImageToBuffer(...) cq::CopyImageToBuffer(__VA_ARGS__)
+#define vkCmdCopyBufferToImage(...) cq::CopyBufferToImage(__VA_ARGS__)
+#define vkCmdClearAttachments(...) cq::ClearAttachments(__VA_ARGS__)
+#define vkEndCommandBuffer(...) cq::EndCommandBuffer(__VA_ARGS__)
+#define pBeginRendering(...) cq::BeginRendering(__VA_ARGS__)
+#define pEndRendering(...) cq::EndRendering(__VA_ARGS__)
+#define pSetCullMode(...) cq::dyn(pSetCullMode, __VA_ARGS__)
+#define pSetFrontFace(...) cq::dyn(pSetFrontFace, __VA_ARGS__)
+#define pSetTopology(...) cq::dyn(pSetTopology, __VA_ARGS__)
+#define pSetDepthTest(...) cq::dyn(pSetDepthTest, __VA_ARGS__)
+#define pSetDepthWrite(...) cq::dyn(pSetDepthWrite, __VA_ARGS__)
+#define pSetDepthCompare(...) cq::dyn(pSetDepthCompare, __VA_ARGS__)
+#define pSetStencilTest(...) cq::dyn(pSetStencilTest, __VA_ARGS__)
+#define pSetStencilOp(...) cq::dyn(pSetStencilOp, __VA_ARGS__)
+#define pSetDepthBiasEnable(...) cq::dyn(pSetDepthBiasEnable, __VA_ARGS__)
 const VkDeviceSize kChunk = 16u << 20;
 
 void later(std::function<void()> f) { F->trash.push_back(std::move(f)); }
@@ -1092,6 +1328,7 @@ void beginFrame()
 	F = &gF[gFi];
 	if (F->serial)
 	{
+		cq::waitFrame(F->serial);   // submitted by the recording thread (else its fence never signals)
 		vkWaitForFences(D, 1, &F->fence, VK_TRUE, UINT64_MAX);
 		gDone = std::max(gDone, F->serial);
 	}
@@ -1130,7 +1367,7 @@ void beginFrame()
 	for (auto& f : F->trash) f();
 	F->trash.clear();
 	vkResetFences(D, 1, &F->fence);
-	vkResetCommandPool(D, F->pool, 0);
+	vkResetCommandPool(D, F->upPool, 0);
 	for (auto p : F->texPools) vkResetDescriptorPool(D, p, 0);
 	F->texPool = 0;
 	for (auto& c : F->chunks) c.pos = 0;
@@ -1139,8 +1376,9 @@ void beginFrame()
 	F->serial = gSerial;
 	VkCommandBufferBeginInfo b{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
 	b.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-	vkBeginCommandBuffer(F->cmd, &b);
 	C = F->cmd;
+	if (cq::gOn) { VkCommandPool pl = F->pool; VkCommandBuffer cb = C; cq::q([pl, cb, b] { vkResetCommandPool(D, pl, 0); vkBeginCommandBuffer(cb, &b); }); }
+	else { vkResetCommandPool(D, F->pool, 0); vkBeginCommandBuffer(F->cmd, &b); }
 	if (F->passQ) vkCmdResetQueryPool(C, F->passQ, 0, 256);
 	if (F->queries)
 	{
@@ -1683,10 +1921,11 @@ bool init()
 		pci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT; pci.queueFamilyIndex = H.family;
 		if (!vkOk(vkCreateCommandPool(D, &pci, nullptr, &f.pool), "command pool")) return false;
 		VkCommandBufferAllocateInfo cai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-		cai.commandPool = f.pool; cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; cai.commandBufferCount = 2;
-		VkCommandBuffer cb[2];
-		if (!vkOk(vkAllocateCommandBuffers(D, &cai, cb), "command buffers")) return false;
-		f.cmd = cb[0]; f.up = cb[1];
+		if (!vkOk(vkCreateCommandPool(D, &pci, nullptr, &f.upPool), "command pool")) return false;
+		cai.commandPool = f.pool; cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; cai.commandBufferCount = 1;
+		if (!vkOk(vkAllocateCommandBuffers(D, &cai, &f.cmd), "command buffers")) return false;
+		cai.commandPool = f.upPool;
+		if (!vkOk(vkAllocateCommandBuffers(D, &cai, &f.up), "command buffers")) return false;
 		VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
 		fci.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 		vkCreateFence(D, &fci, nullptr, &f.fence);
@@ -1702,6 +1941,7 @@ bool init()
 		}
 	}
 	gFi = 0;
+	cq::start();
 	beginFrame();
 	makeDummies();
 	{
@@ -2359,6 +2599,17 @@ void stretchRect(Obj* src, const int32_t* sr, Obj* dst, const int32_t* dr, uint3
 	d->content++;
 }
 
+// the frame goes to the GPU (from the recording thread, after its commands); at most one frame waits there
+void submitFrame(const VkCommandBuffer* cbs, uint32_t n, VkFence fence, VkSemaphore acq, int presentIdx)
+{
+	if (!cq::gOn) { vkb::submit(cbs, n, fence, acq, presentIdx); return; }
+	VkCommandBuffer c[2] = {cbs[0], n > 1 ? cbs[1] : VK_NULL_HANDLE};
+	cq::q([c, n, fence, acq, presentIdx] { vkb::submit(c, n, fence, acq, presentIdx); });
+	cq::frameDone(gSerial);
+	cq::publish();
+	cq::waitFrame(gSerial - 1);   // the frame before is on the GPU: the game runs at most one frame ahead of the recording
+}
+
 bool present(int sw, int sh)
 {
 	std::lock_guard<std::recursive_mutex> l(gMu);
@@ -2377,7 +2628,7 @@ bool present(int sw, int sh)
 		VkCommandBuffer cbs[2]; uint32_t n = 0;
 		if (F->upUsed) { vkEndCommandBuffer(F->up); cbs[n++] = F->up; }
 		cbs[n++] = C;
-		vkb::submit(cbs, n, F->fence, VK_NULL_HANDLE, -1);
+		submitFrame(cbs, n, F->fence, VK_NULL_HANDLE, -1);
 		gSerial++; gFi = (gFi + 1) % kFrames; beginFrame();
 		return false;
 	}
@@ -2385,11 +2636,13 @@ bool present(int sw, int sh)
 	endPass();
 	uint32_t idx = 0; VkImage img = VK_NULL_HANDLE; VkExtent2D ext{}; VkFormat fmt = VK_FORMAT_UNDEFINED;
 	uint32_t gen = 0;
+	if (vkb::rebuildPending()) cq::waitIdle();   // the old swapchain's images may still be in queued commands
 	bool have = vkb::acquire(F->acq, idx, img, ext, fmt, gen);
 	static uint32_t lastGen = 0;
 	if (have && gen != lastGen)
 	{
 		// a new swapchain (the old images are gone, their handles may come back): new views
+		cq::waitIdle();
 		for (auto& kv : gSwapViews) vkDestroyImageView(D, kv.second, nullptr);
 		gSwapViews.clear();
 		lastGen = gen;
@@ -2514,7 +2767,11 @@ bool present(int sw, int sh)
 	VkCommandBuffer cbs[2]; uint32_t n = 0;
 	if (F->upUsed) { vkEndCommandBuffer(F->up); cbs[n++] = F->up; gSt.uploads++; }
 	cbs[n++] = C;
-	vkb::submit(cbs, n, F->fence, F->acq, have ? (int)idx : -1);
+	submitFrame(cbs, n, F->fence, F->acq, have ? (int)idx : -1);
+	{
+		uint64_t b = cq::busyNs.exchange(0);
+		gSt.recNs += b;
+	}
 	{ static uint64_t lastCpu = 0; uint64_t c = gSt.cpuNs; if (c >= lastCpu && lastCpu) hud::setRenderNs(c - lastCpu); lastCpu = c; }
 	gSt.frames++; gSt.draws += gDraws; gSt.passes += gPasses; gSt.clearPasses += gPassClears; gSt.barriers += gBarriers;
 	gPasses = gPassClears = gBarriers = 0;
@@ -2525,6 +2782,7 @@ bool present(int sw, int sh)
 			gSt.gpuFrames ? gSt.gpuNs / 1e6 / gSt.gpuFrames : 0.0, gSt.cpuNs / 1e6 / f, gSt.presentNs / 1e6 / f, gSt.draws / f, gSt.passes / f, gSt.clearPasses / f, gSt.barriers / f, gSt.uploads, gPipes.size(), gSt.newPipes);
 		log("vulkan perf: draw CPU ms per frame: setup %.2f, textures+pass %.2f, pipeline %.2f, state %.2f, constants %.2f, texture sets %.2f (%.0f), vertices+draw %.2f",
 			gSt.phaseNs[0] / 1e6 / f, gSt.phaseNs[1] / 1e6 / f, gSt.phaseNs[2] / 1e6 / f, gSt.phaseNs[3] / 1e6 / f, gSt.phaseNs[4] / 1e6 / f, gSt.phaseNs[5] / 1e6 / f, gSt.descSets / f, gSt.phaseNs[6] / 1e6 / f);
+		if (cq::gOn) log("vulkan perf: recording thread %.2f ms per frame", gSt.recNs / 1e6 / f);
 		log("vulkan perf: merged draws: %.0f per frame added to %.0f instanced draws", gSt.batched / f, gSt.batches / f);
 		log("vulkan perf: clears done on their own %.1f per frame; copies avoided by swapping %.1f per frame (%.1f copied back later, %.1f never needed)", gClearFlushes / f, gSt.swaps / f, gSt.swapResolves / f, gSt.swapFree / f);
 		gClearFlushes = 0;

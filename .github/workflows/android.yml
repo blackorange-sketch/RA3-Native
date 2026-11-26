@@ -85,7 +85,12 @@ jobs:
 
       # glslang: GLSL -> SPIR-V inside the app for the Vulkan renderer (built by the app's CMake from this checkout)
       - name: Fetch glslang
-        run: git clone -q --depth 1 --branch 15.0.0 https://github.com/KhronosGroup/glslang
+        run: |
+          git clone -q --depth 1 --branch 15.0.0 https://github.com/KhronosGroup/glslang
+          # SPIRV-Tools and SPIRV-Headers at the commits glslang 15.0.0 lists (known_good.json): spirv-opt in the app
+          fetch() { mkdir -p "$1" && git -C "$1" init -q && git -C "$1" fetch -q --depth 1 "$2" "$3" && git -C "$1" checkout -q FETCH_HEAD; }
+          fetch glslang/External/spirv-tools https://github.com/KhronosGroup/SPIRV-Tools 6dcc7e350a0b9871a825414d42329e44b0eb8109
+          fetch glslang/External/spirv-tools/external/spirv-headers https://github.com/KhronosGroup/SPIRV-Headers 2a9b6f951c7d6b04b6c21fe1bf3f475b68b84801
 
       - name: Analyze and lift
         run: |

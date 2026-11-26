@@ -360,6 +360,7 @@ void present(const Rect* rects, size_t n, bool picture)
 }
 
 const Handles& handles() { return H; }
+bool rebuildPending() { std::lock_guard<std::recursive_mutex> l(mu); return dirty; }
 std::recursive_mutex& lock() { return mu; }
 
 bool acquire(VkSemaphore signal, uint32_t& idx, VkImage& img, VkExtent2D& e, VkFormat& f, uint32_t& generation)

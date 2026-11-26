@@ -9,6 +9,7 @@
 #include <deque>
 #include <mutex>
 #include <sys/stat.h>
+#include <unistd.h>
 #include <thread>
 #include <unordered_set>
 #ifdef RA3_GLSLANG
@@ -42,6 +43,17 @@ void init()
 uint64_t nowUs() { return (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 }
 
+// spirv-opt before the driver (built with SPIRV-Tools; /sdcard/ra3_noopt: off)
+bool optimize()
+{
+#ifdef RA3_SPVOPT
+	static const bool on = [] { bool off = access("/sdcard/ra3_noopt", F_OK) == 0; rt::log("vulkan: shaders optimised by spirv-opt: %s", off ? "no (ra3_noopt)" : "yes"); return !off; }();
+	return on;
+#else
+	return false;
+#endif
+}
+
 bool available()
 {
 #ifdef RA3_GLSLANG
@@ -56,7 +68,7 @@ bool compile(const std::string& glsl, bool vertex, std::vector<uint32_t>& spv, s
 	init();
 	spv.clear();
 	char name[40];
-	snprintf(name, sizeof name, "/%016llx%c.spv", (unsigned long long)d3d::tex::hashBytes((const uint8_t*)glsl.data(), glsl.size(), 0x5350560000000000ull), vertex ? 'v' : 'p');
+	snprintf(name, sizeof name, "/%016llx%c%s.spv", (unsigned long long)d3d::tex::hashBytes((const uint8_t*)glsl.data(), glsl.size(), 0x5350560000000000ull), vertex ? 'v' : 'p', optimize() ? "o" : "");
 	std::string path = cacheDir + name;
 	std::vector<uint8_t> raw;
 	if (d3d::tex::readWhole(path, raw) && raw.size() >= 20 && raw.size() % 4 == 0)
@@ -85,7 +97,7 @@ bool compile(const std::string& glsl, bool vertex, std::vector<uint32_t>& spv, s
 	prog.addShader(&sh);
 	if (!prog.link(EShMsgDefault)) { err = prog.getInfoLog(); nFailed++; return false; }
 	glslang::SpvOptions opt;
-	opt.disableOptimizer = true;   // the driver optimises; built without SPIRV-Tools
+	opt.disableOptimizer = !optimize();   // spirv-opt performance passes (when built with SPIRV-Tools)
 	glslang::GlslangToSpv(*prog.getIntermediate(stage), spv, &opt);
 	usCompile += nowUs() - t0;
 	nCompiled++;
