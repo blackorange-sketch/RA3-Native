@@ -72,7 +72,7 @@ The recompiled code runs exactly the game executable it was made from, so there 
 
 A Steam game folder also contains an old `ra3_1.12.game`, which can be a different build from the retail 1.12 — with Steam, always use **RA3 Native Steam**. The Steam app needs no Steam client and no internet connection; Steam Workshop items are not supported yet.
 
-If the launcher reports **UNSUPPORTED GAME BUILD**, your game file is a build the apps were not made from — please open an issue with the SHA-256 it shows.
+If the launcher reports **UNKNOWN GAME BUILD**, your game file is a build the apps were not made from (another edition, language or a modified copy). The game can still be started, and often runs — if it crashes, please open an issue with the SHA-256 the launcher shows and the log file.
 
 ## Installation
 

@@ -713,15 +713,17 @@ public class LauncherActivity extends Activity {
                 if (gen != checkGen) return;
                 busy = false;
                 if (!libOk) { status("THIS APK HAS NO GAME LIBRARY - REINSTALL IT", RED_GLOW); return; }
-                if (!buildOk) {
-                    status("UNSUPPORTED GAME BUILD: " + gameFile.getName() + "  SHA-256 " + (sha.length() > 12 ? sha.substring(0, 12) : sha) + "...  -  SEE THE README", RED_GLOW);
-                    return;
-                }
                 // the game skips archives that are not there (e.g. MapsExtra.big is absent from many copies):
                 // only the executable and the language configuration itself are required
                 boolean critical = false;
                 for (String m : missing) { String l = m.toLowerCase(Locale.ROOT); if (l.endsWith(".game") || l.endsWith(".skudef")) critical = true; }
-                if (!critical) { filesOk = true; setPlayEnabled(true); status("READY", 0xff7ddc6a); }
+                // another build of the executable (another edition or language, a patched copy): it often runs the same
+                // code, so it is allowed with a warning instead of being refused
+                if (!critical && !buildOk) {
+                    filesOk = true; setPlayEnabled(true);
+                    status("UNKNOWN GAME BUILD (" + gameFile.getName() + " SHA-256 " + (sha.length() > 12 ? sha.substring(0, 12) : sha) + "...) - MAY NOT WORK, SEE THE README", YELLOW);
+                }
+                else if (!critical) { filesOk = true; setPlayEnabled(true); status("READY", 0xff7ddc6a); }
                 else status("MISSING: " + missing.get(0) + (missing.size() > 1 ? "  (+" + (missing.size() - 1) + " MORE)" : "") + "  -  CHECK THE GAME FOLDER", RED_GLOW);
             });
         }).start();
