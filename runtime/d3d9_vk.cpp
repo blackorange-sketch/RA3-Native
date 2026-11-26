@@ -1214,12 +1214,13 @@ void clear(uint32_t count, uint32_t rects, uint32_t flags, uint32_t color, float
 	if (t.depth && (flags & 6)) t.depth->content++;
 }
 
+#define SKIP() do { if (dumping()) log("vkdump pass %d draw SKIPPED at line %d: vs %016llx ps %016llx", gDumpPass, __LINE__, (unsigned long long)(dev.vs ? dev.vs->hash : 0), (unsigned long long)(dev.ps ? dev.ps->hash : 0)); return; } while (0)
 void draw(const DrawCall& dc)
 {
 	std::lock_guard<std::recursive_mutex> l(gMu);
-	if (!gOk) return;
+	if (!gOk) SKIP();
 	ShaderObj *vs = dev.vs, *ps = dev.ps;
-	if (!vs || !ps || !vs->ok || !ps->ok || !dev.vdecl) return;
+	if (!vs || !ps || !vs->ok || !ps->ok || !dev.vdecl) SKIP();
 	// the frame's statistics the interface code relies on (as the OpenGL renderer)
 	if (dev.rs[7] && !gUiNested) gUiWorldDraws++;
 	if (!gUiNested) { if (vs->hash == kAptVs) gAptDraws++; else if (vs->hash == kVideoVs) gVideoDraws++; }
@@ -1247,16 +1248,16 @@ void draw(const DrawCall& dc)
 			draw(d2);
 			gUiNested = false;
 			keep.swap(split);
-			return;
+			SKIP();
 		}
 	}
 	Target t;
-	if (!currentTarget(t)) return;
+	if (!currentTarget(t)) SKIP();
 	bool precise = rt::config.fastShaders && vs->info.relC;
 	if (rt::config.fastShaders && !precise)
 		for (int i = 0; i < 16 && !precise; i++) if (ps->info.samplerType[i] && dev.tex[i] && (dev.tex[i]->usage & 3)) precise = true;
 	VkShaderModule pm = psModule(ps, vs, precise);
-	if (!pm) return;
+	if (!pm) SKIP();
 
 	// textures: uploaded, mip chains built and in the sampling layout before the pass starts
 	VkImageView views[16]; VkSampler samps[16]; uint32_t mask = 0;
@@ -1276,7 +1277,7 @@ void draw(const DrawCall& dc)
 			if (tx && ow->mipDirty && tx->levels > 1 && !tx->depth) { genMips(tx); ow->mipDirty = false; }
 		}
 		if (!tx) tx = gDummy[kind];
-		if (!tx) return;
+		if (!tx) SKIP();
 		toLayout(tx, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		tx->useSerial = gSerial;
 		views[i] = tx->sampled;
@@ -1344,7 +1345,7 @@ void draw(const DrawCall& dc)
 	if (needZero) vl.bind[vl.nBind++] = {15, 0, VK_VERTEX_INPUT_RATE_VERTEX};
 
 	VkShaderModule vm = vsModule(vs, intMask, uintMask);
-	if (!vm) return;
+	if (!vm) SKIP();
 	// pipeline
 	const uint32_t* rs = dev.rs;
 	PipeKey pk;
@@ -1379,7 +1380,7 @@ void draw(const DrawCall& dc)
 	pk.hasStencil = t.depth && t.depth->stencil;
 	pk.topo = topoClass(dc.prim);
 	VkPipeline pipe = pipeline(pk, vl);
-	if (!pipe) return;
+	if (!pipe) SKIP();
 	if (S.pipe != pipe) { vkCmdBindPipeline(C, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe); S.pipe = pipe; }
 
 	// dynamic state (only what changed)
@@ -1462,17 +1463,17 @@ void draw(const DrawCall& dc)
 				for (auto& d : sh->info.defF) if (d.first >= 0 && (uint32_t)d.first < nreg) memcpy(blk + cl.cOff + 16 * d.first, d.second.data(), 16);
 			}
 			else memcpy(blk + cl.cOff, src, 16 * nreg);
-			if (!writeConsts(stage, blk, size, off[stage], chunk[stage])) return;
+			if (!writeConsts(stage, blk, size, off[stage], chunk[stage])) SKIP();
 		}
 		// both blocks must come from one chunk (one descriptor set): rewrite the other one if they differ
 		if (chunk[0] != ~(size_t)0 && chunk[1] != ~(size_t)0 && chunk[0] != chunk[1])
 		{
-			if (attempt >= 2) return;
+			if (attempt >= 2) SKIP();
 			gCC[0].chunk = gCC[1].chunk = ~(size_t)0;   // the ring moved to a new chunk: write both there
 			continue;
 		}
 		size_t ch = chunk[0] != ~(size_t)0 ? chunk[0] : chunk[1] != ~(size_t)0 ? chunk[1] : F->chunk;
-		if (ch >= F->chunks.size()) { RingPos rp; if (!ringAlloc(16, 16, rp)) return; ch = rp.chunk; }
+		if (ch >= F->chunks.size()) { RingPos rp; if (!ringAlloc(16, 16, rp)) SKIP(); ch = rp.chunk; }
 		VkDescriptorSet cs = F->chunks[ch].constSet;
 		uint32_t o2[2] = {(uint32_t)off[0], (uint32_t)off[1]};
 		if (S.constSet != cs || S.constOff[0] != o2[0] || S.constOff[1] != o2[1])
@@ -1500,7 +1501,7 @@ void draw(const DrawCall& dc)
 		if (!same)
 		{
 			VkDescriptorSet set = allocTexSet();
-			if (!set) return;
+			if (!set) SKIP();
 			VkDescriptorImageInfo ii[16]; VkWriteDescriptorSet w[16]; uint32_t nw = 0;
 			for (int i = 0; i < 16; i++)
 				if (mask >> i & 1)
@@ -1519,7 +1520,7 @@ void draw(const DrawCall& dc)
 
 	// vertex and index data
 	const uint32_t nv = (uint32_t)primVertices(dc.prim, dc.primCount);
-	if (!nv) return;
+	if (!nv) SKIP();
 	int32_t vtxOff = dc.indexed ? dc.baseVertex : 0;
 	if (dc.upVerts)
 	{
@@ -1527,12 +1528,12 @@ void draw(const DrawCall& dc)
 		RingPos rp;
 		if (convMask & 1)
 		{
-			if (!ringAlloc((VkDeviceSize)nverts * 16 * conv[0].n, 16, rp)) return;
+			if (!ringAlloc((VkDeviceSize)nverts * 16 * conv[0].n, 16, rp)) SKIP();
 			convertVerts(conv[0], (const uint8_t*)dc.upVerts, dc.upStride, nverts, (float*)rp.ptr);
 		}
 		else
 		{
-			if (!ringAlloc((VkDeviceSize)nverts * dc.upStride, 16, rp)) return;
+			if (!ringAlloc((VkDeviceSize)nverts * dc.upStride, 16, rp)) SKIP();
 			memcpy(rp.ptr, dc.upVerts, (size_t)nverts * dc.upStride);
 		}
 		VkDeviceSize o = rp.off;
@@ -1580,7 +1581,7 @@ void draw(const DrawCall& dc)
 			if (!b && (convMask >> si & 1))
 			{
 				// a static buffer rewritten once per version (and per layout)
-				if (!st.vb->data || !st.stride || st.offset >= st.vb->size) return;
+				if (!st.vb->data || !st.stride || st.offset >= st.vb->size) SKIP();
 				ConvBuf& cb = gConv[st.vb];
 				uint64_t key = fnv(&conv[si], sizeof conv[si], st.stride * 1000003ull + st.offset);
 				uint32_t outStride = 16 * conv[si].n;
@@ -1592,7 +1593,7 @@ void draw(const DrawCall& dc)
 					bi.size = std::max<VkDeviceSize>(16, (VkDeviceSize)n * outStride); bi.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
 					VmaAllocationCreateInfo ai{}; ai.usage = VMA_MEMORY_USAGE_AUTO; ai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
 					VmaAllocationInfo inf;
-					if (!vkOk(vmaCreateBuffer(gA, &bi, &ai, &nb->buf, &nb->mem, &inf), "converted vertex buffer")) { delete nb; return; }
+					if (!vkOk(vmaCreateBuffer(gA, &bi, &ai, &nb->buf, &nb->mem, &inf), "converted vertex buffer")) { delete nb; SKIP(); }
 					nb->map = (uint8_t*)inf.pMappedData; nb->size = (uint32_t)bi.size;
 					convertVerts(conv[si], (const uint8_t*)guest::host(st.vb->data) + st.offset, st.stride, n, (float*)nb->map);
 					vmaFlushAllocation(gA, nb->mem, 0, VK_WHOLE_SIZE);
@@ -1604,17 +1605,17 @@ void draw(const DrawCall& dc)
 				st.vb->lastUse = glr::frameNo();
 				b = cb.buf->buf;
 				int64_t base = perInst ? 0 : (dc.indexed ? (int64_t)dc.baseVertex - vtxOff : dc.baseVertex);
-				if (base < 0) return;
+				if (base < 0) SKIP();
 				o = (VkDeviceSize)base * outStride;
 			}
 			if (!b)
 			{
 				VBuf* vb = ensureBuf(st.vb, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-				if (!vb) return;
+				if (!vb) SKIP();
 				b = vb->buf;
 				int64_t base = perInst ? 0 : (dc.indexed ? (int64_t)dc.baseVertex - vtxOff : dc.baseVertex);
 				int64_t oo = (int64_t)st.offset + base * (int64_t)st.stride;
-				if (oo < 0) return;
+				if (oo < 0) SKIP();
 				o = (VkDeviceSize)oo;
 			}
 			vkCmdBindVertexBuffers(C, si, 1, &b, &o);
@@ -1698,7 +1699,7 @@ void draw(const DrawCall& dc)
 	{
 		bool wide = dc.upIdxFmt == 102;
 		RingPos rp;
-		if (!ringAlloc((VkDeviceSize)nv * (wide ? 4 : 2), 16, rp)) return;
+		if (!ringAlloc((VkDeviceSize)nv * (wide ? 4 : 2), 16, rp)) SKIP();
 		memcpy(rp.ptr, dc.upIdx, (size_t)nv * (wide ? 4 : 2));
 		vkCmdBindIndexBuffer(C, rp.buf, rp.off, wide ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16);
 		vkCmdDrawIndexed(C, nv, 1, 0, vtxOff, 0);
@@ -1718,16 +1719,21 @@ void draw(const DrawCall& dc)
 		else
 		{
 			VBuf* ib = ensureBuf(dev.ib, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
-			if (!ib) return;
+			if (!ib) SKIP();
 			vkCmdBindIndexBuffer(C, ib->buf, 0, it);
 			vkCmdDrawIndexed(C, nv, instCount, dc.startIndex, vtxOff, 0);
 		}
 	}
 	gDraws++; gDrawsTotal++;
 	if (dumping())
-		log("vkdump pass %d draw: vs %016llx ps %016llx prim %u n %u rt %ux%u f%d depth %d | z %u zw %u zf %u cull %u blend %u %u/%u cw %x st %u at %u/%u bias %x/%x vp %u,%u,%u,%u sc %u",
-			gDumpPass, (unsigned long long)vs->hash, (unsigned long long)ps->hash, dc.prim, dc.primCount, t.w, t.h, t.color ? (int)t.color->fmt : -1, t.depth ? (int)t.depth->fmt : -1,
-			rs[7], rs[14], rs[23], rs[22], rs[27], rs[19], rs[20], rs[168], rs[52], rs[15], rs[24], rs[195], rs[175], dev.vp[0], dev.vp[1], dev.vp[2], dev.vp[3], rs[174]);
+	{
+		std::string de;
+		for (uint32_t k = 0; k < nEls; k++) { char b2[24]; snprintf(b2, sizeof b2, " %u.%u:t%u", els[k].usage, els[k].index, els[k].type); de += b2; }
+		log("vkdump pass %d draw: vs %016llx ps %016llx prim %u n %u idx %d rt %ux%u f%d depth %d | z %u zw %u zf %u cull %u blend %u %u/%u cw %x st %u f%u ref %u m%x/%x ops %u/%u/%u at %u/%u bias %x/%x vp %u,%u,%u,%u z%g..%g sc %u [%d,%d,%d,%d] tex %x |%s",
+			gDumpPass, (unsigned long long)vs->hash, (unsigned long long)ps->hash, dc.prim, dc.primCount, (int)dc.indexed, t.w, t.h, t.color ? (int)t.color->fmt : -1, t.depth ? (int)t.depth->fmt : -1,
+			rs[7], rs[14], rs[23], rs[22], rs[27], rs[19], rs[20], rs[168], rs[52], rs[56], rs[57], rs[58], rs[59], rs[53], rs[54], rs[55], rs[15], rs[24], rs[195], rs[175],
+			dev.vp[0], dev.vp[1], dev.vp[2], dev.vp[3], (double)dev.vpZ[0], (double)dev.vpZ[1], rs[174], dev.scissor[0], dev.scissor[1], dev.scissor[2], dev.scissor[3], mask, de.c_str());
+	}
 	if (t.color) t.color->content++;
 	if (t.depth) t.depth->content++;
 }
