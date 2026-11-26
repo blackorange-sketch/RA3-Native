@@ -598,7 +598,7 @@ inline bool translate(const uint8_t* bytes, size_t n, ShaderInfo& si)
 			}
 		}
 		post += "  oPos.xy += u_ui.z * (oPos.xy - u_ui.xy * oPos.w);\n";   // interface scaling (u_ui: anchor in clip space, scale - 1)
-		post += "  gl_Position = vec4(oPos.x + u_hp.x * oPos.w, (oPos.y - u_hp.y * oPos.w) * u_flip, 2.0 * oPos.z - oPos.w, oPos.w);\n  gl_PointSize = oPts.x;\n";
+		// gl_Position and gl_PointSize: compose() / composeVk() (clip space differs between OpenGL and Vulkan)
 		si.decls = decl + kHelpers;
 		si.body = pre + t.out + post;
 	}
@@ -666,7 +666,83 @@ inline std::string compose(const ShaderInfo& si, const std::set<std::string>* vs
 			else s += "vec4 " + n + " = " + (n == "v_color0" || n == "v_color1" ? "vec4(1.0)" : "vec4(0.0)") + ";\n";
 		}
 	}
-	s += "void main() {\n" + si.body + "}\n";
+	s += "void main() {\n" + si.body;
+	if (si.isVs) s += "  gl_Position = vec4(oPos.x + u_hp.x * oPos.w, (oPos.y - u_hp.y * oPos.w) * u_flip, 2.0 * oPos.z - oPos.w, oPos.w);\n  gl_PointSize = oPts.x;\n";
+	s += "}\n";
+	return s;
+}
+
+// ---- Vulkan dialect (GLSL 4.50 for glslang -> SPIR-V), built from the same translation:
+//  * float/int constants in a uniform buffer per stage (set 0, binding 0 = VS, 1 = PS), only the registers the shader
+//    reads (numC); the int constants follow when used
+//  * bool constants, the half-pixel offset, the interface scaling, the BGRA attribute mask and the alpha test in push
+//    constants (kVkPush*: offsets the renderer writes)
+//  * textures: set 1, binding = the sampler register
+//  * varyings: a fixed location per name (varyingLoc), so any vertex shader fits any pixel shader
+//  * clip space: Vulkan's y points down and its depth is 0..w like Direct3D: y negated, z unchanged (OpenGL renders
+//    with u_flip = -1 and z remapped to -w..w)
+enum { kVkPushUi = 0, kVkPushHp = 16, kVkPushBgra = 24, kVkPushVsB = 28, kVkPushAt = 32, kVkPushPsB = 48, kVkPushSize = 52 };
+
+inline int varyingLoc(const std::string& n)
+{
+	auto num = [&](size_t p) { return p < n.size() ? atoi(n.c_str() + p) : 0; };
+	if (n.compare(0, 10, "v_texcoord") == 0) return std::min(num(10), 15);   // 0..15
+	if (n.compare(0, 7, "v_color") == 0) return 16 + std::min(num(7), 1);    // 16, 17
+	if (n == "v_fog") return 18;
+	if (n.compare(0, 8, "v_normal") == 0) return 19 + std::min(num(8), 1);  // 19, 20
+	if (n.compare(0, 9, "v_tangent") == 0) return 21;
+	if (n.compare(0, 10, "v_binormal") == 0) return 22;
+	if (n.compare(0, 10, "v_position") == 0) return 23 + std::min(num(10), 3);   // 23..26
+	if (n.compare(0, 13, "v_blendweight") == 0) return 27;
+	if (n.compare(0, 14, "v_blendindices") == 0) return 28;
+	return 29;   // psize, depth, sample...: shaders of this game do not pass them
+}
+
+inline std::string composeVk(const ShaderInfo& si, const std::set<std::string>* vsOuts = nullptr, bool precise = false)
+{
+	bool fast = !si.isVs && ::rt::config.fastShaders && !precise;
+	const char* st = si.isVs ? "v" : "p";
+	std::string s = std::string("#version 450\nprecision ") + (fast ? "mediump" : "highp") + " float;\nprecision highp int;\n";
+	s += "layout(push_constant, std430) uniform PushC { vec4 u_ui; vec2 u_hp; int u_bgra; uint u_vsb; vec4 u_at; uint u_psb; };\n";
+	bool ints = si.body.find(std::string(st) + "ci[") != std::string::npos;
+	int nc = std::min(si.numC, si.isVs ? 256 : 224);
+	if (nc > 0 || ints)
+	{
+		s += std::string("layout(set = 0, binding = ") + (si.isVs ? "0" : "1") + ", std140) uniform " + (si.isVs ? "VsConst" : "PsConst") + " {";
+		if (nc > 0) s += " vec4 " + std::string(st) + "c[" + std::to_string(nc) + "];";
+		if (ints) s += " ivec4 " + std::string(st) + "ci[16];";
+		s += " };\n";
+	}
+	for (int i = 0; i < 16; i++)
+		if (si.samplerType[i])
+		{
+			const char* tn = si.samplerType[i] == 3 ? "samplerCube" : si.samplerType[i] == 4 ? "sampler3D" : "sampler2D";
+			s += "layout(set = 1, binding = " + std::to_string(i) + ") uniform " + tn + " s" + std::to_string(i) + ";\n";
+		}
+	if (si.isVs)
+	{
+		for (auto& kv : si.inputs) s += "layout(location = " + std::to_string(kv.second) + ") in vec4 " + kv.first + ";\n";
+		for (auto& n : si.outputs) s += "layout(location = " + std::to_string(varyingLoc(n)) + ") out vec4 " + n + ";\n";
+	}
+	else
+	{
+		std::set<std::string> done;
+		for (auto& n : si.psIns)
+		{
+			if (!done.insert(n).second) continue;
+			if (!vsOuts || vsOuts->count(n)) s += "layout(location = " + std::to_string(varyingLoc(n)) + ") in highp vec4 " + n + ";\n";
+			else s += "vec4 " + n + " = " + (n == "v_color0" || n == "v_color1" ? "vec4(1.0)" : "vec4(0.0)") + ";\n";
+		}
+		for (int r = 0; r < 4; r++)
+			if (si.psOutputs >> r & 1) s += "layout(location = " + std::to_string(r) + ") out vec4 o_C" + std::to_string(r) + ";\n";
+	}
+	s += kHelpers;
+	s += "void main() {\n";
+	if (si.body.find(std::string(st) + "cb[") != std::string::npos)
+		s += std::string("  bool ") + st + "cb[16];\n  for (int i = 0; i < 16; i++) " + st + "cb[i] = ((" + (si.isVs ? "u_vsb" : "u_psb") + " >> uint(i)) & 1u) != 0u;\n";
+	s += si.body;
+	if (si.isVs) s += "  gl_Position = vec4(oPos.x + u_hp.x * oPos.w, -(oPos.y - u_hp.y * oPos.w), oPos.z, oPos.w);\n  gl_PointSize = oPts.x;\n";
+	s += "}\n";
 	return s;
 }
 }   // namespace shdr

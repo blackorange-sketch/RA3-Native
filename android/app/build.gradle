@@ -15,6 +15,7 @@ android {
             cmake {
                 arguments "-DCMAKE_BUILD_TYPE=Release", "-DLIFTED_DIR=" + (project.findProperty('liftedDir') ?: ''),
                           "-DLIFTED_DIR_113=" + (project.findProperty('liftedDir113') ?: ''),
+                          "-DGLSLANG_DIR=" + (project.findProperty('glslangDir') ?: ''),
                           *(project.hasProperty('useCcache') ? ["-DCMAKE_CXX_COMPILER_LAUNCHER=ccache", "-DCMAKE_C_COMPILER_LAUNCHER=ccache"] : [])
                 cppFlags '-std=c++17'
             }

@@ -77,7 +77,9 @@ stays at its 30 fps; the gain is heat, battery and headroom for weaker phones.
   in `gfx_gles.cpp`)
 - [ ] 1. Vulkan starts — written (`vkb.cpp`: device, swapchain, black frame, console picture, buttons as clears,
   fallback to OpenGL ES); waiting for the test on a phone. The launcher option comes once the game draws something.
-- [ ] 2. Shaders
+- [ ] 2. Shaders — written: Vulkan dialect (`shdr::composeVk`; all 710 shader passes of the game's effects compile
+  with glslang on the host), glslang 15.0.0 built into the app, SPIR-V cache (`vksh.cpp`); in Vulkan mode every
+  shader the game creates is compiled in the background and counted in the log. Pipeline/descriptor layout: stage 4
 - [ ] 3. Resources
 - [ ] 4. Pipelines
 - [ ] 5. Render passes

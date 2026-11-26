@@ -6,6 +6,7 @@
 #include "input.h"
 #include "d3dx_fx.h"
 #include "gfx.h"
+#include "vksh.h"
 
 #include <sys/stat.h>
 
@@ -148,6 +149,7 @@ ShaderObj* getShader(const uint8_t* code, size_t n)
 	sh->hash = h;
 	sh->ok = shdr::translate(code, n, sh->info);
 	if (!sh->ok) log("d3d9: shader %016llx translate FAILED: %s", (unsigned long long)h, sh->info.err.c_str());
+	if (gfx::vulkan()) vksh::check(sh->code);   // Vulkan stage 2: the game's shaders compiled to SPIR-V in the background
 	return (cache[h] = std::move(sh)).get();
 }
 

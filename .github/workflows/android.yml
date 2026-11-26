@@ -83,6 +83,10 @@ jobs:
           cmake -S capstone -B capstone/b -G Ninja -DCMAKE_BUILD_TYPE=Release -DCAPSTONE_ARCHITECTURE_DEFAULT=OFF -DCAPSTONE_X86_SUPPORT=ON -DCAPSTONE_BUILD_SHARED_LIBS=OFF -DCAPSTONE_BUILD_TESTS=OFF -DCAPSTONE_BUILD_CSTOOL=OFF -DCAPSTONE_BUILD_CSTEST=OFF -DCAPSTONE_BUILD_LEGACY_TESTS=OFF
           ninja -C capstone/b
 
+      # glslang: GLSL -> SPIR-V inside the app for the Vulkan renderer (built by the app's CMake from this checkout)
+      - name: Fetch glslang
+        run: git clone -q --depth 1 --branch 15.0.0 https://github.com/KhronosGroup/glslang
+
       - name: Analyze and lift
         run: |
           g++ -O2 -std=c++17 -Icapstone/include tools/analyze.cpp capstone/b/libcapstone.a -o analyze
@@ -136,7 +140,7 @@ jobs:
           L113=""; [ -d ${{ github.workspace }}/lifted113 ] && L113="-PliftedDir113=${{ github.workspace }}/lifted113"
           # two apps: RA3 Native (1.12) and, when the Steam build's code is there, RA3 Native Steam (1.13)
           TASKS="assembleClassicDebug"; [ -n "$L113" ] && TASKS="$TASKS assembleSteamDebug"
-          gradle $TASKS -PbuildId=${{ github.sha }} -PversionName=$APP_VERSION -PversionCode=${{ github.run_number }} -PliftedDir=${{ github.workspace }}/lifted $L113 $CC_OPT --no-daemon
+          gradle $TASKS -PbuildId=${{ github.sha }} -PversionName=$APP_VERSION -PversionCode=${{ github.run_number }} -PliftedDir=${{ github.workspace }}/lifted -PglslangDir=${{ github.workspace }}/glslang $L113 $CC_OPT --no-daemon
           cp app/build/outputs/apk/classic/debug/app-classic-debug.apk ../ra3-native.apk
           [ -f app/build/outputs/apk/steam/debug/app-steam-debug.apk ] && cp app/build/outputs/apk/steam/debug/app-steam-debug.apk ../ra3-native-steam.apk
           ls -la ../ra3-native*.apk

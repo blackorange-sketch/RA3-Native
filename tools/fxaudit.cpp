@@ -128,6 +128,8 @@ int main(int argc, char** argv)
 					std::string base = outDir + "/" + where;
 					if (haveVs) { std::ofstream o(base + ".vs"); o << shdr::compose(vsI); }
 					if (havePs) { std::ofstream o(base + ".fs"); o << shdr::compose(psI, haveVs ? &vsI.outputs : nullptr); }
+					if (haveVs) { std::ofstream o(base + ".vkvs"); o << shdr::composeVk(vsI); }   // Vulkan dialect: glslangValidator -V -S vert/frag
+					if (havePs) { std::ofstream o(base + ".vkfs"); o << shdr::composeVk(psI, haveVs ? &vsI.outputs : nullptr); }
 				}
 			}
 	}
