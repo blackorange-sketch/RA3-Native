@@ -2410,20 +2410,8 @@ static void presentImpl()
 		// Menus are Flash movies laid out for 16:9: on a wider picture the parts parked off the stage (the sliding
 		// submenus, the edges of the backdrop) come into view. Outside a battle, black out everything beyond the
 		// centred 16:9 area. Battle vs. menu with half a second of hysteresis.
-		static int streak = 0; static bool inGame = false;
-		bool now = gUiWorldDraws >= 50;
-		streak = now != inGame ? streak + 1 : 0;
-		if (streak >= (now ? 1 : 3)) { inGame = now; streak = 0; }   // both ways within a few frames: no jump when a mission starts or ends
-		// menus get blurred side bars in the game's colours; loading screens and videos (few interface draws) stay black
-		static int bstreak = 0; static bool blur = false;
-		bool bnow = !inGame && gAptDraws >= 12;
-		bstreak = bnow != blur ? bstreak + 1 : 0;
-		if (bstreak >= 3)
-		{
-			blur = bnow; bstreak = 0;
-			static int nl = 0;
-			if (nl++ < 40) log("wide: side bars %s (interface draws %u, video %u, world %u)", blur ? "blurred" : "black", gAptDraws, gVideoDraws, gUiWorldDraws);
-		}
+		bool inGame, blur;
+		sideBars(inGame, blur);
 		float barA = inGame ? 0.f : 1.f;   // in a battle (pause menu included) no bars: the battle shows at the sides
 		bool useBlur = blur;
 		int cw = vh * 16 / 9;

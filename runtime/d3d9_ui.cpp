@@ -336,5 +336,24 @@ void uiEndFrame(uint32_t gFrameNo)
 		if (gUiScale > 1.001f && !gUiPub.empty() && nl < 3 && gFrameNo > 600) { nl++; log("ui: interface scale %.2f, %zu panel pieces scaled this frame", gUiScale, gUiPub.size()); }
 	}
 }
+void sideBars(bool& inGameOut, bool& blurOut)
+{
+	// battle vs. menu with a few frames of hysteresis both ways: no jump when a mission starts or ends
+	static int streak = 0; static bool inGame = false;
+	bool now = gUiWorldDraws >= 50;
+	streak = now != inGame ? streak + 1 : 0;
+	if (streak >= (now ? 1 : 3)) { inGame = now; streak = 0; }
+	// menus get blurred side bars in the game's colours; loading screens and videos (few interface draws) stay black
+	static int bstreak = 0; static bool blur = false;
+	bool bnow = !inGame && gAptDraws >= 12;
+	bstreak = bnow != blur ? bstreak + 1 : 0;
+	if (bstreak >= 3)
+	{
+		blur = bnow; bstreak = 0;
+		static int nl = 0;
+		if (nl++ < 40) log("wide: side bars %s (interface draws %u, video %u, world %u)", blur ? "blurred" : "black", gAptDraws, gVideoDraws, gUiWorldDraws);
+	}
+	inGameOut = inGame; blurOut = blur;
+}
 }
 }

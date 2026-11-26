@@ -20,5 +20,8 @@ extern float gCamRegs[16]; extern uint32_t gCamRegsFrame; extern bool gCamRegsNe
 float uiScaleFor(const DrawCall& dc, const DeclElem* els, uint32_t nEls, float& axN, float& ayN, float& ax, float& ay, std::vector<uint8_t>& split);
 void uiUnmapImpl(int& x, int& y);
 void uiEndFrame(uint32_t frameNo);   // after a presented frame: this frame's panels become the touch mapping
+// Wide screen, once per presented frame (before uiEndFrame): a battle is showing (no side bars), and outside a
+// battle whether the bars beside the 16:9 menu are blurred (menus) or black (loading screens, videos)
+void sideBars(bool& inGame, bool& blur);
 }
 }

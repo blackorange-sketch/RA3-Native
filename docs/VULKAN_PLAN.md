@@ -70,7 +70,7 @@ stays at its 30 fps; the gain is heat, battery and headroom for weaker phones.
 
 ## Progress
 - [x] Plan
-- [ ] 0. Separation
+- [ ] 0. Separation — done so far: HUD scaling, side bars (`d3d9_ui.cpp`), DXT decoding and cache files (`d3d9_tex.cpp`); next: renderer choice and dispatcher
 - [ ] 1. Vulkan starts
 - [ ] 2. Shaders
 - [ ] 3. Resources
