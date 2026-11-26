@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "rt.h"
+#include "vkb.h"
 
 namespace gfx
 {
@@ -44,6 +45,9 @@ int ovW = 0, ovH = 0;
 bool ovDirty = false;
 
 GLuint ovProg = 0, ovTex = 0;
+
+// Vulkan (experimental, docs/VULKAN_PLAN.md): chosen once, at the first window; then no EGL surface is made at all
+bool vkMode = false, vkDecided = false;
 
 void egl(const char* what)
 {
@@ -110,6 +114,24 @@ void drawOverlayImpl()   // caller owns the context
 void setWindow(void* w)
 {
 	std::lock_guard<std::mutex> l(mu);
+	if (!vkDecided && w)
+	{
+		vkDecided = true;
+		if (vkb::wanted())
+		{
+			if (vkb::setWindow(w)) { vkMode = true; win = (ANativeWindow*)w; surfGen++; rt::log("renderer: Vulkan (experimental)"); return; }
+			rt::log("renderer: Vulkan cannot start (%s), using OpenGL ES", vkb::failure());
+			vkb::setWindow(nullptr);
+		}
+		else rt::log("renderer: OpenGL ES");
+	}
+	if (vkMode)
+	{
+		win = (ANativeWindow*)w;
+		surfGen++;
+		if (!vkb::setWindow(w) && w) rt::log("vulkan: no swapchain for the new window (%s)", vkb::failure());
+		return;
+	}
 	if (!w)
 	{
 		if (surf != EGL_NO_SURFACE)
@@ -162,16 +184,17 @@ void setWindow(void* w)
 	rt::log("EGL: surface %dx%d, GL %s / %s", surfW, surfH, (const char*)glGetString(GL_VERSION), (const char*)glGetString(GL_RENDERER));
 }
 
-bool ready() { std::lock_guard<std::mutex> l(mu); return surf != EGL_NO_SURFACE; }
-int width() { return surfW; }
-int height() { return surfH; }
+bool ready() { if (vkMode) return vkb::ready(); std::lock_guard<std::mutex> l(mu); return surf != EGL_NO_SURFACE; }
+int width() { return vkMode ? vkb::width() : surfW; }
+int height() { return vkMode ? vkb::height() : surfH; }
+bool vulkan() { return vkMode; }
 bool ownedByGame() { return ownerIsGame; }
 static std::atomic<int> ownerTid{0};
-bool isOwner() { static thread_local int t = (int)gettid(); return ownerIsGame && ownerTid.load() == t; }
+bool isOwner() { if (vkMode) return ownerIsGame; static thread_local int t = (int)gettid(); return ownerIsGame && ownerTid.load() == t; }
 void release()
 {
 	std::unique_lock<std::mutex> l(mu);
-	if (!ownerIsGame || owner != std::this_thread::get_id()) return;
+	if (vkMode || !ownerIsGame || owner != std::this_thread::get_id()) return;
 	eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
 	curValid = false;
 	owner = std::thread::id();
@@ -182,6 +205,7 @@ void release()
 bool acquire()
 {
 	std::unique_lock<std::mutex> l(mu);
+	if (vkMode) { ownerIsGame = true; return vkb::ready(); }   // no context to hand over: the game takes the screen from the console
 	if (surf == EGL_NO_SURFACE) return false;
 	if (ownerIsGame && owner == std::this_thread::get_id()) return true;
 	wantGame = true;
@@ -201,6 +225,7 @@ bool acquire()
 void servicePlatform()
 {
 	std::unique_lock<std::mutex> l(mu);
+	if (vkMode) return;
 	if (wantGame && !ownerIsGame && owner == std::this_thread::get_id())
 	{
 		eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
@@ -212,6 +237,7 @@ void servicePlatform()
 
 void postOverlay(const uint32_t* rgba, int w, int h)
 {
+	if (vkMode) { vkb::postPicture(rgba, w, h); return; }
 	std::lock_guard<std::mutex> l(mu);
 	overlay.assign(rgba, rgba + (size_t)w * h);
 	ovW = w; ovH = h; ovDirty = true;
@@ -219,6 +245,7 @@ void postOverlay(const uint32_t* rgba, int w, int h)
 
 void drawOverlayAndPresent()
 {
+	if (vkMode) { if (!ownerIsGame) vkb::present(nullptr, 0, true); return; }
 	{
 		std::lock_guard<std::mutex> l(mu);
 		if (surf == EGL_NO_SURFACE || ownerIsGame || owner != std::this_thread::get_id()) return;
@@ -232,6 +259,7 @@ void drawOverlayAndPresent()
 // ---- game thread
 void beginFrame()
 {
+	if (vkMode) return;
 	if (surfGen != curGen)
 	{
 		std::lock_guard<std::mutex> l(mu);
@@ -241,12 +269,14 @@ void beginFrame()
 
 void swap()
 {
+	if (vkMode) return;
 	if (!ownerIsGame || surf == EGL_NO_SURFACE) return;
 	eglSwapBuffers(dpy, surf);
 }
 
 void drawOverlay()
 {
+	if (vkMode) return;
 	if (!ownerIsGame || surf == EGL_NO_SURFACE) return;
 	drawOverlayImpl();
 }

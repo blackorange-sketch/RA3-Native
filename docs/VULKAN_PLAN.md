@@ -70,8 +70,11 @@ stays at its 30 fps; the gain is heat, battery and headroom for weaker phones.
 
 ## Progress
 - [x] Plan
-- [ ] 0. Separation — done so far: HUD scaling, side bars (`d3d9_ui.cpp`), DXT decoding and cache files (`d3d9_tex.cpp`); next: renderer choice and dispatcher
-- [ ] 1. Vulkan starts
+- [x] 0. Separation — HUD scaling, side bars, on-screen buttons (`d3d9_ui.cpp`), DXT decoding and cache files
+  (`d3d9_tex.cpp`), renderer choice (`renderer=` in launcher.cfg or `/sdcard/ra3_vulkan`, decided at the first window
+  in `gfx_gles.cpp`)
+- [ ] 1. Vulkan starts — written (`vkb.cpp`: device, swapchain, black frame, console picture, buttons as clears,
+  fallback to OpenGL ES); waiting for the test on a phone. The launcher option comes once the game draws something.
 - [ ] 2. Shaders
 - [ ] 3. Resources
 - [ ] 4. Pipelines

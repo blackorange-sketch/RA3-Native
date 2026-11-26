@@ -36,6 +36,7 @@
 #include "gputime.h"
 #include "d3d9_ui.h"
 #include "d3d9_tex.h"
+#include "vkb.h"
 namespace rt { extern bool gFps60; uint64_t limiterCpuUs(); }
 namespace d3d { std::atomic<int> gViewProjReg{-1}; }   // vertex shader register of the camera matrix (the engine sets it; found in d3d9_fx)
 
@@ -1201,8 +1202,16 @@ bool init()
 
 // The GL context is bound lazily to the first thread that actually renders (the game creates the device on one thread and draws on another).
 static std::atomic<int> gRenderAcq{-1};
+static bool gVk = false;   // the Vulkan renderer runs: nothing here touches GL (stage 1: black frames with the buttons)
 bool ensureGl()
 {
+	if (!gInit && gfx::vulkan())
+	{
+		gInit = true; gOk = false; gVk = true;
+		bool a = gfx::acquire();
+		log("vulkan: first rendering call on tid %d (screen %d), the game's drawing is not shown yet", (int)gettid(), (int)a);
+		return false;
+	}
 	if (!gInit)
 	{
 		rec::gOn = access("/sdcard/ra3_st", F_OK) != 0;
@@ -2348,10 +2357,26 @@ void present()
 		start = t; f0 = gFrameNo; gTDraw = gTUpload = gTPresent = gNDraws = gNUploads = gTWaitRender = 0; gTSwap = 0;
 	}
 }
+// Vulkan, stage 1: the frame is black with the console picture and the on-screen buttons; the frame bookkeeping
+// (frame number, HUD scaling state) goes on as with OpenGL so the interface code keeps working
+static void presentVk()
+{
+	int sw = gfx::width(), sh = gfx::height();
+	static std::vector<HudRect> rects;
+	static std::vector<vkb::Rect> vr;
+	hudRects(sw, sh, rects);
+	vr.clear();
+	for (const HudRect& q : rects) vr.push_back({q.x, q.y, q.w, q.h, q.r, q.g, q.b, q.a});
+	vkb::present(vr.data(), vr.size(), true);
+	gFrameNo++;
+	ui::uiEndFrame(gFrameNo);
+	if (gFrameNo == 1 || gFrameNo % 3600 == 0) log("vulkan: frame %u presented, screen %dx%d", gFrameNo, sw, sh);
+	if (gFrameNo % 300 == 0) rt::profDump();
+}
 static void presentImpl()
 {
 	{ static int n = 0; if (n++ < 5) log("GL: present on tid %d ctx %p", (int)gettid(), (void*)eglGetCurrentContext()); }
-	if (!ensureGl()) { std::this_thread::sleep_for(std::chrono::milliseconds(16)); return; }
+	if (!ensureGl()) { if (gVk) presentVk(); else std::this_thread::sleep_for(std::chrono::milliseconds(16)); return; }
 	if (rec::active()) rec::q([] { gfx::beginFrame(); }); else gfx::beginFrame();
 	resizeBackBufferImpl();
 	{
