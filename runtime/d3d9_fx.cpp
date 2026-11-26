@@ -46,7 +46,21 @@ std::map<std::tuple<FxInfo*, int, uint32_t, uint32_t, uint32_t>, uint32_t> hmap;
 std::mutex hMu;
 constexpr uint32_t HBase = 0x7e000000;
 
+uint32_t mkHandleLocked(FxInfo* fx, int kind, uint32_t a, uint32_t b, uint32_t c);
 uint32_t mkHandle(FxInfo* fx, int kind, uint32_t a, uint32_t b = 0, uint32_t c = 0)
+{
+	// handles never change once made: a per-thread cache in front of the locked map (the game asks for the same
+	// parameter and pass handles every frame)
+	struct E { FxInfo* fx; int kind; uint32_t a, b, c, h; };
+	static thread_local E cache[256];
+	uint32_t slot = (uint32_t)(((uintptr_t)fx >> 4) * 31 + kind * 131 + a * 17 + b * 7 + c) & 255;
+	E& e = cache[slot];
+	if (e.h && e.fx == fx && e.kind == kind && e.a == a && e.b == b && e.c == c) return e.h;
+	uint32_t h = mkHandleLocked(fx, kind, a, b, c);
+	e = E{fx, kind, a, b, c, h};
+	return h;
+}
+uint32_t mkHandleLocked(FxInfo* fx, int kind, uint32_t a, uint32_t b, uint32_t c)
 {
 	std::lock_guard<std::mutex> l(hMu);
 	auto k = std::make_tuple(fx, kind, a, b, c);
@@ -872,6 +886,8 @@ static bool dynPick(FxInfo& fx, uint64_t key, uint32_t tech, uint32_t pass, uint
 		for (size_t k = 0; k < nd; k++) { float f; memcpy(&f, &regs[k], 4); in[c.regIndex * 4 + k] = f; }
 	}
 	if (ds.valid && ds.in == in) { out = (ShaderObj*)ds.sh; return true; }
+	for (auto& m : ds.memo)
+		if (m.first == in) { ds.in = in; ds.sh = m.second; ds.valid = true; out = (ShaderObj*)m.second; return true; }
 	ShaderObj* sh = nullptr;
 	fxrt::ShaderRef ref;
 	if (fxrt::resolveShader(fx, tech, pass, si, ref))
@@ -881,6 +897,7 @@ static bool dynPick(FxInfo& fx, uint64_t key, uint32_t tech, uint32_t pass, uint
 		else { sh = getShader(ref.code, ref.size); fx.codeCache[ref.code] = sh; }
 	}
 	ds.in = in; ds.sh = sh; ds.valid = true;
+	if (ds.memo.size() < 16) ds.memo.push_back({in, sh});
 	out = sh;
 	return true;
 }

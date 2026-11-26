@@ -114,7 +114,8 @@ struct FxInfo
 	PresCache* lastPres[2] = {nullptr, nullptr};
 	std::unordered_map<const void*, PresCache> presCache;
 	// shader picked from an array by a pre-shader (usage 2): parameter indices, last inputs and the pick
-	struct DynSel { const void* pp = nullptr; bool none = false; std::vector<int> pidx; std::vector<double> in; std::vector<uint32_t> inVer; void* sh = nullptr; bool valid = false; };
+	struct DynSel { const void* pp = nullptr; bool none = false; std::vector<int> pidx; std::vector<double> in; std::vector<uint32_t> inVer; void* sh = nullptr; bool valid = false;
+		std::vector<std::pair<std::vector<double>, void*>> memo; };   // earlier inputs -> pick (inputs often alternate between a few values)
 	std::unordered_map<uint64_t, DynSel> dynSel;
 	std::unordered_map<uint64_t, int> resIdx;
 	std::unordered_map<const void*, void*> codeCache;   // shader bytecode in this effect -> translated shader

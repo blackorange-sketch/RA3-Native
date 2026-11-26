@@ -2077,6 +2077,10 @@ static void batchStat(const DrawCall& dc)
 
 static void drawImpl(const DrawCall& dc)
 {
+	// one producer lock for the whole draw: its ~20-40 queued GL calls then take the (recursive) lock with a plain
+	// load instead of an atomic compare-and-swap each
+	std::unique_lock<rec::RecLock> drawLock;
+	if (rec::active()) drawLock = std::unique_lock<rec::RecLock>(rec::producerLock());
 	batchStat(dc);
 	{ static int n = 0; if (n++ < 5) log("GL: draw on tid %d ctx %p", (int)gettid(), (void*)eglGetCurrentContext()); }
 	if (!ensureGl()) return;
