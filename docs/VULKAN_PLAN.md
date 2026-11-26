@@ -56,6 +56,8 @@ stays at its 30 fps; the gain is heat, battery and headroom for weaker phones.
 - Milestone: battles render through Vulkan.
 
 ### 6. Parity with OpenGL
+- Pre-rotation: render in the display's natural orientation (`preTransform` = the surface's current transform) so
+  the compositor does not have to turn every frame (stage 1 presents unrotated; the driver reports SUBOPTIMAL).
 - HUD scaling, blurred menu side bars, tooltips, screenshots / dumps, GPU timing (timestamp queries).
 - Compare the same scenes with OpenGL: bloom, water, shadows, fog of war.
 

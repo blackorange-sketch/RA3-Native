@@ -242,7 +242,9 @@ template <class F> void frame(F record)
 	VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
 	pi.waitSemaphoreCount = 1; pi.pWaitSemaphores = &semDone[idx]; pi.swapchainCount = 1; pi.pSwapchains = &swap; pi.pImageIndices = &idx;
 	r = vkQueuePresentKHR(queue, &pi);
-	if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) dirty = true;
+	// SUBOPTIMAL comes every frame on a phone held in landscape: the picture is not pre-rotated (IDENTITY transform),
+	// the compositor turns it. A new swapchain would be the same, so only OUT_OF_DATE (window resized) rebuilds it.
+	if (r == VK_ERROR_OUT_OF_DATE_KHR) dirty = true;
 }
 }   // namespace
 
