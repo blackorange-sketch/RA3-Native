@@ -110,7 +110,11 @@ struct VBuf
 };
 
 // ---- per-frame resources
-struct Chunk { VkBuffer buf = VK_NULL_HANDLE; VmaAllocation mem = VK_NULL_HANDLE; uint8_t* map = nullptr; VkDeviceSize size = 0, pos = 0; VkDescriptorSet constSet = VK_NULL_HANDLE; };
+// constant blocks are bound with a range of their size class: the driver loads the whole bound range into the
+// GPU's constant memory on every draw, the largest block (4.3 KB) for every shader would be wasted work
+const uint32_t kConstClass[4] = {256, 1024, 2048, shdr::kVkConstRange};
+inline int constClass(uint32_t size) { int c = 0; while (c < 3 && size > kConstClass[c]) c++; return c; }
+struct Chunk { VkBuffer buf = VK_NULL_HANDLE; VmaAllocation mem = VK_NULL_HANDLE; uint8_t* map = nullptr; VkDeviceSize size = 0, pos = 0; VkDescriptorSet constSet[16] = {}; };
 struct Dump { VkBuffer buf; VmaAllocation mem; uint32_t w, h; VkFormat fmt; std::string name; };
 struct Frame
 {
@@ -163,17 +167,22 @@ bool newChunk(Frame& f)
 	VmaAllocationInfo inf;
 	if (!vkOk(vmaCreateBuffer(gA, &bi, &ai, &c.buf, &c.mem, &inf), "ring buffer")) return false;
 	c.map = (uint8_t*)inf.pMappedData; c.size = kChunk;
+	VkDescriptorSetLayout lays[16];
+	for (auto& l : lays) l = gConstLayout;
 	VkDescriptorSetAllocateInfo dai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-	dai.descriptorPool = gConstPool; dai.descriptorSetCount = 1; dai.pSetLayouts = &gConstLayout;
-	if (!vkOk(vkAllocateDescriptorSets(D, &dai, &c.constSet), "constant set")) return false;
-	VkDescriptorBufferInfo b[2] = {{c.buf, 0, shdr::kVkConstRange}, {c.buf, 0, shdr::kVkConstRange}};
-	VkWriteDescriptorSet w[2] = {};
-	for (int i = 0; i < 2; i++)
+	dai.descriptorPool = gConstPool; dai.descriptorSetCount = 16; dai.pSetLayouts = lays;
+	if (!vkOk(vkAllocateDescriptorSets(D, &dai, c.constSet), "constant sets")) return false;
+	for (int k = 0; k < 16; k++)
 	{
-		w[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[i].dstSet = c.constSet; w[i].dstBinding = i; w[i].descriptorCount = 1;
-		w[i].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC; w[i].pBufferInfo = &b[i];
+		VkDescriptorBufferInfo b[2] = {{c.buf, 0, kConstClass[k & 3]}, {c.buf, 0, kConstClass[k >> 2]}};   // set k: VS class k & 3, PS class k >> 2
+		VkWriteDescriptorSet w[2] = {};
+		for (int i = 0; i < 2; i++)
+		{
+			w[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[i].dstSet = c.constSet[k]; w[i].dstBinding = i; w[i].descriptorCount = 1;
+			w[i].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC; w[i].pBufferInfo = &b[i];
+		}
+		vkUpdateDescriptorSets(D, 2, w, 0, nullptr);
 	}
-	vkUpdateDescriptorSets(D, 2, w, 0, nullptr);
 	f.chunks.push_back(c);
 	static int n = 0;
 	if (n++ < 6 || f.chunks.size() > 4) log("vulkan: frame ring chunk #%zu (%u MB)", f.chunks.size(), (unsigned)(kChunk >> 20));
@@ -886,6 +895,24 @@ CmdState S;
 // constants: the last block written per stage, reused when the next draw's is the same
 struct ConstCache { std::vector<uint8_t> data; VkDeviceSize off = 0; size_t chunk = ~(size_t)0; };
 ConstCache gCC[2];
+// two parts (the int registers, then the float registers at `split`) compared and copied in place, without first
+// assembling the block
+bool writeConsts2(int stage, const uint8_t* a, uint32_t na, const uint8_t* b, uint32_t nb, VkDeviceSize& off, size_t& chunk)
+{
+	ConstCache& c = gCC[stage];
+	uint32_t size = na + nb;
+	if (c.chunk < F->chunks.size() && c.data.size() == size && (!na || !memcmp(c.data.data(), a, na)) && !memcmp(c.data.data() + na, b, nb)) { off = c.off; chunk = c.chunk; return true; }
+	RingPos rp;
+	if (!ringAlloc(std::max<uint32_t>(size, 16), gUboAlign, rp, shdr::kVkConstRange)) return false;
+	if (na) memcpy(rp.ptr, a, na);
+	memcpy(rp.ptr + na, b, nb);
+	c.data.resize(size);
+	if (na) memcpy(c.data.data(), a, na);
+	memcpy(c.data.data() + na, b, nb);
+	c.off = rp.off; c.chunk = rp.chunk;
+	off = rp.off; chunk = rp.chunk;
+	return true;
+}
 bool writeConsts(int stage, const uint8_t* data, uint32_t size, VkDeviceSize& off, size_t& chunk)
 {
 	ConstCache& c = gCC[stage];
@@ -986,6 +1013,119 @@ VkDescriptorSet allocTexSet()
 	}
 }
 
+
+// ---- copies drawn as a full-screen triangle: on Adreno vkCmdBlitImage of a 2306x1080 float picture took ~1 ms
+// (OpenGL's blit a fraction of that); a draw renders it in the GPU's tile memory like any pass
+VkPipelineLayout gBlitLayout = VK_NULL_HANDLE;
+std::unordered_map<int, VkPipeline> gBlitPipes;
+VkSampler gBlitSamp[2] = {};   // nearest, linear (clamped)
+void invalidateCmdState() { S.pipe = VK_NULL_HANDLE; S.valid = false; S.constSet = VK_NULL_HANDLE; S.texSet = VK_NULL_HANDLE; S.texMask = 0; S.pushValid = false; }
+VkPipeline blitPipeline(VkFormat fmt)
+{
+	auto it = gBlitPipes.find((int)fmt);
+	if (it != gBlitPipes.end()) return it->second;
+	if (!gBlitLayout)
+	{
+		VkPushConstantRange pr{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32};
+		VkPipelineLayoutCreateInfo li{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+		li.setLayoutCount = 1; li.pSetLayouts = &gTexLayout; li.pushConstantRangeCount = 1; li.pPushConstantRanges = &pr;
+		vkCreatePipelineLayout(D, &li, nullptr, &gBlitLayout);
+		for (int k = 0; k < 2; k++)
+		{
+			VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+			si.magFilter = si.minFilter = k ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+			si.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+			si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+			si.maxLod = VK_LOD_CLAMP_NONE;
+			vkCreateSampler(D, &si, nullptr, &gBlitSamp[k]);
+		}
+	}
+	const char* vs = "#version 450\nlayout(push_constant) uniform P { vec4 r; vec4 l; };\nlayout(location = 0) out vec2 uv;\n"
+		"void main() { vec2 p = vec2(float((gl_VertexIndex << 1) & 2), float(gl_VertexIndex & 2)); uv = mix(r.xy, r.zw, p); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }\n";
+	const char* fs = "#version 450\nlayout(push_constant) uniform P { vec4 r; vec4 l; };\nlayout(set = 0, binding = 0) uniform sampler2D s;\n"
+		"layout(location = 0) in vec2 uv;\nlayout(location = 0) out vec4 o;\nvoid main() { o = textureLod(s, uv, l.x); }\n";
+	VkShaderModule v = module(vs, true, 0x626c697476ull), f = module(fs, false, 0x626c697466ull);
+	VkPipeline p = VK_NULL_HANDLE;
+	if (v && f)
+	{
+		VkPipelineShaderStageCreateInfo st[2] = {{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO}, {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO}};
+		st[0].stage = VK_SHADER_STAGE_VERTEX_BIT; st[0].module = v; st[0].pName = "main";
+		st[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; st[1].module = f; st[1].pName = "main";
+		VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+		VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+		ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+		VkPipelineViewportStateCreateInfo vp{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+		vp.viewportCount = 1; vp.scissorCount = 1;
+		VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+		rs.polygonMode = VK_POLYGON_MODE_FILL; rs.lineWidth = 1.f; rs.cullMode = VK_CULL_MODE_NONE;
+		VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+		ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+		VkPipelineColorBlendAttachmentState ba{};
+		ba.colorWriteMask = 15;
+		VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+		cb.attachmentCount = 1; cb.pAttachments = &ba;
+		const VkDynamicState dyn[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+		VkPipelineDynamicStateCreateInfo dy{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+		dy.dynamicStateCount = 2; dy.pDynamicStates = dyn;
+		VkPipelineRenderingCreateInfo ri{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+		ri.colorAttachmentCount = 1; ri.pColorAttachmentFormats = &fmt;
+		VkGraphicsPipelineCreateInfo pi{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+		pi.pNext = &ri; pi.stageCount = 2; pi.pStages = st; pi.pVertexInputState = &vi; pi.pInputAssemblyState = &ia; pi.pViewportState = &vp;
+		pi.pRasterizationState = &rs; pi.pMultisampleState = &ms; pi.pColorBlendState = &cb; pi.pDynamicState = &dy; pi.layout = gBlitLayout;
+		vkOk(vkCreateGraphicsPipelines(D, gPipeCache, 1, &pi, nullptr, &p), "blit pipeline");
+	}
+	gBlitPipes[(int)fmt] = p;
+	return p;
+}
+// inside an open pass whose colour format is dstFmt: `uv` (u0, v0, u1, v1, normalised) of src drawn into the viewport
+bool blitInPass(VTex* src, const float uv[4], float lod, bool linear, const VkViewport& vp, const VkRect2D& sc, VkFormat dstFmt)
+{
+	VkPipeline p = blitPipeline(dstFmt);
+	if (!p) return false;
+	VkDescriptorSet set = allocTexSet();
+	if (!set) return false;
+	VkDescriptorImageInfo ii{gBlitSamp[linear && !src->noFilter ? 1 : 0], src->sampled, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+	VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+	w.dstSet = set; w.dstBinding = 0; w.descriptorCount = 1; w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.pImageInfo = &ii;
+	vkUpdateDescriptorSets(D, 1, &w, 0, nullptr);
+	vkCmdBindPipeline(C, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
+	vkCmdBindDescriptorSets(C, VK_PIPELINE_BIND_POINT_GRAPHICS, gBlitLayout, 0, 1, &set, 0, nullptr);
+	float pc[8] = {uv[0], uv[1], uv[2], uv[3], lod, 0.f, 0.f, 0.f};
+	vkCmdPushConstants(C, gBlitLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32, pc);
+	vkCmdSetViewport(C, 0, 1, &vp);
+	vkCmdSetScissor(C, 0, 1, &sc);
+	vkCmdDraw(C, 3, 1, 0, 0);
+	invalidateCmdState();
+	src->useSerial = gSerial;
+	return true;
+}
+// a copy between images (rectangles x0, y0, x1, y1 in pixels of the source level / destination level and layer)
+bool blitTo(VTex* src, uint32_t sLevel, const int32_t* sr, VTex* dst, uint32_t dLevel, uint32_t dLayer, const int32_t* dr, bool linear)
+{
+	if (!src || !dst || src->depth || dst->depth || !dst->rt || src->vtype != VK_IMAGE_VIEW_TYPE_2D || src == dst) return false;   // (dst must be renderable)
+	uint32_t sw = std::max(1u, src->w >> sLevel), sh = std::max(1u, src->h >> sLevel), dw = std::max(1u, dst->w >> dLevel), dh = std::max(1u, dst->h >> dLevel);
+	endPass();
+	toLayout(src, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	toLayout(dst, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	int32_t x0 = std::max(0, std::min(dr[0], dr[2])), y0 = std::max(0, std::min(dr[1], dr[3]));
+	int32_t x1 = std::min((int32_t)dw, std::max(dr[0], dr[2])), y1 = std::min((int32_t)dh, std::max(dr[1], dr[3]));
+	if (x1 <= x0 || y1 <= y0) return true;
+	bool full = x0 == 0 && y0 == 0 && x1 == (int32_t)dw && y1 == (int32_t)dh;
+	VkRenderingAttachmentInfo ca{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+	ca.imageView = attView(dst, dLevel, dLayer); ca.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	ca.loadOp = full ? VK_ATTACHMENT_LOAD_OP_DONT_CARE : VK_ATTACHMENT_LOAD_OP_LOAD; ca.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+	VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
+	ri.renderArea = {{x0, y0}, {(uint32_t)(x1 - x0), (uint32_t)(y1 - y0)}}; ri.layerCount = 1; ri.colorAttachmentCount = 1; ri.pColorAttachments = &ca;
+	pBeginRendering(C, &ri);
+	float uv[4] = {(float)sr[0] / sw, (float)sr[1] / sh, (float)sr[2] / sw, (float)sr[3] / sh};
+	VkViewport vp{(float)dr[0], (float)dr[1], (float)(dr[2] - dr[0]), (float)(dr[3] - dr[1]), 0.f, 1.f};
+	bool ok = blitInPass(src, uv, (float)sLevel, linear, vp, ri.renderArea, dst->fmt);
+	pEndRendering(C);
+	dst->content++;
+	dst->useSerial = gSerial;
+	return ok;
+}
+
 // A draw that samples the target it draws to (the water reads the scene for its refraction): OpenGL on a tiled GPU
 // gives it the contents from before the pass, Vulkan would give garbage. It reads a copy instead, made again only
 // when the target has been drawn to since.
@@ -1031,20 +1171,15 @@ VTex* brightPassCopy(VTex* src, const Target& t)
 	if (!half)
 	{
 		Fmt f; f.vk = VK_FORMAT_R16G16B16A16_SFLOAT;
-		half = createTex(w, h, 1, 1, 1, false, false, f, false, VkComponentMapping{});
+		half = createTex(w, h, 1, 1, 1, false, false, f, true, VkComponentMapping{});
 		if (!half) return src;
 		from = nullptr;
 		log("vulkan: bloom bright-pass reads a %ux%u copy of the %ux%u scene", w, h, src->w, src->h);
 	}
 	if (from != src || fromContent != src->content)
 	{
-		toLayout(src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-		toLayout(half, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-		VkImageBlit b{};
-		b.srcSubresource = b.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-		b.srcOffsets[1] = {(int32_t)(src->w & ~1u), (int32_t)(src->h & ~1u), 1};
-		b.dstOffsets[1] = {(int32_t)w, (int32_t)h, 1};
-		vkCmdBlitImage(C, src->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, half->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b, VK_FILTER_LINEAR);
+		int32_t sr[4] = {0, 0, (int32_t)(src->w & ~1u), (int32_t)(src->h & ~1u)}, dr[4] = {0, 0, (int32_t)w, (int32_t)h};
+		blitTo(src, 0, sr, half, 0, 0, dr, true);
 		from = src; fromContent = src->content;
 		src->useSerial = gSerial;
 	}
@@ -1289,9 +1424,9 @@ bool init()
 		VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
 		pli.setLayoutCount = 2; pli.pSetLayouts = sets; pli.pushConstantRangeCount = 1; pli.pPushConstantRanges = &pr;
 		if (!vkOk(vkCreatePipelineLayout(D, &pli, nullptr, &gLayout), "pipeline layout")) return false;
-		VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 2 * 256};
+		VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 2 * 16 * 128};
 		VkDescriptorPoolCreateInfo pci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-		pci.maxSets = 256; pci.poolSizeCount = 1; pci.pPoolSizes = &ps;
+		pci.maxSets = 16 * 128; pci.poolSizeCount = 1; pci.pPoolSizes = &ps;
 		if (!vkOk(vkCreateDescriptorPool(D, &pci, nullptr, &gConstPool), "const pool")) return false;
 	}
 	{
@@ -1622,6 +1757,7 @@ void draw(const DrawCall& dc)
 	{
 		static uint8_t blk[shdr::kVkConstRange];
 		VkDeviceSize off[2] = {0, 0}; size_t chunk[2] = {~(size_t)0, ~(size_t)0};
+		uint32_t blkSize[2] = {0, 0};
 		for (int stage = 0; stage < 2; stage++)
 		{
 			ShaderObj* sh = stage ? ps : vs;
@@ -1646,8 +1782,9 @@ void draw(const DrawCall& dc)
 				memcpy(blk + cl.cOff, src, 16 * nreg);
 				for (auto& d : sh->info.defF) if (d.first >= 0 && (uint32_t)d.first < nreg) memcpy(blk + cl.cOff + 16 * d.first, d.second.data(), 16);
 			}
-			else memcpy(blk + cl.cOff, src, 16 * nreg);
-			if (!writeConsts(stage, blk, size, off[stage], chunk[stage])) SKIP();
+			if (!stage && sh->info.relC) { if (!writeConsts(stage, blk, size, off[stage], chunk[stage])) SKIP(); }
+			else if (!writeConsts2(stage, (const uint8_t*)(stage ? dev.psI : dev.vsI), cl.ints ? 256 : 0, (const uint8_t*)src, 16 * nreg, off[stage], chunk[stage])) SKIP();
+			blkSize[stage] = cl.size;   // the shader's whole block (the range must cover what it declares)
 		}
 		// both blocks must come from one chunk (one descriptor set): rewrite the other one if they differ
 		if (chunk[0] != ~(size_t)0 && chunk[1] != ~(size_t)0 && chunk[0] != chunk[1])
@@ -1658,7 +1795,7 @@ void draw(const DrawCall& dc)
 		}
 		size_t ch = chunk[0] != ~(size_t)0 ? chunk[0] : chunk[1] != ~(size_t)0 ? chunk[1] : F->chunk;
 		if (ch >= F->chunks.size()) { RingPos rp; if (!ringAlloc(16, 16, rp)) SKIP(); ch = rp.chunk; }
-		VkDescriptorSet cs = F->chunks[ch].constSet;
+		VkDescriptorSet cs = F->chunks[ch].constSet[constClass(blkSize[0]) | constClass(blkSize[1]) << 2];
 		uint32_t o2[2] = {(uint32_t)off[0], (uint32_t)off[1]};
 		if (S.constSet != cs || S.constOff[0] != o2[0] || S.constOff[1] != o2[1])
 		{
@@ -1879,6 +2016,11 @@ void stretchRect(Obj* src, const int32_t* sr, Obj* dst, const int32_t* dr, uint3
 	int32_t a[4] = {0, 0, (int32_t)sw, (int32_t)sh}, b[4] = {0, 0, (int32_t)dw, (int32_t)dh};
 	if (sr) memcpy(a, sr, 16);
 	if (dr) memcpy(b, dr, 16);
+	if (blitTo(s, sl, a, d, dl, da, b, filter == 2))
+	{
+		if (dumping()) { log("vkdump stretch (draw) %ux%u f%d [%d,%d,%d,%d] -> %ux%u f%d [%d,%d,%d,%d]", sw, sh, (int)s->fmt, a[0], a[1], a[2], a[3], dw, dh, (int)d->fmt, b[0], b[1], b[2], b[3]); dumpTarget(d, dl, da, "copy"); }
+		return;
+	}
 	toLayout(s, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 	toLayout(d, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 	VkImageBlit bl{};
@@ -1943,16 +2085,6 @@ bool present(int sw, int sh)
 			}
 		}
 		input::setView(vx, vy, vw, vh, (int)backW, (int)backH);
-		barrier(C, img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-		VkClearColorValue black{{0.f, 0.f, 0.f, 1.f}};
-		VkImageSubresourceRange rng{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-		vkCmdClearColorImage(C, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &rng);
-		toLayout(gBack, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-		VkImageBlit bl{};
-		bl.srcSubresource = bl.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-		bl.srcOffsets[1] = {(int32_t)backW, (int32_t)backH, 1};
-		bl.dstOffsets[0] = {vx, vy, 0}; bl.dstOffsets[1] = {vx + vw, vy + vh, 1};
-		vkCmdBlitImage(C, gBack->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bl, VK_FILTER_LINEAR);
 		// Menus are Flash movies laid out for 16:9: on a wider picture the parts parked off the stage come into view.
 		// Outside a battle everything beyond the centred 16:9 area is covered: blurred (menus) or black (loading
 		// screens, videos). The blur: the back buffer halved three times, its 16:9 stage zoomed to fill the screen
@@ -1962,50 +2094,29 @@ bool present(int sw, int sh)
 		int cw = vh * 16 / 9;
 		bool bars = !inGame && vw > cw + 4;
 		int cx = vx + (vw - cw) / 2;
-		bool blurred = false;
+		VTex* blurSrc = nullptr;
 		if (bars && blur)
 		{
 			static VTex* chain[3] = {};
 			Fmt f; f.vk = VK_FORMAT_B8G8R8A8_UNORM;
 			VTex* prev = gBack;
-			bool ok = true;
-			for (int k = 0; k < 3 && ok; k++)
+			for (int k = 0; k < 3; k++)
 			{
 				uint32_t w = std::max(1u, backW >> (k + 1)), h = std::max(1u, backH >> (k + 1));
 				if (chain[k] && (chain[k]->w != w || chain[k]->h != h)) { destroyTex(chain[k]); chain[k] = nullptr; }
-				if (!chain[k]) chain[k] = createTex(w, h, 1, 1, 1, false, false, f, false, VkComponentMapping{});
-				if (!chain[k]) { ok = false; break; }
-				toLayout(chain[k], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-				VkImageBlit b{};
-				b.srcSubresource = b.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-				b.srcOffsets[1] = {(int32_t)prev->w, (int32_t)prev->h, 1};
-				b.dstOffsets[1] = {(int32_t)w, (int32_t)h, 1};
-				vkCmdBlitImage(C, prev->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, chain[k]->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b, VK_FILTER_LINEAR);
-				toLayout(chain[k], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-				chain[k]->useSerial = gSerial;
+				if (!chain[k]) chain[k] = createTex(w, h, 1, 1, 1, false, false, f, true, VkComponentMapping{});
+				if (!chain[k]) { prev = nullptr; break; }
+				int32_t sr[4] = {0, 0, (int32_t)prev->w, (int32_t)prev->h}, dr[4] = {0, 0, (int32_t)w, (int32_t)h};
+				blitTo(prev, 0, sr, chain[k], 0, 0, dr, true);
 				prev = chain[k];
 			}
-			if (ok)
-			{
-				float fz = std::min(1.f, (float)backH * 16.f / 9.f / backW), u0 = (1.f - fz) / 2.f;
-				float vspan = std::min(1.f, (float)sh * cw / ((float)vh * sw)), v0 = 0.5f - 0.5f * vspan;
-				auto bar = [&](int x0, int x1) {
-					if (x1 <= x0) return;
-					VkImageBlit b{};
-					b.srcSubresource = b.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-					float pw = (float)prev->w, ph = (float)prev->h;
-					int32_t sx0 = (int32_t)((u0 + fz * x0 / sw) * pw), sx1 = std::max(sx0 + 1, (int32_t)((u0 + fz * x1 / sw) * pw + 0.5f));
-					int32_t sy0 = (int32_t)(v0 * ph), sy1 = std::max(sy0 + 1, (int32_t)((v0 + vspan) * ph + 0.5f));
-					b.srcOffsets[0] = {sx0, sy0, 0}; b.srcOffsets[1] = {std::min(sx1, (int32_t)prev->w), std::min(sy1, (int32_t)prev->h), 1};
-					b.dstOffsets[0] = {x0, 0, 0}; b.dstOffsets[1] = {x1, sh, 1};
-					vkCmdBlitImage(C, prev->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b, VK_FILTER_LINEAR);
-				};
-				bar(0, cx); bar(cx + cw, sw);
-				blurred = true;
-			}
+			if (prev) { toLayout(prev, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL); blurSrc = prev; }
 		}
-		barrier(C, img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-		// the screen pass: black side bars where they are not blurred, then the on-screen buttons
+		toLayout(gBack, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		// one pass on the screen image: cleared black, the back buffer drawn into the letterbox, the blurred bars,
+		// the on-screen buttons
+		barrier(C, img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+		VkImageSubresourceRange rng{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 		VkImageView& view = gSwapViews[img];
 		if (!view)
 		{
@@ -2015,18 +2126,38 @@ bool present(int sw, int sh)
 		}
 		rectPipeline(fmt);
 		VkRenderingAttachmentInfo ca{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-		ca.imageView = view; ca.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; ca.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD; ca.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+		ca.imageView = view; ca.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; ca.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; ca.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+		ca.clearValue.color = {{0.f, 0.f, 0.f, 1.f}};
 		VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
 		ri.renderArea = {{0, 0}, ext}; ri.layerCount = 1; ri.colorAttachmentCount = 1; ri.pColorAttachments = &ca;
 		pBeginRendering(C, &ri);
 		{
-			if (bars && !blurred)
-			{
-				VkClearAttachment a{VK_IMAGE_ASPECT_COLOR_BIT, 0, {}};
-				a.clearValue.color = black;
-				VkClearRect cr[2] = {{{{0, 0}, {(uint32_t)std::max(1, cx), (uint32_t)sh}}, 0, 1}, {{{cx + cw, 0}, {(uint32_t)std::max(1, sw - cx - cw), (uint32_t)sh}}, 0, 1}};
-				vkCmdClearAttachments(C, 1, &a, 2, cr);
-			}
+			const float full[4] = {0.f, 0.f, 1.f, 1.f};
+			VkViewport v{(float)vx, (float)vy, (float)vw, (float)vh, 0.f, 1.f};
+			VkRect2D sc{{std::max(0, vx), std::max(0, vy)}, {(uint32_t)std::min(vw, sw - std::max(0, vx)), (uint32_t)std::min(vh, sh - std::max(0, vy))}};
+			blitInPass(gBack, full, 0.f, true, v, sc, fmt);
+		}
+		if (blurSrc)
+		{
+			float fz = std::min(1.f, (float)backH * 16.f / 9.f / backW), u0 = (1.f - fz) / 2.f;
+			float vspan = std::min(1.f, (float)sh * cw / ((float)vh * sw)), v0 = 0.5f - 0.5f * vspan;
+			auto bar = [&](int x0, int x1) {
+				x0 = std::max(0, x0); x1 = std::min(sw, x1);
+				if (x1 <= x0) return;
+				float uv[4] = {u0 + fz * x0 / sw, v0, u0 + fz * x1 / sw, v0 + vspan};
+				VkViewport v{(float)x0, 0.f, (float)(x1 - x0), (float)sh, 0.f, 1.f};
+				VkRect2D sc{{x0, 0}, {(uint32_t)(x1 - x0), (uint32_t)sh}};
+				blitInPass(blurSrc, uv, 0.f, true, v, sc, fmt);
+			};
+			bar(0, cx); bar(cx + cw, sw);
+		}
+		else if (bars)
+		{
+			// black bars over the parts of the picture beyond the 16:9 stage
+			VkClearAttachment a{VK_IMAGE_ASPECT_COLOR_BIT, 0, {}};
+			a.clearValue.color = {{0.f, 0.f, 0.f, 1.f}};
+			VkClearRect cr[2] = {{{{0, 0}, {(uint32_t)std::max(1, cx), (uint32_t)sh}}, 0, 1}, {{{std::min(cx + cw, sw - 1), 0}, {(uint32_t)std::max(1, sw - cx - cw), (uint32_t)sh}}, 0, 1}};
+			vkCmdClearAttachments(C, 1, &a, 2, cr);
 		}
 		if (gRectPipe)
 		{
@@ -2045,7 +2176,7 @@ bool present(int sw, int sh)
 					vkCmdPushConstants(C, gRectLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32, pc);
 					vkCmdDraw(C, 4, 1, 0, 0);
 				}
-				S.pipe = VK_NULL_HANDLE; S.valid = false;
+				invalidateCmdState();
 			}
 		}
 		pEndRendering(C);
