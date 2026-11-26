@@ -995,6 +995,46 @@ static void healthReport()
 	gHNoTex = gHTexFail = gHNoProg = 0; gHNoTexFmt.clear(); gHState.clear();
 }
 static int activeUnit = -1;
+// The bloom's bright-pass (5x5 bilinear reads, two source texels apart, from the full-size HDR scene into a
+// target about a ninth of its size) cost 5.6 ms of GPU time a frame at 1080p on Adreno: reads that far apart
+// from a large compressed float target are slow. It reads a half-size copy instead (one linear 2:1 blit, each
+// texel the average of 2x2): the same texture coordinates land on the same averages. /sdcard/ra3_nohalf: off.
+constexpr uint64_t kBrightPassPs = 0xfc2bc143afb0d7e0ull;
+static GLuint halfCopy(Obj* t, GLuint src)
+{
+	static const bool off = access("/sdcard/ra3_nohalf", F_OK) == 0;
+	if (off) return src;
+	Obj* ow = texOwner(t);
+	uint32_t tw, th;
+	targetSize(dev.rt0, tw, th);
+	if (ow->fmt != 113 || ow->w < 4 * tw || ow->h < 4 * th || ow->w < 64 || ow->h < 64) return src;
+	static GLuint tex = 0, fboR = 0, fboD = 0;
+	static uint32_t hw = 0, hh = 0;
+	uint32_t w = ow->w / 2, h = ow->h / 2;
+	if (!tex) { glGenTextures(1, &tex); glGenFramebuffers(1, &fboR); glGenFramebuffers(1, &fboD); }
+	if (w != hw || h != hh)
+	{
+		glBindTexture(GL_TEXTURE_2D, tex); gTexBindDirty = true;
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0, GL_RGBA, GL_HALF_FLOAT, nullptr);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+		glBindFramebuffer(GL_FRAMEBUFFER, fboD);
+		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+		hw = w; hh = h;
+		log("GL: bloom bright-pass reads a %ux%u copy of the %ux%u scene", w, h, ow->w, ow->h);
+	}
+	glBindFramebuffer(GL_READ_FRAMEBUFFER, fboR);
+	glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, src, 0);
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fboD);
+	{
+		auto inv = [] { const GLenum a[] = {GL_COLOR_ATTACHMENT0}; ::glInvalidateFramebuffer(GL_DRAW_FRAMEBUFFER, 1, a); };   // fully overwritten
+		if (rec::active()) rec::q(inv); else inv();
+	}
+	glDisable(GL_SCISSOR_TEST); gStValid = false;
+	glBlitFramebuffer(0, 0, ow->w & ~1u, ow->h & ~1u, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+	gFboDirty = true;
+	bindTargets();   // back to this draw's target
+	return tex;
+}
 void bindSamplers(Prog* p, ShaderObj* ps)
 {
 	// make every sampled texture current first: an upload binds on the active unit, which would otherwise
@@ -1037,6 +1077,7 @@ void bindSamplers(Prog* p, ShaderObj* ps)
 			if (!t) gHNoTex++;
 			else { gHTexFail++; gHNoTexFmt[texOwner(t)->fmt]++; }
 		}
+		if (name && i == 0 && ps->hash == kBrightPassPs && target == GL_TEXTURE_2D) name = halfCopy(t, name);
 		GLuint bindName = name ? name : dummyTex(target);
 		{
 			// cached per unit: skip glActiveTexture/glBindTexture when the unit already holds this texture
