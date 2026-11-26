@@ -2452,44 +2452,20 @@ static void presentImpl()
 	if (gDrawsThisFrame > 0) everDrew = true;
 	if (gDrawsThisFrame == 0 && !everDrew) { glViewport(0, 0, sw, sh); if (rec::active()) rec::q([] { gfx::drawOverlay(); }); else gfx::drawOverlay(); }
 	{
-		// on-screen keyboard button: drawn with scissored clears (no shader needed)
-		input::setScreen(sw, sh);
-		if (gCamRegsNew)
-		{
-			// registers hold the matrix columns: back to the row-vector form (clip = pos * M)
-			gCamRegsNew = false;
-			float m[16];
-			for (int a = 0; a < 4; a++) for (int b = 0; b < 4; b++) m[a * 4 + b] = gCamRegs[b * 4 + a];
-			static int nl = 0;
-			if (nl++ < 3) log("input: camera [%g %g %g %g] [%g %g %g %g] [%g %g %g %g] [%g %g %g %g]", m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15]);
-			input::setViewProj(m);
-		}
-		input::dragTick();
-		int kx, ky, kw, kh;
-		input::kbButtonRect(kx, ky, kw, kh);
+		// on-screen buttons (shared with the Vulkan renderer: d3d9_ui.cpp)
+		static std::vector<HudRect> rects;
+		hudRects(sw, sh, rects);
 		glViewport(0, 0, sw, sh);
-		// translucent buttons (the map shows through them in wide screen mode): dark fills are see-through, frames
-		// and letters nearly opaque; the button editor stays opaque
 		glUseProgram(gRectProg);
 		glEnable(GL_BLEND);
 		glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-		bool opaque = hud::editingNow();
-		auto rect = [&](int x, int y, int w, int h, float r, float g, float b) {
-			float lum = 0.3f * r + 0.59f * g + 0.11f * b;
-			float a = opaque ? 1.f : (lum < 0.2f ? 0.3f : lum < 0.6f ? 0.6f : 0.9f) * std::min(1.f, rt::config.buttonOpacity / 100.f * (lum < 0.6f ? 1.f : 1.15f));   // launcher: button opacity (letters fade less)
-			float x0 = 2.f * x / sw - 1.f, x1 = 2.f * (x + w) / sw - 1.f, y0 = 1.f - 2.f * (y + h) / sh, y1 = 1.f - 2.f * y / sh;
+		for (const HudRect& q : rects)
+		{
+			float x0 = 2.f * q.x / sw - 1.f, x1 = 2.f * (q.x + q.w) / sw - 1.f, y0 = 1.f - 2.f * (q.y + q.h) / sh, y1 = 1.f - 2.f * q.y / sh;
 			glUniform4f(gRectLoc, x0, y0, x1, y1);
-			glUniform4f(gRectColLoc, r, g, b, a);
+			glUniform4f(gRectColLoc, q.r, q.g, q.b, q.a);
 			glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-		};
-		rect(kx, ky, kw, 2, 0.75f, 0.75f, 0.78f); rect(kx, ky + kh - 2, kw, 2, 0.75f, 0.75f, 0.78f);
-		rect(kx, ky + 2, 2, kh - 4, 0.75f, 0.75f, 0.78f); rect(kx + kw - 2, ky + 2, 2, kh - 4, 0.75f, 0.75f, 0.78f);
-		rect(kx + 2, ky + 2, kw - 4, kh - 4, 0.12f, 0.12f, 0.14f);
-		int pad = kh / 8, rows = 3, cols = 7, cw = (kw - 4 - pad * 2) / cols, rh = (kh - 4 - pad * 2) / rows;
-		for (int r = 0; r < rows; r++)
-			for (int cc = 0; cc < cols; cc++)
-				if (!(r == 2 && cc > 0 && cc < cols - 1) || cc == 3) rect(kx + 2 + pad + cc * cw + 1, ky + 2 + pad + r * rh + 1, (r == 2 && cc == 3 ? cw * 3 : cw) - 2, rh - 2, 0.85f, 0.85f, 0.88f);
-		hud::draw(rect);
+		}
 		glDisable(GL_BLEND);
 	}
 	if (rec::active())

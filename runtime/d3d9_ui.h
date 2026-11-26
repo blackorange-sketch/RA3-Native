@@ -23,5 +23,9 @@ void uiEndFrame(uint32_t frameNo);   // after a presented frame: this frame's pa
 // Wide screen, once per presented frame (before uiEndFrame): a battle is showing (no side bars), and outside a
 // battle whether the bars beside the 16:9 menu are blurred (menus) or black (loading screens, videos)
 void sideBars(bool& inGame, bool& blur);
+// The on-screen buttons of this frame as rectangles (screen pixels, colour with alpha); also hands the screen size
+// and the world camera to input (call once per presented frame)
+struct HudRect { int x, y, w, h; float r, g, b, a; };
+void hudRects(int screenW, int screenH, std::vector<HudRect>& out);
 }
 }
