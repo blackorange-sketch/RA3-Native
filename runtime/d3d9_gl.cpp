@@ -896,6 +896,7 @@ void applyState(uint32_t tw, uint32_t th)
 {
 	const uint32_t* rs = dev.rs;
 	bool hasDepth = isBack(dev.rt0) || (dev.ds && dev.ds->fmt != 0x4c4c554e);
+	bool full;
 	{
 		static const uint8_t idx[] = {7, 14, 15, 19, 20, 22, 23, 27, 52, 53, 54, 55, 56, 57, 58, 59, 168, 171, 174, 175, 193, 195, 206, 207, 208, 209};
 		uint32_t key[44]; uint32_t n = 0;
@@ -906,53 +907,80 @@ void applyState(uint32_t tw, uint32_t th)
 		for (int i = 0; i < 4; i++) key[n++] = (uint32_t)dev.scissor[i];
 		while (n < 44) key[n++] = 0;
 		if (gStValid && !memcmp(key, gStKey, sizeof key)) return;
+		full = !gStValid;
 		memcpy(gStKey, key, sizeof key); gStValid = true;
 	}
-	if (rs[7] && hasDepth) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
-	glDepthFunc(cmpFunc(rs[23]));
-	glDepthMask(rs[14] && hasDepth ? GL_TRUE : GL_FALSE);
-	switch (rs[22])
+	// Only the GL calls whose values changed: the whole set (~20 calls) on every state change was a good part of
+	// the render thread's time. After anything else touched the GL state (gStValid false), everything is sent.
+	struct Shadow
 	{
-	case 2: glEnable(GL_CULL_FACE); glCullFace(GL_FRONT); break;
-	case 3: glEnable(GL_CULL_FACE); glCullFace(GL_BACK); break;
-	default: glDisable(GL_CULL_FACE); break;
+		int depthTest, depthMask, cull, blend, stencil, polyOff, scissorOn;
+		GLenum depthFunc, cullFace, bf[4], be[2]; bool sep; uint32_t blendColor, colorMask;
+		GLenum sFunc, sOp[3]; GLint sRef; GLuint sMaskR, sMaskW; float pSlope, pBias;
+		uint32_t vp[4]; float dr[2]; int32_t sc[4];
+	};
+	static Shadow sh;
+	if (full) { memset(&sh, 0xff, sizeof sh); glFrontFace(GL_CCW); }   // y is flipped in the vertex shader, so D3D's clockwise front faces become counter-clockwise
+	auto onOff = [&](int& cur, int want, GLenum cap) { if (cur != want) { if (want) glEnable(cap); else glDisable(cap); cur = want; } };
+	onOff(sh.depthTest, rs[7] && hasDepth ? 1 : 0, GL_DEPTH_TEST);
+	{ GLenum f = cmpFunc(rs[23]); if (sh.depthFunc != f) { glDepthFunc(f); sh.depthFunc = f; } }
+	{ int m = rs[14] && hasDepth ? 1 : 0; if (sh.depthMask != m) { glDepthMask(m ? GL_TRUE : GL_FALSE); sh.depthMask = m; } }
+	{
+		int c = rs[22] == 2 || rs[22] == 3 ? 1 : 0;
+		onOff(sh.cull, c, GL_CULL_FACE);
+		if (c) { GLenum f = rs[22] == 2 ? GL_FRONT : GL_BACK; if (sh.cullFace != f) { glCullFace(f); sh.cullFace = f; } }
 	}
-	glFrontFace(GL_CCW);   // y is flipped in the vertex shader, so D3D's clockwise front faces become counter-clockwise
+	onOff(sh.blend, rs[27] ? 1 : 0, GL_BLEND);
 	if (rs[27])
 	{
-		glEnable(GL_BLEND);
-		if (rs[206]) glBlendFuncSeparate(blendFactor(rs[19]), blendFactor(rs[20]), blendFactor(rs[207]), blendFactor(rs[208]));
-		else glBlendFunc(blendFactor(rs[19]), blendFactor(rs[20]));
-		if (rs[206]) glBlendEquationSeparate(blendOp(rs[171]), blendOp(rs[209])); else glBlendEquation(blendOp(rs[171]));
+		bool sep = rs[206] != 0;
+		GLenum b0 = blendFactor(rs[19]), b1 = blendFactor(rs[20]), b2 = sep ? blendFactor(rs[207]) : b0, b3 = sep ? blendFactor(rs[208]) : b1;
+		if (sh.bf[0] != b0 || sh.bf[1] != b1 || sh.bf[2] != b2 || sh.bf[3] != b3)
+		{
+			if (sep) glBlendFuncSeparate(b0, b1, b2, b3); else glBlendFunc(b0, b1);
+			sh.bf[0] = b0; sh.bf[1] = b1; sh.bf[2] = b2; sh.bf[3] = b3;
+		}
+		GLenum e0 = blendOp(rs[171]), e1 = sep ? blendOp(rs[209]) : e0;
+		if (sh.be[0] != e0 || sh.be[1] != e1) { if (sep) glBlendEquationSeparate(e0, e1); else glBlendEquation(e0); sh.be[0] = e0; sh.be[1] = e1; }
 		uint32_t bf = rs[193];
-		glBlendColor(((bf >> 16) & 255) / 255.f, ((bf >> 8) & 255) / 255.f, (bf & 255) / 255.f, ((bf >> 24) & 255) / 255.f);
+		if (sh.blendColor != bf) { glBlendColor(((bf >> 16) & 255) / 255.f, ((bf >> 8) & 255) / 255.f, (bf & 255) / 255.f, ((bf >> 24) & 255) / 255.f); sh.blendColor = bf; }
 	}
-	else glDisable(GL_BLEND);
-	uint32_t cw = rs[168];
-	glColorMask(cw & 1, cw & 2, cw & 4, cw & 8);
-	if (rs[52] && hasDepth)
+	{ uint32_t cw = rs[168] & 15; if (sh.colorMask != cw) { glColorMask(cw & 1, cw & 2, cw & 4, cw & 8); sh.colorMask = cw; } }
 	{
-		glEnable(GL_STENCIL_TEST);
-		glStencilFunc(cmpFunc(rs[56]), rs[57] & 255, rs[58] & 255);
-		glStencilOp(stencilOp(rs[53]), stencilOp(rs[54]), stencilOp(rs[55]));
-		glStencilMask(rs[59] & 255);
+		int st = rs[52] && hasDepth ? 1 : 0;
+		onOff(sh.stencil, st, GL_STENCIL_TEST);
+		if (st)
+		{
+			GLenum f = cmpFunc(rs[56]); GLint ref = rs[57] & 255; GLuint mr = rs[58] & 255, mw = rs[59] & 255;
+			if (sh.sFunc != f || sh.sRef != ref || sh.sMaskR != mr) { glStencilFunc(f, ref, mr); sh.sFunc = f; sh.sRef = ref; sh.sMaskR = mr; }
+			GLenum o0 = stencilOp(rs[53]), o1 = stencilOp(rs[54]), o2 = stencilOp(rs[55]);
+			if (sh.sOp[0] != o0 || sh.sOp[1] != o1 || sh.sOp[2] != o2) { glStencilOp(o0, o1, o2); sh.sOp[0] = o0; sh.sOp[1] = o1; sh.sOp[2] = o2; }
+			if (sh.sMaskW != mw) { glStencilMask(mw); sh.sMaskW = mw; }
+		}
 	}
-	else glDisable(GL_STENCIL_TEST);
-	float bias, slope;
-	memcpy(&bias, &rs[195], 4);
-	memcpy(&slope, &rs[175], 4);
-	if (bias != 0.f || slope != 0.f) { glEnable(GL_POLYGON_OFFSET_FILL); glPolygonOffset(slope, bias * 16777216.f); }
-	else glDisable(GL_POLYGON_OFFSET_FILL);
-	uint32_t vx = dev.vp[0], vy = dev.vp[1], vw = dev.vp[2], vh = dev.vp[3];
-	if (!vw || !vh) { vx = vy = 0; vw = tw; vh = th; }
-	glViewport(vx, vy, vw, vh);
-	glDepthRangef(dev.vpZ[0], dev.vpZ[1]);
-	if (rs[174] && dev.scissor[2] > dev.scissor[0])
 	{
-		glEnable(GL_SCISSOR_TEST);
-		glScissor(dev.scissor[0], dev.scissor[1], dev.scissor[2] - dev.scissor[0], dev.scissor[3] - dev.scissor[1]);
+		float bias, slope;
+		memcpy(&bias, &rs[195], 4);
+		memcpy(&slope, &rs[175], 4);
+		int on = bias != 0.f || slope != 0.f ? 1 : 0;
+		onOff(sh.polyOff, on, GL_POLYGON_OFFSET_FILL);
+		if (on && (memcmp(&sh.pSlope, &slope, 4) || memcmp(&sh.pBias, &bias, 4))) { glPolygonOffset(slope, bias * 16777216.f); sh.pSlope = slope; sh.pBias = bias; }
 	}
-	else glDisable(GL_SCISSOR_TEST);
+	{
+		uint32_t vx = dev.vp[0], vy = dev.vp[1], vw = dev.vp[2], vh = dev.vp[3];
+		if (!vw || !vh) { vx = vy = 0; vw = tw; vh = th; }
+		if (sh.vp[0] != vx || sh.vp[1] != vy || sh.vp[2] != vw || sh.vp[3] != vh) { glViewport(vx, vy, vw, vh); sh.vp[0] = vx; sh.vp[1] = vy; sh.vp[2] = vw; sh.vp[3] = vh; }
+		if (memcmp(sh.dr, dev.vpZ, 8)) { glDepthRangef(dev.vpZ[0], dev.vpZ[1]); memcpy(sh.dr, dev.vpZ, 8); }
+	}
+	{
+		int on = rs[174] && dev.scissor[2] > dev.scissor[0] ? 1 : 0;
+		onOff(sh.scissorOn, on, GL_SCISSOR_TEST);
+		if (on && memcmp(sh.sc, dev.scissor, 16))
+		{
+			glScissor(dev.scissor[0], dev.scissor[1], dev.scissor[2] - dev.scissor[0], dev.scissor[3] - dev.scissor[1]);
+			memcpy(sh.sc, dev.scissor, 16);
+		}
+	}
 }
 
 GLuint dummyTex(GLenum target)
@@ -1538,6 +1566,7 @@ static void setAttrib(int loc, GLuint buf, GLint size, GLenum type, bool norm, G
 	}
 	if (a.div != div) { glVertexAttribDivisor(loc, div); a.div = div; }
 }
+static inline bool L3ok(int loc) { return loc >= 0 && loc < 16; }
 static void disableAttribsExcept(uint32_t enabled)
 {
 	if (gAttrDirty) { gAttrValid = false; gAttrDirty = false; }
@@ -2657,7 +2686,16 @@ static void drawImpl(const DrawCall& dc)
 					for (int j = 0; j < 3; j++) { (::glVertexAttribDivisor)(L[j], 0); (::glDisableVertexAttribArray)(L[j]); }
 					delete d;
 				});
-				gArrBuf = ~0u; gAttrDirty = true;   // array buffer binding and those attributes changed on the render thread
+				// the array buffer binding and those three attributes changed on the render thread (the others did not:
+				// forgetting all of them here made the next draw re-enable and re-point every attribute)
+				gArrBuf = ~0u;
+				if (gAttrValid && !gAttrDirty)
+				{
+					for (int j = 0; j < 3; j++)
+						if (L3ok(il[j])) gAttr[il[j]] = AttrState{~0u, 0, 0, 0, -1, ~(uintptr_t)0, ~0u, -1};
+						else gAttrDirty = true;
+				}
+				else gAttrDirty = true;
 				batchOpen(dc, instReg, d);
 			}
 			else if (instanced) glDrawElementsInstanced(mode, nv, wide ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT, (const void*)(uintptr_t)(dc.startIndex * isz), (GLsizei)instCount);
