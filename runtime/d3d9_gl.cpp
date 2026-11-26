@@ -2705,6 +2705,11 @@ bool targetIsBack() { uint32_t w, h; targetSize(dev.rt0, w, h); return w == back
 }   // namespace glr
 }   // namespace d3d
 
+namespace d3d
+{
+bool rtIsBack(Obj* rt) { return glr::isBack(rt); }
+void rtTargetSize(Obj* rt, uint32_t& w, uint32_t& h) { glr::targetSize(rt, w, h); }
+}
 #else   // not Android: no renderer
 namespace d3d
 {

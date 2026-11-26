@@ -12,11 +12,12 @@
 using namespace rt;
 namespace d3d
 {
-namespace glr { bool isBack(Obj* rt); void targetSize(Obj* rt, uint32_t& w, uint32_t& h); }
+bool rtIsBack(Obj* rt);                                    // the renderer's (d3d9_gl.cpp)
+void rtTargetSize(Obj* rt, uint32_t& w, uint32_t& h);
 namespace ui
 {
-using glr::isBack;
-using glr::targetSize;
+static bool isBack(Obj* rt) { return rtIsBack(rt); }
+static void targetSize(Obj* rt, uint32_t& w, uint32_t& h) { rtTargetSize(rt, w, h); }
 // ---- interface scaling
 // The game lays its HUD out in back-buffer pixels at a size proportional to the screen, which is small on a phone. HUD
 // pieces are drawn by the interface shader (APT); every such draw that lies entirely in one corner zone of the screen
