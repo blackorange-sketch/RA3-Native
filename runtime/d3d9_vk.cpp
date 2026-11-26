@@ -77,7 +77,7 @@ struct Stats
 uint64_t nowNs() { return (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 struct CpuTimer { uint64_t t0 = nowNs(); ~CpuTimer() { gSt.cpuNs += nowNs() - t0; } };
 
-struct Push { float ui[4]; float hp[2]; int32_t bgra; uint32_t vsb; float at[4]; uint32_t psb; };
+struct Push { float ui[4]; float hp[2]; int32_t bgra; uint32_t vsb; float at[4]; uint32_t psb; uint32_t pad[3]; float w[12]; };
 static_assert(sizeof(Push) == shdr::kVkPushSize, "push constant layout");
 
 // ---- images and buffers
@@ -720,12 +720,24 @@ VkShaderModule module(const std::string& src, bool vertex, uint64_t key)
 	gModules[key] = m;
 	return m;
 }
-VkShaderModule vsModule(ShaderObj* vs, uint32_t intMask, uint32_t uintMask)
+VkShaderModule vsModule(ShaderObj* vs, uint32_t intMask, uint32_t uintMask, int worldReg)
 {
-	uint64_t k = (vs->hash * 31 + 1) ^ ((uint64_t)intMask << 20) * 0x9e3779b97f4a7c15ull ^ ((uint64_t)uintMask << 40) * 0xc2b2ae3d27d4eb4full;
+	uint64_t k = (vs->hash * 31 + 1) ^ ((uint64_t)intMask << 20) * 0x9e3779b97f4a7c15ull ^ ((uint64_t)uintMask << 40) * 0xc2b2ae3d27d4eb4full ^ (uint64_t)(worldReg + 2) * 0xff51afd7ed558ccdull;
 	auto it = gModules.find(k);
 	if (it != gModules.end()) return it->second;
-	return module(shdr::composeVk(vs->info, nullptr, false, intMask, uintMask), true, k);
+	return module(shdr::composeVk(vs->info, nullptr, false, intMask, uintMask, worldReg), true, k);
+}
+// register of a vertex shader's World matrix (three rows, from its constant table), -1 none (as the OpenGL renderer)
+int worldRegOf(ShaderObj* vs)
+{
+	if (vs->info.worldReg == -2)
+	{
+		vs->info.worldReg = -1;
+		if (!vs->info.relC)
+			for (auto& c : vs->info.ctab)
+				if (c.regSet == 2 && c.name == "World" && c.regCount == 3) { vs->info.worldReg = (int)c.regIndex; break; }
+	}
+	return vs->info.worldReg;
 }
 bool gScaled = false;   // the GPU reads USCALED/SSCALED vertex formats
 struct PairKey { ShaderObj* ps; ShaderObj* vs; bool precise; bool operator==(const PairKey& o) const { return ps == o.ps && vs == o.vs && precise == o.precise; } };
@@ -1740,7 +1752,9 @@ void draw(const DrawCall& dc)
 		}
 	if (needZero) vl.bind[vl.nBind++] = {15, 0, VK_VERTEX_INPUT_RATE_VERTEX};
 
-	VkShaderModule vm = vsModule(vs, intMask, uintMask);
+	int wreg = worldRegOf(vs);
+	if (wreg >= 0 && wreg + 3 > std::min(vs->info.numC, 256)) wreg = -1;
+	VkShaderModule vm = vsModule(vs, intMask, uintMask, wreg);
 	if (!vm) SKIP();
 	// pipeline
 	const uint32_t* rs = dev.rs;
@@ -1857,7 +1871,14 @@ void draw(const DrawCall& dc)
 				memcpy(blk + cl.cOff, src, 16 * nreg);
 				for (auto& d : sh->info.defF) if (d.first >= 0 && (uint32_t)d.first < nreg) memcpy(blk + cl.cOff + 16 * d.first, d.second.data(), 16);
 			}
-			if (!stage && sh->info.relC) { if (!writeConsts(stage, blk, size, off[stage], chunk[stage])) SKIP(); }
+			if (!stage && wreg >= 0)
+			{
+				// the World rows travel in push constants: zero here, so draws of other objects share the block
+				memcpy(blk + cl.cOff, src, 16 * nreg);
+				memset(blk + cl.cOff + 16 * wreg, 0, 48);
+				if (!writeConsts(stage, blk, size, off[stage], chunk[stage])) SKIP();
+			}
+			else if (!stage && sh->info.relC) { if (!writeConsts(stage, blk, size, off[stage], chunk[stage])) SKIP(); }
 			else if (!writeConsts2(stage, (const uint8_t*)(stage ? dev.psI : dev.vsI), cl.ints ? 256 : 0, (const uint8_t*)src, 16 * nreg, off[stage], chunk[stage])) SKIP();
 			blkSize[stage] = cl.size;   // the shader's whole block (the range must cover what it declares)
 		}
@@ -1887,6 +1908,7 @@ void draw(const DrawCall& dc)
 		p.bgra = 0;
 		for (int i = 0; i < 16; i++) { if (dev.vsB[i]) p.vsb |= 1u << i; if (dev.psB[i]) p.psb |= 1u << i; }
 		p.at[0] = rs[15] ? (float)rs[25] : 0.f; p.at[1] = (rs[24] & 255) / 255.f;
+		if (wreg >= 0) memcpy(p.w, dev.vsF + 4 * wreg, 48);
 		if (!S.pushValid || memcmp(&p, &S.push, sizeof p)) { vkCmdPushConstants(C, gLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof p, &p); S.push = p; S.pushValid = true; }
 	}
 	PHASE(4);

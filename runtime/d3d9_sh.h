@@ -681,7 +681,9 @@ inline std::string compose(const ShaderInfo& si, const std::set<std::string>* vs
 //  * varyings: a fixed location per name (varyingLoc), so any vertex shader fits any pixel shader
 //  * clip space: Vulkan's y points down and its depth is 0..w like Direct3D: y negated, z unchanged (OpenGL renders
 //    with u_flip = -1 and z remapped to -w..w)
-enum { kVkPushUi = 0, kVkPushHp = 16, kVkPushBgra = 24, kVkPushVsB = 28, kVkPushAt = 32, kVkPushPsB = 48, kVkPushSize = 52 };
+//  * worldReg >= 0 (vertex shader): its World matrix (three registers) comes from push constants u_w0..2 instead of
+//    the constant buffer, so draws that differ only in their World matrix share one constant block
+enum { kVkPushUi = 0, kVkPushHp = 16, kVkPushBgra = 24, kVkPushVsB = 28, kVkPushAt = 32, kVkPushPsB = 48, kVkPushWorld = 64, kVkPushSize = 112 };
 
 inline int varyingLoc(const std::string& n)
 {
@@ -713,12 +715,12 @@ enum { kVkConstRange = 256 + 256 * 16 };   // the largest block (descriptor rang
 
 // intMask / uintMask (vertex shader): attribute locations fed with signed / unsigned integer formats - GPUs without
 // the "scaled" vertex formats (Adreno) read SHORT2/SHORT4/UBYTE4 as integers, converted to float here
-inline std::string composeVk(const ShaderInfo& si, const std::set<std::string>* vsOuts = nullptr, bool precise = false, uint32_t intMask = 0, uint32_t uintMask = 0)
+inline std::string composeVk(const ShaderInfo& si, const std::set<std::string>* vsOuts = nullptr, bool precise = false, uint32_t intMask = 0, uint32_t uintMask = 0, int worldReg = -1)
 {
 	bool fast = !si.isVs && ::rt::config.fastShaders && !precise;
 	const char* st = si.isVs ? "v" : "p";
 	std::string s = std::string("#version 450\nprecision ") + (fast ? "mediump" : "highp") + " float;\nprecision highp int;\n";
-	s += "layout(push_constant, std430) uniform PushC { vec4 u_ui; vec2 u_hp; int u_bgra; uint u_vsb; vec4 u_at; uint u_psb; };\n";
+	s += "layout(push_constant, std430) uniform PushC { vec4 u_ui; vec2 u_hp; int u_bgra; uint u_vsb; vec4 u_at; uint u_psb; vec4 u_w0; vec4 u_w1; vec4 u_w2; };\n";
 	VkConstLayout cl = vkConstLayout(si);
 	if (cl.size)
 	{
@@ -763,7 +765,17 @@ inline std::string composeVk(const ShaderInfo& si, const std::set<std::string>* 
 	if (si.isVs)
 		for (auto& kv : si.inputs)
 			if (kv.second >= 0 && kv.second < 32 && ((intMask | uintMask) >> kv.second & 1)) s += "  " + kv.first + " = vec4(" + kv.first + "_int);\n";
-	s += si.body;
+	if (si.isVs && worldReg >= 0)
+	{
+		std::string b = si.body;
+		for (int j = 0; j < 3; j++)
+		{
+			std::string from = "vc[" + std::to_string(worldReg + j) + "]", to = "u_w" + std::to_string(j);
+			for (size_t at = b.find(from); at != std::string::npos; at = b.find(from, at + to.size())) b.replace(at, from.size(), to);
+		}
+		s += b;
+	}
+	else s += si.body;
 	if (si.isVs) s += "  gl_Position = vec4(oPos.x + u_hp.x * oPos.w, -(oPos.y - u_hp.y * oPos.w), oPos.z, oPos.w);\n  gl_PointSize = oPts.x;\n";
 	s += "}\n";
 	return s;
