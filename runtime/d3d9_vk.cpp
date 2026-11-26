@@ -1407,7 +1407,15 @@ void draw(const DrawCall& dc)
 	// CLOCKWISE the terrain and the water - single-sided surfaces - were culled away, the mirrored reflection kept them)
 	if (full) pSetFrontFace(C, VK_FRONT_FACE_COUNTER_CLOCKWISE);
 	{
+		// test switch /sdcard/ra3_vkcull: "none" draws both sides of every triangle, "flip" swaps the culled side
+		static const int cullTest = [] {
+			int m = 0; char b[16] = {0};
+			if (FILE* f = fopen("/sdcard/ra3_vkcull", "r")) { if (fgets(b, sizeof b, f)) m = strncmp(b, "none", 4) == 0 ? 1 : strncmp(b, "flip", 4) == 0 ? 2 : 0; fclose(f); log("vulkan: cull test mode %d (%s)", m, b); }
+			return m;
+		}();
 		uint32_t cull = rs[22] == 2 ? VK_CULL_MODE_FRONT_BIT : rs[22] == 3 ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;
+		if (cullTest == 1) cull = VK_CULL_MODE_NONE;
+		else if (cullTest == 2 && cull) cull ^= VK_CULL_MODE_FRONT_BIT | VK_CULL_MODE_BACK_BIT;
 		if (full || S.cull != cull) { pSetCullMode(C, cull); S.cull = cull; }
 		uint32_t tp = topo(dc.prim);
 		if (full || S.topo != tp) { pSetTopology(C, (VkPrimitiveTopology)tp); S.topo = tp; }
