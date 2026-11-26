@@ -1,3 +1,4 @@
+#include <atomic>
 #include <map>
 #include <mutex>
 
@@ -18,6 +19,11 @@ void watchLog(const char* what, uint32_t p, uint32_t sz)
 constexpr uint32_t Magic = 0xa110ca7e;
 std::mutex mu;
 uint32_t bump = HeapBase, committedTo = HeapBase, lastReq = 0;
+// The arena below 2 GB holds 1.5 GB. Large mods need more: on PC their players apply the "4 GB patch" (large address
+// aware), which lets the game's allocations go above 2 GB. The guest window has room for that, so the arena goes on
+// at 2 GB when the first part is full.
+uint32_t segEnd = HeapEnd;
+std::atomic<uint32_t> top1{HeapBase}, top2{Heap2Base};   // committed end of each part, for heapReadable
 uint64_t liveBytes = 0, freeBytes = 0;
 std::map<uint32_t, std::vector<uint32_t>> freeBySize;   // class size -> payload addresses
 
@@ -37,13 +43,19 @@ void commitTo(uint32_t end)
 {
 	if (end <= committedTo) return;
 	uint32_t newEnd = (end + 0xfffff) & ~0xfffffu;   // 1 MiB steps
-	if (newEnd > HeapEnd) fatal("guest heap exhausted (request %u bytes, live %llu MiB, free-listed %llu MiB)", lastReq, (unsigned long long)(liveBytes >> 20), (unsigned long long)(freeBytes >> 20));
+	if (newEnd > segEnd) fatal("guest heap exhausted (request %u bytes, live %llu MiB, free-listed %llu MiB)", lastReq, (unsigned long long)(liveBytes >> 20), (unsigned long long)(freeBytes >> 20));
 	if (!guest::commit(committedTo, newEnd - committedTo)) fatal("cannot commit guest heap");
 	committedTo = newEnd;
+	(segEnd == HeapEnd ? top1 : top2).store(newEnd, std::memory_order_release);
 }
 }
 
 void heapInit() {}
+bool heapReadable(uint32_t addr, uint32_t size)
+{
+	uint64_t e = (uint64_t)addr + size;
+	return (addr >= HeapBase && e <= top1.load(std::memory_order_acquire)) || (addr >= Heap2Base && e <= top2.load(std::memory_order_acquire));
+}
 uint64_t heapLiveBytes() { std::lock_guard<std::mutex> l(mu); return liveBytes; }
 
 uint32_t gmalloc(uint32_t size, uint32_t align)
@@ -58,6 +70,12 @@ uint32_t gmalloc(uint32_t size, uint32_t align)
 	else
 	{
 		block = (bump + 15) & ~15u;
+		if (segEnd == HeapEnd && (uint64_t)block + 16 + cls > HeapEnd)
+		{
+			log("guest heap: %llu MiB live, the arena below 2 GB is full - continuing above 2 GB (as with the 4 GB patch on PC)", (unsigned long long)(liveBytes >> 20));
+			segEnd = Heap2End; bump = committedTo = Heap2Base;
+			block = bump;
+		}
 		bump = block + 16 + cls;
 		commitTo(bump);
 		block += 16;

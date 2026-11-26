@@ -60,6 +60,7 @@ void ioStats(uint64_t& bytes, uint64_t& us, uint64_t& calls);   // cumulative Re
 
 // ---- guest memory layout
 constexpr uint32_t HeapBase = 0x01000000, HeapEnd = 0x60000000;      // malloc arena
+constexpr uint32_t Heap2Base = 0x80000000, Heap2End = 0xf0000000;    // its continuation above 2 GB (large mods)
 constexpr uint32_t VmBase = 0x60000000, VmEnd = 0x6f000000;           // VirtualAlloc
 constexpr uint32_t ThreadBase = 0x71000000, ThreadEnd = 0x7f000000;   // thread stacks and TEBs
 constexpr uint32_t StackSize = 0x400000;
@@ -72,6 +73,7 @@ void gfree(uint32_t p);
 uint32_t grealloc(uint32_t p, uint32_t size);
 uint32_t gsize(uint32_t p);
 uint32_t vmAlloc(uint32_t size);   // page granular, committed, zeroed
+bool heapReadable(uint32_t addr, uint32_t size);   // [addr, addr+size) lies in committed heap memory (any thread)
 
 // ---- strings
 std::string gstr(uint32_t a);                  // NUL-terminated byte string

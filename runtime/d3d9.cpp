@@ -180,7 +180,8 @@ Obj* objectAt(uint32_t addr)
 }
 Obj* objectAtSlow(uint32_t addr)
 {
-	if (addr >= objLo.load(std::memory_order_relaxed) && addr <= objHi.load(std::memory_order_relaxed))
+	// (with the arena in two parts, the range between objLo and objHi can contain unmapped memory)
+	if (addr >= objLo.load(std::memory_order_relaxed) && addr <= objHi.load(std::memory_order_relaxed) && rt::heapReadable(addr, 32))
 	{
 		if (guest::load<uint32_t>(addr + 24) == (addr ^ kObjMagic))
 		{
