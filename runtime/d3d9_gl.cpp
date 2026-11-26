@@ -2062,7 +2062,7 @@ static void drawImpl(const DrawCall& dc)
 			objTag(dev.rt0).c_str(), dev.ds ? objTag(dev.ds).c_str() : "-", dev.vp[0], dev.vp[1], dev.vp[2], dev.vp[3], dev.rs[174], dev.scissor[0], dev.scissor[1], dev.scissor[2], dev.scissor[3],
 			dev.rs[27], dev.rs[19], dev.rs[20], dev.rs[7], dev.rs[14], dev.rs[168], tx.c_str());
 		static std::set<std::pair<uint64_t, uint64_t>> srcSeen;
-		if (anyRt && srcSeen.size() < 24 && srcSeen.insert({vs->hash, ps->hash}).second)
+		if (anyRt && srcSeen.size() < 400 && srcSeen.insert({vs->hash, ps->hash}).second)
 		{
 			log("TR VS source:\n%s", shdr::compose(vs->info).c_str());
 			log("TR PS source:\n%s", shdr::compose(ps->info, &vs->info.outputs).c_str());
