@@ -91,3 +91,8 @@ stays at its 30 fps; the gain is heat, battery and headroom for weaker phones.
 - [ ] 5. Render passes
 - [ ] 6. Parity
 - [ ] 7. Speed and testing
+  - Battle on Adreno 740: GPU 32-33 ms per frame vs 16-17 ms with OpenGL; the gap is spread over all passes
+    (shadow map 2.4 vs 0.5 ms, depth prepass 2-3 vs 0.7 ms), so it looks like per-draw cost. Done: copies as draws
+    instead of vkCmdBlitImage, World matrix in push constants (fewer UBO bytes per draw).
+  - Performance overlay (launcher PERFORMANCE OVERLAY or /sdcard/ra3_overlay): frame time average / worst, GPU
+    time per frame, renderer CPU (Vulkan) under the FPS counter. Works with OpenGL too (timer queries).
