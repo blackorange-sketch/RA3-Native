@@ -132,7 +132,7 @@ void frameEnd(uint32_t lastInfo)
 		uint64_t ns = 0;
 		if (pGet64) pGet64(gPend[i].q, GL_QUERY_RESULT, &ns);
 		else { GLuint v = 0; glGetQueryObjectuiv(gPend[i].q, GL_QUERY_RESULT, &v); ns = v; }
-		if (disjoint) gDropped++;
+		if (disjoint || ns > 1000000000ull) gDropped++;   // a garbage result once in a while (20 million seconds)
 		else { auto& a = gAcc[gPend[i].key]; a.ns += ns; a.n++; gTotalNs += ns; }
 		if (!gSeq.empty() && gPend[i].frame != gSeqFrame) logSeq();
 		if (gPend[i].frame == gSeqFrame) gSeq.push_back({gPend[i].key, ns, gPend[i].info, gPend[i].id});
