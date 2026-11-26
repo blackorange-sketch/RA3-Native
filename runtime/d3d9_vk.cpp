@@ -1401,7 +1401,10 @@ void draw(const DrawCall& dc)
 		}
 		if (full || memcmp(&sc, &S.sc, sizeof sc)) { vkCmdSetScissor(C, 0, 1, &sc); S.sc = sc; }
 	}
-	if (full) pSetFrontFace(C, VK_FRONT_FACE_CLOCKWISE);   // Direct3D's front faces are clockwise on screen, as in this frame
+	// Direct3D's front faces are clockwise on screen. The frame is laid out as on screen (row 0 at the top), and Vulkan
+	// counts the winding with y pointing down: on-screen clockwise is its "counter-clockwise" (frame dump: with
+	// CLOCKWISE the terrain and the water - single-sided surfaces - were culled away, the mirrored reflection kept them)
+	if (full) pSetFrontFace(C, VK_FRONT_FACE_COUNTER_CLOCKWISE);
 	{
 		uint32_t cull = rs[22] == 2 ? VK_CULL_MODE_FRONT_BIT : rs[22] == 3 ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;
 		if (full || S.cull != cull) { pSetCullMode(C, cull); S.cull = cull; }
