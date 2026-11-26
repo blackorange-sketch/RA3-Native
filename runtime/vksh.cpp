@@ -107,38 +107,39 @@ std::unordered_set<uint64_t> seen;
 bool started = false;
 std::atomic<uint32_t> nShaders{0}, nTransFail{0};
 
+void logStats(uint32_t n)
+{
+	uint32_t c = nCompiled;
+	log("vulkan: shaders %u: %u compiled (%.1f ms each), %u from the disk cache, %u failed, %u not translated", n, c,
+		c ? usCompile.load() / 1000.0 / c : 0.0, nCached.load(), nFailed.load(), nTransFail.load());
+}
+
 void worker()
 {
+	uint32_t logged = 0;
 	for (;;)
 	{
 		std::vector<uint8_t> bc;
 		{
 			std::unique_lock<std::mutex> l(qmu);
-			qcv.wait(l, [] { return !queue.empty(); });
+			// a summary once the queue has been empty for a second (loading done), not after every shader
+			if (!qcv.wait_for(l, std::chrono::seconds(1), [] { return !queue.empty(); }))
+			{
+				uint32_t n = nShaders;
+				if (n != logged) { logged = n; l.unlock(); logStats(n); }
+				continue;
+			}
 			bc = std::move(queue.front());
 			queue.pop_front();
 		}
 		d3d::ShaderInfo si;
-		if (!d3d::shdr::translate(bc.data(), bc.size(), si)) { nTransFail++; continue; }
+		if (!d3d::shdr::translate(bc.data(), bc.size(), si)) { nTransFail++; nShaders++; continue; }
 		std::string src = d3d::shdr::composeVk(si);   // a pixel shader on its own: every input declared
 		std::vector<uint32_t> spv;
 		std::string err;
 		if (!compile(src, si.isVs, spv, err) && nFailed <= 5)
 			log("vulkan: shader does not compile: %s\n%s", err.c_str(), src.c_str());
-		uint32_t n = ++nShaders;
-		bool idle;
-		{ std::lock_guard<std::mutex> l(qmu); idle = queue.empty(); }
-		if (n % 200 == 0 || idle)
-		{
-			static uint32_t lastLogged = 0;
-			if (n != lastLogged && (idle || n - lastLogged >= 200))
-			{
-				lastLogged = n;
-				uint32_t c = nCompiled;
-				log("vulkan: shaders %u: %u compiled (%.1f ms each), %u from the disk cache, %u failed, %u not translated", n, c,
-					c ? usCompile.load() / 1000.0 / c : 0.0, nCached.load(), nFailed.load(), nTransFail.load());
-			}
-		}
+		nShaders++;
 	}
 }
 }
