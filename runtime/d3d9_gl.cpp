@@ -33,6 +33,7 @@
 
 #include "gfx.h"
 #include "glrec.h"
+#include "gputime.h"
 namespace rt { extern bool gFps60; uint64_t limiterCpuUs(); }
 namespace d3d { std::atomic<int> gViewProjReg{-1}; }   // vertex shader register of the camera matrix (the engine sets it; found in d3d9_fx)
 
@@ -527,6 +528,20 @@ GLuint ensureBuffer(Obj* o, GLenum target)
 // render targets
 bool isBack(Obj* rt) { return !rt || rt == gBackBuffer; }
 
+// GPU time per render pass (with /sdcard/ra3_prof): a new interval starts on the render thread
+static void gpuMark(int kind, uint32_t w, uint32_t h, uint32_t fmt)
+{
+	if (!gputime::on()) return;
+	uint64_t k = gputime::key(kind, w, h, fmt);
+	if (rec::active()) rec::q([k] { gputime::mark(k); }); else gputime::mark(k);
+}
+// Tiled GPUs (Adreno, Mali) keep a render pass in on-chip memory and write it out when it ends, and read the old
+// contents back in when a target is bound again without a full clear. The back buffer's depth/stencil is not
+// needed after the frame when the game clears it before anything else every frame: then it is discarded at
+// present instead of being written out (~10 MB a frame at 1080p).
+static bool gBackUsed = false, gBackClearedFirst = false;
+static int gBackClearStreak = 0;
+
 void targetSize(Obj* rt, uint32_t& w, uint32_t& h)
 {
 	if (isBack(rt)) { w = backW; h = backH; return; }
@@ -567,7 +582,8 @@ void bindTargets()
 	static Obj* lastRt = nullptr; static Obj* lastDs = nullptr; static GLuint lastTex = 0, lastDt = 0; static uint32_t lastLvl = ~0u;
 	if (isBack(rt))
 	{
-		if (gFboDirty || lastRt != rt) { glBindFramebuffer(GL_FRAMEBUFFER, gBackFbo); lastRt = rt; gFboDirty = false; }
+		gBackUsed = true;
+		if (gFboDirty || lastRt != rt) { glBindFramebuffer(GL_FRAMEBUFFER, gBackFbo); lastRt = rt; gFboDirty = false; gpuMark(0, backW, backH, 0); }
 		return;
 	}
 	GLuint tex = ensureTexture(rt);
@@ -584,6 +600,7 @@ void bindTargets()
 		uint32_t lvl0 = rt->iface == ISurface ? rt->level : 0;
 		if (!gFboDirty && lastRt == rt && lastDs == ds0 && lastTex == tex && lastDt == dt0 && lastLvl == lvl0) return;
 		lastRt = rt; lastDs = ds0; lastTex = tex; lastDt = dt0; lastLvl = lvl0; gFboDirty = false;
+		if (gputime::on()) { uint32_t w, h; targetSize(rt, w, h); gpuMark(1, w, h, texOwner(rt)->fmt); }
 	}
 	glBindFramebuffer(GL_FRAMEBUFFER, gDrawFbo);
 	uint32_t lvl = rt->iface == ISurface ? rt->level : 0;
@@ -1280,6 +1297,7 @@ static std::string objTag(Obj* o)
 void clear(uint32_t count, uint32_t rects, uint32_t flags, uint32_t color, float z, uint32_t stencil)
 {
 	if (!ensureGl()) return;
+	bool firstUse = isBack(dev.rt0) && !gBackUsed;
 	bindTargets();
 	uint32_t tw, th;
 	targetSize(dev.rt0, tw, th);
@@ -1292,6 +1310,7 @@ void clear(uint32_t count, uint32_t rects, uint32_t flags, uint32_t color, float
 	if ((flags & 4) && hasDepth) { glStencilMask(0xff); glClearStencil((GLint)stencil); m |= GL_STENCIL_BUFFER_BIT; }
 	if (traceFrame()) log("TR clear rt %s flags %x color %08x z %g rects %u", objTag(dev.rt0).c_str(), flags, color, (double)z, count);
 	if (!m) return;
+	if (firstUse && !(count && rects) && (m & GL_DEPTH_BUFFER_BIT) && (m & GL_STENCIL_BUFFER_BIT)) gBackClearedFirst = true;
 	if (count && rects)
 	{
 		glEnable(GL_SCISSOR_TEST);
@@ -2645,8 +2664,26 @@ static void presentImpl()
 	if (!ensureGl()) { std::this_thread::sleep_for(std::chrono::milliseconds(16)); return; }
 	if (rec::active()) rec::q([] { gfx::beginFrame(); }); else gfx::beginFrame();
 	resizeBackBufferImpl();
+	{
+		gBackClearStreak = gBackClearedFirst ? gBackClearStreak + 1 : 0;
+		gBackClearedFirst = false; gBackUsed = false;
+		static bool logged = false;
+		if (gBackClearStreak == 30 && !logged) { logged = true; log("GL: back buffer depth/stencil discarded after each frame (the game clears it first)"); }
+		if (gBackClearStreak >= 30)
+		{
+			glBindFramebuffer(GL_FRAMEBUFFER, gBackFbo);
+			auto inv = [] { const GLenum a[] = {GL_DEPTH_STENCIL_ATTACHMENT}; ::glInvalidateFramebuffer(GL_FRAMEBUFFER, 1, a); };
+			if (rec::active()) rec::q(inv); else inv();
+		}
+	}
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+	{
+		// the window's own depth/stencil is never used: not read in, not written out
+		auto inv = [] { const GLenum a[] = {GL_DEPTH, GL_STENCIL}; ::glInvalidateFramebuffer(GL_FRAMEBUFFER, 2, a); };
+		if (rec::active()) rec::q(inv); else inv();
+	}
 	int sw = gfx::width(), sh = gfx::height();
+	gpuMark(2, (uint32_t)sw, (uint32_t)sh, 0);
 	invalidateGlState();
 	glDisable(GL_SCISSOR_TEST); glDisable(GL_DEPTH_TEST); glDisable(GL_BLEND); glDisable(GL_CULL_FACE); glDisable(GL_STENCIL_TEST);
 	glColorMask(1, 1, 1, 1);
@@ -2779,7 +2816,7 @@ static void presentImpl()
 	}
 	if (rec::active())
 	{
-		rec::q([] { uint64_t ts = nowUs(); gfx::swap(); gTSwap += nowUs() - ts; });
+		rec::q([] { const GLenum a[] = {GL_DEPTH, GL_STENCIL}; ::glInvalidateFramebuffer(GL_FRAMEBUFFER, 2, a); gputime::frameEnd(); uint64_t ts = nowUs(); gfx::swap(); gTSwap += nowUs() - ts; });
 		uint64_t tw0 = nowUs();
 		rec::endFrame();   // keeps at most one frame queued behind the one on the GPU thread
 		gTWaitRender += nowUs() - tw0;
@@ -2791,7 +2828,7 @@ static void presentImpl()
 			lastT = t; lastLim = lim;
 		}
 	}
-	else { uint64_t ts = nowUs(); gfx::swap(); gTSwap += nowUs() - ts; }
+	else { const GLenum a[] = {GL_DEPTH, GL_STENCIL}; ::glInvalidateFramebuffer(GL_FRAMEBUFFER, 2, a); gputime::frameEnd(); uint64_t ts = nowUs(); gfx::swap(); gTSwap += nowUs() - ts; }
 	glErr("present");
 	gFrameNo++;
 	if (gFrameNo == 1)

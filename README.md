@@ -177,7 +177,7 @@ Empty files with these names in `/sdcard` change the runtime's behaviour:
 | `ra3_st` | Render on the game thread instead of the render thread |
 | `ra3_nocache` | Re-send all graphics state for every draw (rules out state-cache bugs) |
 | `ra3_verbose` | Much more detailed log |
-| `ra3_prof` | CPU sampling profiler, report in the log every 30 s |
+| `ra3_prof` | CPU sampling profiler and GPU time per render pass, report in the log every 30 s |
 | `ra3_fxstat` | Per-effect draw statistics |
 | `ra3_frame` | Full trace of two frames (and render-target dumps into `/sdcard/ra3_dump/` if that folder exists) |
 | `ra3_fps60` | Experimental 60 fps cap (effects and game speed are still wrong) |

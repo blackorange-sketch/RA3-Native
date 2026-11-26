@@ -515,12 +515,22 @@ H("IDirect3DDevice9::CreateIndexBuffer")
 H("IDirect3DDevice9::CreateRenderTarget") { Obj* sf = makeSurface(ARG(1), ARG(2), ARG(3), 1, 0); sf->rtTex = true; writeOut(ARG(7), sf); SET(0); } END;
 H("IDirect3DDevice9::CreateDepthStencilSurface") { Obj* sf = makeSurface(ARG(1), ARG(2), ARG(3), 2, 0); sf->rtTex = true; writeOut(ARG(7), sf); SET(0); } END;
 H("IDirect3DDevice9::CreateOffscreenPlainSurface") { writeOut(ARG(5), makeSurface(ARG(1), ARG(2), ARG(3), 0, ARG(4))); SET(0); } END;
+// A declaration is immutable, and the game makes the same few again and again (~120 a second in a battle, each
+// released right after use): one object per distinct layout.
 H("IDirect3DDevice9::CreateVertexDeclaration")
 {
-	Obj* d = newObj(IVDecl);
 	uint32_t p = ARG(1), n = 0;
 	while (guest::load<uint16_t>(p + 8 * n) != 0xff) n++;   // D3DDECL_END: Stream == 0xFF
-	d->blob.assign(guest::host(p), guest::host(p) + 8 * (n + 1));
+	std::string blob((const char*)guest::host(p), 8 * (n + 1));
+	static std::mutex mu;
+	static std::unordered_map<std::string, Obj*> made;
+	Obj* d;
+	{
+		std::lock_guard<std::mutex> l(mu);
+		Obj*& e = made[blob];
+		if (e) { d = e; d->ref = std::max(d->ref, 0) + 1; }
+		else { d = e = newObj(IVDecl); d->blob.assign(blob.begin(), blob.end()); }
+	}
 	writeOut(ARG(2), d);
 	SET(0);
 } END;
