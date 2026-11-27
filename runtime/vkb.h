@@ -28,7 +28,10 @@ struct Handles
 	bool bc = false, aniso = false; float maxAniso = 1.f, timestampPeriod = 0.f;   // ns per timestamp tick (0: none)
 };
 const Handles& handles();
-bool rebuildPending();   // the swapchain is rebuilt at the next acquire
+bool rebuildPending();
+// pre-rotation of the swapchain images: 0, 1 (90 degrees: image x = height-1-y, image y = x of the landscape
+// picture), 3 (270); acquire's ext stays the landscape size, the images are ext turned
+int rotation();   // the swapchain is rebuilt at the next acquire
 std::recursive_mutex& lock();   // held around queue use
 // the next swapchain image (signals `signal` when it may be written); false: none (window gone, swapchain rebuilt)
 bool acquire(VkSemaphore signal, uint32_t& idx, VkImage& img, VkExtent2D& ext, VkFormat& fmt, uint32_t& generation);

@@ -1440,7 +1440,10 @@ VkPipeline blitPipeline(VkFormat fmt)
 		}
 	}
 	const char* vs = "#version 450\nlayout(push_constant) uniform P { vec4 r; vec4 l; };\nlayout(location = 0) out vec2 uv;\n"
-		"void main() { vec2 p = vec2(float((gl_VertexIndex << 1) & 2), float(gl_VertexIndex & 2)); uv = mix(r.xy, r.zw, p); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }\n";
+		"void main() { vec2 p = vec2(float((gl_VertexIndex << 1) & 2), float(gl_VertexIndex & 2)); uv = mix(r.xy, r.zw, p); vec2 q = p * 2.0 - 1.0;\n"
+		// l.y: pre-rotation of the screen image (1: 90 degrees, 3: 270), the clip position turned (Android guide)
+		"  if (l.y > 0.5 && l.y < 1.5) q = vec2(-q.y, q.x); else if (l.y > 2.5) q = vec2(q.y, -q.x);\n"
+		"  gl_Position = vec4(q, 0.0, 1.0); }\n";
 	const char* fs = "#version 450\nlayout(push_constant) uniform P { vec4 r; vec4 l; };\nlayout(set = 0, binding = 0) uniform sampler2D s;\n"
 		"layout(location = 0) in vec2 uv;\nlayout(location = 0) out vec4 o;\nvoid main() { o = textureLod(s, uv, l.x); }\n";
 	VkShaderModule v = module(vs, true, 0x626c697476ull), f = module(fs, false, 0x626c697466ull);
@@ -1477,7 +1480,7 @@ VkPipeline blitPipeline(VkFormat fmt)
 	return p;
 }
 // inside an open pass whose colour format is dstFmt: `uv` (u0, v0, u1, v1, normalised) of src drawn into the viewport
-bool blitInPass(VTex* src, const float uv[4], float lod, bool linear, const VkViewport& vp, const VkRect2D& sc, VkFormat dstFmt)
+bool blitInPass(VTex* src, const float uv[4], float lod, bool linear, const VkViewport& vp, const VkRect2D& sc, VkFormat dstFmt, int rot = 0)
 {
 	VkPipeline p = blitPipeline(dstFmt);
 	if (!p) return false;
@@ -1489,7 +1492,7 @@ bool blitInPass(VTex* src, const float uv[4], float lod, bool linear, const VkVi
 	vkUpdateDescriptorSets(D, 1, &w, 0, nullptr);
 	vkCmdBindPipeline(C, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
 	vkCmdBindDescriptorSets(C, VK_PIPELINE_BIND_POINT_GRAPHICS, gBlitLayout, 0, 1, &set, 0, nullptr);
-	float pc[8] = {uv[0], uv[1], uv[2], uv[3], lod, 0.f, 0.f, 0.f};
+	float pc[8] = {uv[0], uv[1], uv[2], uv[3], lod, (float)rot, 0.f, 0.f};
 	vkCmdPushConstants(C, gBlitLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32, pc);
 	vkCmdSetViewport(C, 0, 1, &vp);
 	vkCmdSetScissor(C, 0, 1, &sc);
@@ -2638,6 +2641,19 @@ bool present(int sw, int sh)
 	uint32_t gen = 0;
 	if (vkb::rebuildPending()) cq::waitIdle();   // the old swapchain's images may still be in queued commands
 	bool have = vkb::acquire(F->acq, idx, img, ext, fmt, gen);
+	// pre-rotation: the screen image is the landscape picture turned; rectangles move by the Android guide's table
+	const int rot = have ? vkb::rotation() : 0;
+	const VkExtent2D pext = rot ? VkExtent2D{ext.height, ext.width} : ext;
+	auto rotRect = [&](VkRect2D r) -> VkRect2D {
+		if (rot == 1) return {{(int32_t)pext.width - (int32_t)r.extent.height - r.offset.y, r.offset.x}, {r.extent.height, r.extent.width}};
+		if (rot == 3) return {{r.offset.y, (int32_t)pext.height - (int32_t)r.extent.width - r.offset.x}, {r.extent.height, r.extent.width}};
+		return r;
+	};
+	auto rotVp = [&](VkViewport v) -> VkViewport {
+		if (rot == 1) return {(float)pext.width - v.height - v.y, v.x, v.height, v.width, v.minDepth, v.maxDepth};
+		if (rot == 3) return {v.y, (float)pext.height - v.width - v.x, v.height, v.width, v.minDepth, v.maxDepth};
+		return v;
+	};
 	static uint32_t lastGen = 0;
 	if (have && gen != lastGen)
 	{
@@ -2709,13 +2725,13 @@ bool present(int sw, int sh)
 		ca.imageView = view; ca.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; ca.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; ca.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 		ca.clearValue.color = {{0.f, 0.f, 0.f, 1.f}};
 		VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
-		ri.renderArea = {{0, 0}, ext}; ri.layerCount = 1; ri.colorAttachmentCount = 1; ri.pColorAttachments = &ca;
+		ri.renderArea = {{0, 0}, pext}; ri.layerCount = 1; ri.colorAttachmentCount = 1; ri.pColorAttachments = &ca;
 		pBeginRendering(C, &ri);
 		{
 			const float full[4] = {0.f, 0.f, 1.f, 1.f};
 			VkViewport v{(float)vx, (float)vy, (float)vw, (float)vh, 0.f, 1.f};
 			VkRect2D sc{{std::max(0, vx), std::max(0, vy)}, {(uint32_t)std::min(vw, sw - std::max(0, vx)), (uint32_t)std::min(vh, sh - std::max(0, vy))}};
-			blitInPass(readOf(gBack), full, 0.f, true, v, sc, fmt);
+			blitInPass(readOf(gBack), full, 0.f, true, rotVp(v), rotRect(sc), fmt, rot);
 		}
 		if (blurSrc)
 		{
@@ -2727,7 +2743,7 @@ bool present(int sw, int sh)
 				float uv[4] = {u0 + fz * x0 / sw, v0, u0 + fz * x1 / sw, v0 + vspan};
 				VkViewport v{(float)x0, 0.f, (float)(x1 - x0), (float)sh, 0.f, 1.f};
 				VkRect2D sc{{x0, 0}, {(uint32_t)(x1 - x0), (uint32_t)sh}};
-				blitInPass(blurSrc, uv, 0.f, true, v, sc, fmt);
+				blitInPass(blurSrc, uv, 0.f, true, rotVp(v), rotRect(sc), fmt, rot);
 			};
 			bar(0, cx); bar(cx + cw, sw);
 		}
@@ -2736,7 +2752,7 @@ bool present(int sw, int sh)
 			// black bars over the parts of the picture beyond the 16:9 stage
 			VkClearAttachment a{VK_IMAGE_ASPECT_COLOR_BIT, 0, {}};
 			a.clearValue.color = {{0.f, 0.f, 0.f, 1.f}};
-			VkClearRect cr[2] = {{{{0, 0}, {(uint32_t)std::max(1, cx), (uint32_t)sh}}, 0, 1}, {{{std::min(cx + cw, sw - 1), 0}, {(uint32_t)std::max(1, sw - cx - cw), (uint32_t)sh}}, 0, 1}};
+			VkClearRect cr[2] = {{rotRect({{0, 0}, {(uint32_t)std::max(1, cx), (uint32_t)sh}}), 0, 1}, {rotRect({{std::min(cx + cw, sw - 1), 0}, {(uint32_t)std::max(1, sw - cx - cw), (uint32_t)sh}}), 0, 1}};
 			vkCmdClearAttachments(C, 1, &a, 2, cr);
 		}
 		if (gRectPipe)
@@ -2746,13 +2762,16 @@ bool present(int sw, int sh)
 			if (!rects.empty())
 			{
 				vkCmdBindPipeline(C, VK_PIPELINE_BIND_POINT_GRAPHICS, gRectPipe);
-				VkViewport v{0.f, 0.f, (float)sw, (float)sh, 0.f, 1.f};
-				VkRect2D sc{{0, 0}, ext};
+				VkViewport v{0.f, 0.f, (float)pext.width, (float)pext.height, 0.f, 1.f};
+				VkRect2D sc{{0, 0}, pext};
 				vkCmdSetViewport(C, 0, 1, &v); vkCmdSetScissor(C, 0, 1, &sc);
 				for (const HudRect& q : rects)
 				{
 					// Vulkan clip space: y down
 					float pc[8] = {2.f * q.x / sw - 1.f, 2.f * q.y / sh - 1.f, 2.f * (q.x + q.w) / sw - 1.f, 2.f * (q.y + q.h) / sh - 1.f, q.r, q.g, q.b, q.a};
+					// turned with the screen image: clip (x, y) -> (-y, x) for 90 degrees, (y, -x) for 270
+					if (rot == 1) { float x0 = pc[0], y0 = pc[1], x1 = pc[2], y1 = pc[3]; pc[0] = -y1; pc[1] = x0; pc[2] = -y0; pc[3] = x1; }
+					else if (rot == 3) { float x0 = pc[0], y0 = pc[1], x1 = pc[2], y1 = pc[3]; pc[0] = y0; pc[1] = -x1; pc[2] = y1; pc[3] = -x0; }
 					vkCmdPushConstants(C, gRectLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32, pc);
 					vkCmdDraw(C, 4, 1, 0, 0);
 				}

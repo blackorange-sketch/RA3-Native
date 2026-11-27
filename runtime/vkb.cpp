@@ -29,7 +29,10 @@ VkQueue queue = VK_NULL_HANDLE;
 VkSurfaceKHR surf = VK_NULL_HANDLE;
 VkSwapchainKHR swap = VK_NULL_HANDLE;
 VkFormat fmt = VK_FORMAT_UNDEFINED;
-VkExtent2D ext{0, 0};
+VkExtent2D ext{0, 0};    // the picture's size, landscape (what the renderer draws)
+VkExtent2D pext{0, 0};   // the images' size: ext, or turned to the display's natural orientation (rot)
+int rot = 0;             // pre-rotation: 0, 1 (90 degrees), 3 (270): the picture is drawn turned so the compositor need not turn it
+VkSurfaceTransformFlagBitsKHR xform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
 VkRenderPass rpass = VK_NULL_HANDLE;
 std::vector<VkImage> images;
 std::vector<VkImageView> views;
@@ -165,16 +168,31 @@ bool makeSwapchain()
 		ext = caps.currentExtent;
 	ext.width = std::max(caps.minImageExtent.width, std::min(caps.maxImageExtent.width, ext.width));
 	ext.height = std::max(caps.minImageExtent.height, std::min(caps.maxImageExtent.height, ext.height));
+	// Pre-rotation (developer.android.com/games/optimize/vulkan-prerotation): on a phone held in landscape the surface
+	// is turned (currentTransform 90/270); an IDENTITY swapchain makes the compositor turn every frame on the GPU,
+	// pre-empting the game. The images take the display's natural orientation and the renderer draws turned.
+	// /sdcard/ra3_noprerot: off.
+	static const bool noPre = access("/sdcard/ra3_noprerot", F_OK) == 0;
+	rot = 0; pext = ext;
+	xform = (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR : caps.currentTransform;
+	if (!noPre && (caps.currentTransform == VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR || caps.currentTransform == VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR)
+		&& (caps.supportedTransforms & caps.currentTransform))
+	{
+		xform = caps.currentTransform;
+		rot = xform == VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR ? 1 : 3;
+		pext = {std::max(caps.minImageExtent.width, std::min(caps.maxImageExtent.width, ext.height)), std::max(caps.minImageExtent.height, std::min(caps.maxImageExtent.height, ext.width))};
+		ext = {pext.height, pext.width};
+	}
 	uint32_t count = std::max(caps.minImageCount, 3u);
 	if (caps.maxImageCount) count = std::min(count, caps.maxImageCount);
 	VkCompositeAlphaFlagBitsKHR ca = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
 	if (!(caps.supportedCompositeAlpha & ca)) ca = VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;
 	VkSwapchainCreateInfoKHR sci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
 	sci.surface = surf; sci.minImageCount = count; sci.imageFormat = sf.format; sci.imageColorSpace = sf.colorSpace;
-	sci.imageExtent = ext; sci.imageArrayLayers = 1;
+	sci.imageExtent = pext; sci.imageArrayLayers = 1;
 	sci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 	sci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-	sci.preTransform = (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR : caps.currentTransform;
+	sci.preTransform = xform;
 	sci.compositeAlpha = ca; sci.presentMode = VK_PRESENT_MODE_FIFO_KHR; sci.clipped = VK_TRUE;
 	if (!check(vkCreateSwapchainKHR(dev, &sci, nullptr, &swap), "vkCreateSwapchainKHR")) return false;
 	uint32_t ni = 0;
@@ -199,15 +217,24 @@ bool makeSwapchain()
 		vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 		VkImageView v; vkCreateImageView(dev, &vci, nullptr, &v); views.push_back(v);
 		VkFramebufferCreateInfo fci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
-		fci.renderPass = rpass; fci.attachmentCount = 1; fci.pAttachments = &v; fci.width = ext.width; fci.height = ext.height; fci.layers = 1;
+		fci.renderPass = rpass; fci.attachmentCount = 1; fci.pAttachments = &v; fci.width = pext.width; fci.height = pext.height; fci.layers = 1;
 		VkFramebuffer fb; vkCreateFramebuffer(dev, &fci, nullptr, &fb); fbs.push_back(fb);
 		VkSemaphoreCreateInfo sci2{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
 		VkSemaphore sm; vkCreateSemaphore(dev, &sci2, nullptr, &sm); semDone.push_back(sm);
 	}
-	log("vulkan: swapchain %ux%u, %u images, format %d, transform %u (surface %u)", ext.width, ext.height, ni, (int)fmt, (unsigned)sci.preTransform, (unsigned)caps.currentTransform);
+	log("vulkan: swapchain %ux%u, %u images, format %d, transform %u (surface %u)%s", pext.width, pext.height, ni, (int)fmt, (unsigned)sci.preTransform, (unsigned)caps.currentTransform,
+		rot ? ", the picture drawn turned (pre-rotation)" : (noPre ? ", the compositor turns it (ra3_noprerot)" : ""));
 	dirty = false;
 	gen++;
 	return true;
+}
+
+// a rectangle of the landscape picture on the (possibly turned) image (the table of the Android pre-rotation guide)
+VkRect2D rotRect(int x, int y, int w, int h)
+{
+	if (rot == 1) return {{(int32_t)pext.width - h - y, x}, {(uint32_t)h, (uint32_t)w}};
+	if (rot == 3) return {{y, (int32_t)pext.height - w - x}, {(uint32_t)h, (uint32_t)w}};
+	return {{x, y}, {(uint32_t)w, (uint32_t)h}};
 }
 
 void barrier(VkImage img, VkImageLayout from, VkImageLayout to, VkAccessFlags srcA, VkAccessFlags dstA, VkPipelineStageFlags srcS, VkPipelineStageFlags dstS)
@@ -243,6 +270,13 @@ bool ensureStage(VkDeviceSize size)
 	return true;
 }
 
+// pre-rotating, SUBOPTIMAL: the phone turned the other way round (landscape <-> reverse landscape): a new swapchain
+void orientationCheck()
+{
+	VkSurfaceCapabilitiesKHR caps;
+	if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(phys, surf, &caps) == VK_SUCCESS && caps.currentTransform != xform) dirty = true;
+}
+
 // one frame: acquire, record(img), submit, present; the caller holds mu
 template <class F> void frame(F record)
 {
@@ -269,6 +303,7 @@ template <class F> void frame(F record)
 	VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
 	pi.waitSemaphoreCount = 1; pi.pWaitSemaphores = &semDone[idx]; pi.swapchainCount = 1; pi.pSwapchains = &swap; pi.pImageIndices = &idx;
 	r = vkQueuePresentKHR(queue, &pi);
+	if (r == VK_SUBOPTIMAL_KHR && rot) orientationCheck();
 	// SUBOPTIMAL comes every frame on a phone held in landscape: the picture is not pre-rotated (IDENTITY transform),
 	// the compositor turns it. A new swapchain would be the same, so only OUT_OF_DATE (window resized) rebuilds it.
 	if (r == VK_ERROR_OUT_OF_DATE_KHR) dirty = true;
@@ -329,20 +364,41 @@ void present(const Rect* rects, size_t n, bool picture)
 				const uint8_t* s = (const uint8_t*)pic.data();
 				uint8_t* d = (uint8_t*)stageMap;
 				size_t px = (size_t)picW * picH;
-				if (fmt == VK_FORMAT_B8G8R8A8_UNORM || fmt == VK_FORMAT_B8G8R8A8_SRGB)
+				bool bgr = fmt == VK_FORMAT_B8G8R8A8_UNORM || fmt == VK_FORMAT_B8G8R8A8_SRGB;
+				if (rot)
+				{
+					// turned as the swapchain: picture pixel (x, y) at (picH-1-y, x) for 90 degrees, (y, picW-1-x) for 270
+					for (int y = 0; y < picH; y++)
+						for (int x = 0; x < picW; x++)
+						{
+							const uint8_t* q = s + 4 * ((size_t)y * picW + x);
+							size_t o = rot == 1 ? (size_t)x * picH + (picH - 1 - y) : (size_t)(picW - 1 - x) * picH + y;
+							uint8_t* w = d + 4 * o;
+							w[0] = bgr ? q[2] : q[0]; w[1] = q[1]; w[2] = bgr ? q[0] : q[2]; w[3] = 255;
+						}
+				}
+				else if (bgr)
 					for (size_t i = 0; i < px; i++) { d[4 * i] = s[4 * i + 2]; d[4 * i + 1] = s[4 * i + 1]; d[4 * i + 2] = s[4 * i]; d[4 * i + 3] = 255; }
 				else memcpy(d, s, px * 4);
 				picDirty = false;
 			}
 			VkBufferImageCopy c{};
-			c.bufferRowLength = (uint32_t)picW; c.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-			c.imageExtent = {std::min((uint32_t)picW, ext.width), std::min((uint32_t)picH, ext.height), 1};
+			c.bufferRowLength = (uint32_t)(rot ? picH : picW); c.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+			if (!rot) c.imageExtent = {std::min((uint32_t)picW, ext.width), std::min((uint32_t)picH, ext.height), 1};
+			else
+			{
+				// the picture's top left corner (on the landscape screen) is at the image's top right (90) / bottom left (270)
+				uint32_t w = std::min((uint32_t)picH, pext.width), h = std::min((uint32_t)picW, pext.height);
+				c.imageExtent = {w, h, 1};
+				if (rot == 1) { c.imageOffset.x = (int32_t)(pext.width - w); c.bufferOffset = 4ull * (picH - w); }
+				else { c.imageOffset.y = (int32_t)(pext.height - h); c.bufferOffset = 4ull * (size_t)(picW - h) * picH; }
+			}
 			vkCmdCopyBufferToImage(cmd, stage, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
 		}
 		barrier(img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
 			VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
 		VkRenderPassBeginInfo rbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
-		rbi.renderPass = rpass; rbi.framebuffer = fbs[idx]; rbi.renderArea = {{0, 0}, ext};
+		rbi.renderPass = rpass; rbi.framebuffer = fbs[idx]; rbi.renderArea = {{0, 0}, pext};
 		vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
 		// stage 1 has no pipelines yet: the buttons are clears, their transparency folded into the colour as if over black
 		for (size_t i = 0; i < n; i++)
@@ -352,7 +408,7 @@ void present(const Rect* rects, size_t n, bool picture)
 			if (x1 <= x0 || y1 <= y0) continue;
 			VkClearAttachment ca{VK_IMAGE_ASPECT_COLOR_BIT, 0, {}};
 			ca.clearValue.color = {{q.r * q.a, q.g * q.a, q.b * q.a, 1.f}};
-			VkClearRect cr{{{x0, y0}, {(uint32_t)(x1 - x0), (uint32_t)(y1 - y0)}}, 0, 1};
+			VkClearRect cr{rotRect(x0, y0, x1 - x0, y1 - y0), 0, 1};
 			vkCmdClearAttachments(cmd, 1, &ca, 1, &cr);
 		}
 		vkCmdEndRenderPass(cmd);
@@ -360,6 +416,7 @@ void present(const Rect* rects, size_t n, bool picture)
 }
 
 const Handles& handles() { return H; }
+int rotation() { std::lock_guard<std::recursive_mutex> l(mu); return rot; }
 bool rebuildPending() { std::lock_guard<std::recursive_mutex> l(mu); return dirty; }
 std::recursive_mutex& lock() { return mu; }
 
@@ -390,6 +447,7 @@ void submit(const VkCommandBuffer* cmds, uint32_t n, VkFence fence, VkSemaphore 
 	pi.waitSemaphoreCount = 1; pi.pWaitSemaphores = &semDone[idx]; pi.swapchainCount = 1; pi.pSwapchains = &swap; pi.pImageIndices = &idx;
 	VkResult r = vkQueuePresentKHR(queue, &pi);
 	if (r == VK_ERROR_OUT_OF_DATE_KHR) dirty = true;
+	else if (r == VK_SUBOPTIMAL_KHR && rot) orientationCheck();
 }
 }
 #endif
