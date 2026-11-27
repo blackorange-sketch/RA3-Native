@@ -377,6 +377,13 @@ void sampleGpuClock(int& mhz, int& busy)
 		maxMhz = mx > 0 ? mx / 1000000 : -1;
 		ok = clkPath != nullptr;
 		rt::log("gpu clock: %s (max %ld MHz)", ok ? clkPath : "not readable", maxMhz);
+		// what limits it: the governor's current bounds, the thermal level, the frequency table
+		auto str = [](const char* path) { std::string r; FILE* f = fopen(path, "r"); if (f) { char b[512]; if (fgets(b, sizeof b, f)) r = b; fclose(f); } while (!r.empty() && (r.back() == '\n' || r.back() == ' ')) r.pop_back(); return r.empty() ? std::string("?") : r; };
+		rt::log("gpu clock limits: devfreq min %s max %s, governor %s; kgsl thermal_pwrlevel %s, min_pwrlevel %s, max_pwrlevel %s, default_pwrlevel %s, num_pwrlevels %s, force_clk_on %s",
+			str("/sys/class/kgsl/kgsl-3d0/devfreq/min_freq").c_str(), str("/sys/class/kgsl/kgsl-3d0/devfreq/max_freq").c_str(), str("/sys/class/kgsl/kgsl-3d0/devfreq/governor").c_str(),
+			str("/sys/class/kgsl/kgsl-3d0/thermal_pwrlevel").c_str(), str("/sys/class/kgsl/kgsl-3d0/min_pwrlevel").c_str(), str("/sys/class/kgsl/kgsl-3d0/max_pwrlevel").c_str(),
+			str("/sys/class/kgsl/kgsl-3d0/default_pwrlevel").c_str(), str("/sys/class/kgsl/kgsl-3d0/num_pwrlevels").c_str(), str("/sys/class/kgsl/kgsl-3d0/force_clk_on").c_str());
+		rt::log("gpu clock table: %s", str("/sys/class/kgsl/kgsl-3d0/devfreq/available_frequencies").c_str());
 	}
 	mhz = busy = -1;
 	if (!ok) return;
@@ -388,7 +395,8 @@ void sampleGpuClock(int& mhz, int& busy)
 	if (busy >= 0) { bsum += busy; bn++; }
 	if (n >= 60)
 	{
-		rt::log("gpu clock: %d / %ld / %d MHz (min / average / max of 30 s; top %ld), busy %ld%%", lo, sum / n, hi, maxMhz, bn ? bsum / bn : -1);
+		long cap = readNum("/sys/class/kgsl/kgsl-3d0/devfreq/max_freq"), th = readNum("/sys/class/kgsl/kgsl-3d0/thermal_pwrlevel");
+		rt::log("gpu clock: %d / %ld / %d MHz (min / average / max of 30 s; top %ld), busy %ld%%; allowed up to %ld MHz, thermal level %ld", lo, sum / n, hi, maxMhz, bn ? bsum / bn : -1, cap > 0 ? cap / 1000000 : -1, th);
 		n = 0; sum = 0; lo = 1 << 30; hi = 0; bsum = 0; bn = 0;
 	}
 }
