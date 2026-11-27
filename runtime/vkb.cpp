@@ -312,7 +312,8 @@ template <class F> void frame(F record)
 
 bool wanted()
 {
-	static const bool w = rt::config.renderer == "vulkan" || access("/sdcard/ra3_vulkan", F_OK) == 0;
+	// the launcher's switch decides; without it (older launcher.cfg) the /sdcard/ra3_vulkan file
+	static const bool w = rt::config.renderer == "vulkan" || (!rt::config.rendererSet && access("/sdcard/ra3_vulkan", F_OK) == 0);
 	return w;
 }
 

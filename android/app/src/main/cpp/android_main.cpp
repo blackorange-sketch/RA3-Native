@@ -531,7 +531,7 @@ void android_main(android_app* app)
 			std::string k = l.substr(0, eq), v = l.substr(eq + 1);
 			if (k == "language" && !v.empty() && v.find_first_of("/\\ \"") == std::string::npos) rt::config.language = v;
 			else if (k == "cutscenes") rt::config.playMovies = v == "1";
-			else if (k == "renderer") { if (v == "opengl" || v == "vulkan") rt::config.renderer = v; }
+			else if (k == "renderer") { if (v == "opengl" || v == "vulkan") { rt::config.renderer = v; rt::config.rendererSet = true; } }
 			else if (k == "mod") { if (v.find('"') == std::string::npos && v.find("..") == std::string::npos) rt::config.mod = v; }
 			else if (k == "log") { if (v != "1") rt::config.logFile.clear(); }
 			else if (k == "fps60") rt::config.fps60 = v == "1";

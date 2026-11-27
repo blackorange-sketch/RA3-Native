@@ -216,6 +216,7 @@ public class LauncherActivity extends Activity {
         toggleRow(opts, "DRAG THE MAP", "Swipe moves the map under your finger (off: swipe moves the camera, like the mouse)", "pan_invert", false);
         toggleRow(opts, "CUTSCENES", "Intro, briefings and campaign videos", "cutscenes", true);
         toggleRow(opts, "WIDE SCREEN", "The game fills the whole screen instead of 16:9 (more of the map, buttons on top)", "wide_screen", false);
+        toggleRow(opts, "VULKAN RENDERER", "Experimental: draws with Vulkan instead of OpenGL ES (off: OpenGL ES)", "vulkan", vulkanDefault());
         toggleRow(opts, "PERFORMANCE OVERLAY", "Frame time and GPU time under the FPS counter", "perf_overlay", false);
         toggleRow(opts, "FAST SHADERS", "Lower precision in pixel shaders: faster on Mali and weaker GPUs, rare visual glitches", "fast_shaders", false);
         toggleRow(opts, "LOG FILE", "Writes /sdcard/" + (BuildConfig.STEAM ? "ra3_native_steam.log" : "ra3_native.log") + " for bug reports", "log", logDefault());
@@ -481,6 +482,8 @@ public class LauncherActivity extends Activity {
     }
 
     // the log is on by default in test builds (nightly) and off in releases (it costs CPU time and storage)
+    // the Vulkan switch starts on for testers who picked Vulkan with the /sdcard/ra3_vulkan file
+    static boolean vulkanDefault() { return new java.io.File("/sdcard/ra3_vulkan").exists(); }
     static boolean logDefault() { return !Character.isDigit(BuildConfig.VERSION_NAME.isEmpty() ? 'x' : BuildConfig.VERSION_NAME.charAt(0)); }
 
     static final int[] UI_SCALES = {100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 200};
@@ -786,6 +789,7 @@ public class LauncherActivity extends Activity {
         cfg.append("log=").append(prefs.getBoolean("log", logDefault()) ? 1 : 0).append('\n');
         cfg.append("ui_scale=").append(prefs.getInt("ui_scale", 110)).append('\n');
         cfg.append("wide_screen=").append(prefs.getBoolean("wide_screen", false) ? 1 : 0).append('\n');
+        cfg.append("renderer=").append(prefs.getBoolean("vulkan", vulkanDefault()) ? "vulkan" : "opengl").append('\n');
         cfg.append("perf_overlay=").append(prefs.getBoolean("perf_overlay", false) ? 1 : 0).append('\n');
         cfg.append("fast_shaders=").append(prefs.getBoolean("fast_shaders", false) ? 1 : 0).append('\n');
         cfg.append("button_size=").append(prefs.getInt("button_size", 100)).append('\n');
