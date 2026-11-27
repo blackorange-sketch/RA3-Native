@@ -26,6 +26,7 @@ struct ShaderObj
 	uint64_t hash = 0;
 	bool ok = false;
 	uint32_t glVs = 0, glPs = 0;   // compiled GL shader objects (renderer-owned)
+	int32_t vkCl[4] = {-1, 0, 0, 0};   // Vulkan constant block layout (ints, registers, float offset, size), worked out once
 };
 ShaderObj* getShader(const uint8_t* code, size_t n);   // cached by content, translated on first use
 

@@ -78,7 +78,7 @@ uint32_t gDraws = 0, gDrawsTotal = 0;
 struct Stats
 {
 	uint64_t recNs = 0, gpuNs = 0, cpuNs = 0, presentNs = 0, phaseNs[8] = {}, renameBytes = 0, copyBytes = 0, ringBytes = 0, convVerts = 0, uploadBytes = 0;
-	uint32_t batched = 0, batches = 0, swaps = 0, swapResolves = 0, swapFree = 0, gpuFrames = 0, frames = 0, draws = 0, passes = 0, clearPasses = 0, barriers = 0, uploads = 0, renames = 0, descSets = 0, texUploads = 0, newPipes = 0, convRebuilds = 0;
+	uint32_t storesDropped = 0, storesPredicted = 0, storeMisses = 0, batched = 0, batches = 0, swaps = 0, swapResolves = 0, swapFree = 0, gpuFrames = 0, frames = 0, draws = 0, passes = 0, clearPasses = 0, barriers = 0, uploads = 0, renames = 0, descSets = 0, texUploads = 0, newPipes = 0, convRebuilds = 0;
 } gSt;
 uint64_t nowNs() { return (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 struct CpuTimer { uint64_t t0 = nowNs(); ~CpuTimer() { gSt.cpuNs += nowNs() - t0; } };
@@ -87,6 +87,13 @@ struct Push { float ui[4]; float hp[2]; int32_t bgra; uint32_t vsb; float at[4];
 static_assert(sizeof(Push) == shdr::kVkPushSize, "push constant layout");
 
 // ---- images and buffers
+// the store ops of one pass, decided after it is recorded (the recording thread reads them when it replays the pass):
+// an attachment whose next use overwrites it entirely is not written back to memory (tiled GPUs)
+struct PassStore
+{
+	VkAttachmentStoreOp c = VK_ATTACHMENT_STORE_OP_STORE, d = VK_ATTACHMENT_STORE_OP_STORE, s = VK_ATTACHMENT_STORE_OP_STORE;
+	bool sealed = false;   // handed to the recording thread: no more changes
+};
 struct VTex
 {
 	VkImage img = VK_NULL_HANDLE;
@@ -112,6 +119,11 @@ struct VTex
 	// the target is cleared; pendDst - the target waiting for this texture's contents
 	VTex* pendSrc = nullptr;
 	VTex* pendDst = nullptr;
+	// store ops: the last pass that wrote this image, while nothing has read it since (see PassStore)
+	PassStore* lw = nullptr;
+	bool inLw = false;                  // in gLwList
+	uint32_t useFrame = 0, clrStreak = 0;   // frames in a row whose first use cleared it entirely
+	bool predicted = false;             // its last frame's store dropped on that streak
 };
 struct VBuf
 {
@@ -131,6 +143,7 @@ struct Chunk { VkBuffer buf = VK_NULL_HANDLE; VmaAllocation mem = VK_NULL_HANDLE
 struct Dump { VkBuffer buf; VmaAllocation mem; uint32_t w, h; VkFormat fmt; std::string name; };
 struct Frame
 {
+	std::deque<PassStore> stores;
 	std::vector<Dump> dumps;
 	VkQueryPool queries = VK_NULL_HANDLE;   // GPU time of the frame: timestamps at its start and end
 	bool timed = false;
@@ -144,6 +157,10 @@ struct Frame
 	VkSemaphore acq = VK_NULL_HANDLE;
 	std::vector<VkDescriptorPool> texPools;
 	size_t texPool = 0;
+	// texture sets written this frame, by their textures and samplers: draws that come back to the same textures
+	// (another object of the same kind after something else) bind the set again instead of writing a new one
+	struct TexSetEntry { VkDescriptorSet set; uint32_t mask; VkImageView views[16]; VkSampler samps[16]; };
+	std::unordered_map<uint64_t, TexSetEntry> texSets;
 	std::vector<Chunk> chunks;
 	size_t chunk = 0;
 	std::vector<std::function<void()>> trash;
@@ -173,19 +190,28 @@ uint64_t doneSerial = 0, marks = 0, marksDone = 0;   // (qm)
 std::atomic<uint64_t> busyNs{0};
 std::atomic<int> tid{0};   // the recording thread
 template <class T> void runDestroy(void* p) { T* t = (T*)p; (*t)(); t->~T(); }
+std::vector<QChunk*> held;   // full chunks of the frame being recorded: handed over at the frame's end (store ops still change)
+void (*onPublish)() = nullptr;
 void publish()
 {
-	if (!cur || !cur->used) return;
-	{ std::lock_guard<std::mutex> l(qm); ready.push_back(cur); }
+	bool any = !held.empty() || (cur && cur->used);
+	if (!any) return;
+	if (onPublish) onPublish();
+	{
+		std::lock_guard<std::mutex> l(qm);
+		for (QChunk* h : held) ready.push_back(h);
+		if (cur && cur->used) ready.push_back(cur);
+	}
+	held.clear();
 	qcv.notify_one();
-	cur = nullptr;
+	if (cur && cur->used) cur = nullptr;
 }
 void* reserve(size_t payload, void (*run)(void*))
 {
 	size_t need = (sizeof(Cmd) + payload + 15) & ~(size_t)15;
 	if (!cur || cur->used + need > cur->cap)
 	{
-		publish();
+		if (cur && cur->used) { held.push_back(cur); cur = nullptr; }
 		{
 			std::lock_guard<std::mutex> l(qm);
 			if (need <= kQChunk && !freeL.empty()) { cur = freeL.front(); freeL.pop_front(); cur->used = 0; }
@@ -349,6 +375,22 @@ inline void BeginRendering(VkCommandBuffer cb, const VkRenderingInfo* ri)
 		(pBeginRendering)(cb, &r.ri);
 	});
 }
+// with store ops read when the recording thread replays it (patched until the frame is handed over)
+inline void BeginRenderingP(VkCommandBuffer cb, const VkRenderingInfo* ri, const PassStore* ps)
+{
+	struct R { VkRenderingInfo ri; VkRenderingAttachmentInfo ca, da, sa; bool c, d, s; } r{};
+	r.ri = *ri; r.c = ri->colorAttachmentCount == 1; r.d = ri->pDepthAttachment != nullptr; r.s = ri->pStencilAttachment != nullptr;
+	if (r.c) r.ca = ri->pColorAttachments[0];
+	if (r.d) r.da = *ri->pDepthAttachment;
+	if (r.s) r.sa = *ri->pStencilAttachment;
+	q([=]() mutable {
+		if (r.c) r.ca.storeOp = ps->c;
+		if (r.d) r.da.storeOp = ps->d;
+		if (r.s) r.sa.storeOp = ps->s;
+		r.ri.pColorAttachments = r.c ? &r.ca : nullptr; r.ri.pDepthAttachment = r.d ? &r.da : nullptr; r.ri.pStencilAttachment = r.s ? &r.sa : nullptr;
+		(pBeginRendering)(cb, &r.ri);
+	});
+}
 inline void EndRendering(VkCommandBuffer cb) { if (!thr(cb)) { (pEndRendering)(cb); return; } q([=] { (pEndRendering)(cb); }); }
 template <class Fp, class... A> inline void dyn(Fp* fp, VkCommandBuffer cb, A... a) { if (!thr(cb)) { (*fp)(cb, a...); return; } q([=] { (*fp)(cb, a...); }); }
 }   // namespace cq
@@ -500,11 +542,13 @@ VkImageView makeView(VTex* t, VkImageViewType type, uint32_t level, uint32_t nLe
 
 void beforeWrite(VTex* t, bool whole);
 VTex* readOf(VTex* t);
+extern std::vector<VTex*> gLwList;
 void destroyTex(VTex* t)
 {
 	if (!t) return;
 	beforeWrite(t, true);
 	if (t->pendSrc) { t->pendSrc->pendDst = nullptr; t->pendSrc = nullptr; }
+	if (t->inLw) { gLwList.erase(std::remove(gLwList.begin(), gLwList.end(), t), gLwList.end()); t->inLw = false; t->lw = nullptr; }
 	if (t->fb) { destroyTex(t->fb); t->fb = nullptr; }
 	VkImageView s = t->sampled; auto att = t->att; VkImage img = t->img; VmaAllocation m = t->mem;
 	later([s, att, img, m] {
@@ -613,6 +657,7 @@ void dumpTarget(VTex* t, uint32_t level, uint32_t layer, const char* what)
 {
 	if (!t || t->depth || gDumpPass >= 60) return;
 	t = readOf(t);
+	markRead(t);
 	uint32_t w = std::max(1u, t->w >> level), h = std::max(1u, t->h >> level);
 	uint32_t bpp = t->fmt == VK_FORMAT_R16G16B16A16_SFLOAT ? 8 : t->fmt == VK_FORMAT_R32G32B32A32_SFLOAT ? 16 : (t->fmt == VK_FORMAT_R16_SFLOAT || t->fmt == VK_FORMAT_R5G6B5_UNORM_PACK16) ? 2 : 4;
 	VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
@@ -770,9 +815,67 @@ void endPass()
 	}
 	if (dumping()) dumpTarget(gPass.color, gPass.cLevel, gPass.cLayer, "pass");
 }
+// ---- store ops (PassStore): which pass results are never read
+std::vector<VTex*> gLwList;   // images whose last writing pass has not been read since
+// the first use of an image in a frame: a whole clear (or overwrite) continues its streak, anything else ends it
+void noteUse(VTex* t, bool whole)
+{
+	if (t->useFrame == (uint32_t)gSerial) return;
+	t->useFrame = (uint32_t)gSerial;
+	if (t->predicted && !whole) gSt.storeMisses++;   // its store was dropped, then it was read: one frame of wrong contents
+	t->predicted = false;
+	t->clrStreak = whole ? t->clrStreak + 1 : 0;
+}
+void markRead(VTex* t)
+{
+	if (!t) return;
+	noteUse(t, false);
+	t->lw = nullptr;   // the last pass keeps its STORE
+}
+// the next use overwrites (depth / stencil: which of the two): the last pass need not store it
+void overwrite(VTex* t, bool depth = true, bool stencil = true)
+{
+	if (!t) return;
+	bool whole = !t->depth || (depth && (stencil || !t->stencil));
+	noteUse(t, whole);
+	if (t->lw && !t->lw->sealed)
+	{
+		if (!t->depth) { t->lw->c = VK_ATTACHMENT_STORE_OP_DONT_CARE; gSt.storesDropped++; }
+		else
+		{
+			if (depth) { t->lw->d = VK_ATTACHMENT_STORE_OP_DONT_CARE; gSt.storesDropped++; }
+			if (stencil || !t->stencil) t->lw->s = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+		}
+	}
+	t->lw = nullptr;
+}
+void setLastWrite(VTex* t, PassStore* ps)
+{
+	t->lw = ps;
+	if (ps && !t->inLw) { t->inLw = true; gLwList.push_back(t); }
+}
+// the frame is handed to the recording thread: depth images whose every frame starts with a clear (30 in a row) drop
+// the last pass's store; then nothing changes any more
+void sealStores(bool frameEnd)
+{
+	for (VTex* t : gLwList)
+	{
+		if (frameEnd && t->lw && !t->lw->sealed && t->depth && t->clrStreak >= 30)
+		{
+			t->lw->d = VK_ATTACHMENT_STORE_OP_DONT_CARE; t->lw->s = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+			t->predicted = true; gSt.storesPredicted++;
+		}
+		t->lw = nullptr; t->inLw = false;
+	}
+	gLwList.clear();
+	if (F) for (auto& ps : F->stores) ps.sealed = true;
+}
+void sealOnPublish() { sealStores(false); }
+
 void flushClear(VTex* t);
 void toLayout(VTex* t, VkImageLayout l)
 {
+	if (l == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL || l == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL || l == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL || l == VK_IMAGE_LAYOUT_GENERAL) markRead(t);
 	if (t->pendClr && l != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL && l != VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) flushClear(t);
 	if (t->layout == l) return;
 	endPass();
@@ -786,6 +889,7 @@ void flushClear(VTex* t)
 {
 	if (!t->pendClr) return;
 	endPass();
+	if (!t->depth || ((t->pendClr & 2) && ((t->pendClr & 4) || !t->stencil))) overwrite(t, (t->pendClr & 2) != 0, (t->pendClr & 4) != 0); else markRead(t);
 	VkImageLayout al = t->depth ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 	if (t->layout != al) { barrier(C, t->img, t->aspect, t->layout, al); t->layout = al; }
 	VkRenderingAttachmentInfo a{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}, st{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
@@ -1372,6 +1476,8 @@ void beginFrame()
 	vkResetCommandPool(D, F->upPool, 0);
 	for (auto p : F->texPools) vkResetDescriptorPool(D, p, 0);
 	F->texPool = 0;
+	F->texSets.clear();
+	F->stores.clear();   // (the recording thread has replayed this slot's last frame)
 	for (auto& c : F->chunks) c.pos = 0;
 	F->chunk = 0;
 	F->upUsed = false;
@@ -1543,6 +1649,9 @@ bool swapCopy(VTex* s, VTex* d)
 	beforeWrite(d, true);
 	d->pendClr = 0;          // overwritten entirely
 	std::swap(s->img, d->img); std::swap(s->mem, d->mem); std::swap(s->sampled, d->sampled); std::swap(s->att, d->att); std::swap(s->layout, d->layout);
+	std::swap(s->lw, d->lw);   // (the pass that wrote an image follows the image)
+	if (s->lw && !s->inLw) { s->inLw = true; gLwList.push_back(s); }
+	if (d->lw && !d->inLw) { d->inLw = true; gLwList.push_back(d); }
 	s->pendSrc = d; d->pendDst = s;
 	d->content++;
 	s->useSerial = d->useSerial = gSerial;
@@ -1556,7 +1665,9 @@ bool blitTo(VTex* src, uint32_t sLevel, const int32_t* sr, VTex* dst, uint32_t d
 	if (!src || !dst || src->depth || dst->depth || !dst->rt || src->vtype != VK_IMAGE_VIEW_TYPE_2D || src == dst) return false;   // (dst must be renderable)
 	uint32_t sw = std::max(1u, src->w >> sLevel), sh = std::max(1u, src->h >> sLevel), dw = std::max(1u, dst->w >> dLevel), dh = std::max(1u, dst->h >> dLevel);
 	endPass();
-	beforeWrite(dst, dLevel == 0 && dst->levels == 1 && dst->layers == 1 && std::min(dr[0], dr[2]) <= 0 && std::min(dr[1], dr[3]) <= 0 && std::max(dr[0], dr[2]) >= (int32_t)dw && std::max(dr[1], dr[3]) >= (int32_t)dh);
+	bool dstWhole = dLevel == 0 && dst->levels == 1 && dst->layers == 1 && std::min(dr[0], dr[2]) <= 0 && std::min(dr[1], dr[3]) <= 0 && std::max(dr[0], dr[2]) >= (int32_t)dw && std::max(dr[1], dr[3]) >= (int32_t)dh;
+	beforeWrite(dst, dstWhole);
+	if (dstWhole) overwrite(dst); else markRead(dst);
 	src = readOf(src);   // (after: copying back into dst's waiting target may have changed where src's contents are)
 	toLayout(src, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 	toLayout(dst, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
@@ -1713,7 +1824,26 @@ bool beginPass(const Target& t, const VkClearAttachment* clr = nullptr, uint32_t
 		snprintf(b, sizeof b, "%ux%u f%d%s%s", t.w, t.h, t.color ? (int)t.color->fmt : -1, t.depth ? "+depth" : "", nClr ? " cleared" : "");
 		F->passNames.push_back(b);
 	}
-	pBeginRendering(C, &ri);
+	// store ops: this pass overwrites or reads what the last pass on these images left
+	if (t.color)
+	{
+		bool full = t.cLevel == 0 && t.cLayer == 0 && t.color->layers == 1 && t.w == t.color->w && t.h == t.color->h;
+		if (ca.loadOp != VK_ATTACHMENT_LOAD_OP_LOAD && full) overwrite(t.color); else markRead(t.color);
+	}
+	if (t.depth)
+	{
+		bool full = t.w == t.depth->w && t.h == t.depth->h;
+		bool dc = da.loadOp != VK_ATTACHMENT_LOAD_OP_LOAD, sc = !t.depth->stencil || sa.loadOp != VK_ATTACHMENT_LOAD_OP_LOAD;
+		if (full && (dc || sc)) { overwrite(t.depth, dc, sc); if (!(dc && sc)) t.depth->lw = nullptr; } else markRead(t.depth);
+	}
+	if (cq::gOn)
+	{
+		PassStore* ps = &F->stores.emplace_back();
+		cq::BeginRenderingP(C, &ri, ps);
+		if (t.color) setLastWrite(t.color, ps);
+		if (t.depth) setLastWrite(t.depth, ps);
+	}
+	else pBeginRendering(C, &ri);
 	gInPass = true;
 	gPass = t;
 	return true;
@@ -1757,6 +1887,7 @@ bool currentTarget(Target& t)
 void genMips(VTex* t)
 {
 	endPass();
+	markRead(t);
 	barrier(C, t->img, t->aspect, t->layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 	for (uint32_t l = 1; l < t->levels; l++)
 	{
@@ -1947,6 +2078,7 @@ bool init()
 	}
 	gFi = 0;
 	cq::start();
+	cq::onPublish = sealOnPublish;
 	beginFrame();
 	makeDummies();
 	{
@@ -2308,11 +2440,27 @@ void draw(const DrawCall& dc)
 		for (int stage = 0; stage < 2; stage++)
 		{
 			ShaderObj* sh = stage ? ps : vs;
-			shdr::VkConstLayout cl = shdr::vkConstLayout(sh->info);
+			// (the layout searches the shader text: once per shader, not per draw)
+			if (sh->vkCl[0] < 0) { shdr::VkConstLayout l = shdr::vkConstLayout(sh->info); sh->vkCl[0] = l.ints; sh->vkCl[1] = l.nc; sh->vkCl[2] = (int32_t)l.cOff; sh->vkCl[3] = (int32_t)l.size; }
+			shdr::VkConstLayout cl; cl.ints = sh->vkCl[0] != 0; cl.nc = sh->vkCl[1]; cl.cOff = (uint32_t)sh->vkCl[2]; cl.size = (uint32_t)sh->vkCl[3];
 			if (!cl.size) continue;
 			uint32_t nreg = (uint32_t)cl.nc, size = cl.size;
-			if (cl.ints) memcpy(blk, stage ? dev.psI : dev.vsI, 256);
 			const float* src = stage ? dev.psF : dev.vsF;
+			if (!stage && wreg >= 0 && !sh->info.relC)
+			{
+				// the same block as the last draw's (World rows excepted, zero there): compared in place, nothing built
+				ConstCache& cc = gCC[0];
+				uint32_t w3 = (uint32_t)wreg + 3;
+				if (cc.chunk < F->chunks.size() && cc.data.size() == size && w3 <= nreg
+					&& (!cl.ints || !memcmp(cc.data.data(), dev.vsI, 256))
+					&& !memcmp(cc.data.data() + cl.cOff, src, 16u * wreg)
+					&& !memcmp(cc.data.data() + cl.cOff + 16u * w3, src + 4 * w3, 16u * (nreg - w3)))
+				{
+					off[0] = cc.off; chunk[0] = cc.chunk; blkSize[0] = cl.size;
+					continue;
+				}
+			}
+			if (cl.ints) memcpy(blk, stage ? dev.psI : dev.vsI, 256);
 			if (!stage && sh->info.relC)
 			{
 				// relative addressing reads the shader's own def'd constants from the registers too (particle tables);
@@ -2375,6 +2523,26 @@ void draw(const DrawCall& dc)
 	{
 		bool same = S.texSet && S.texMask == mask;
 		for (int i = 0; i < 16 && same; i++) if (mask >> i & 1) same = S.texViews[i] == views[i] && S.texSamp[i] == samps[i];
+		uint64_t tkey = 0;
+		if (!same)
+		{
+			tkey = mask;
+			for (int i = 0; i < 16; i++) if (mask >> i & 1) { tkey = (tkey ^ (uint64_t)views[i]) * 0x9e3779b97f4a7c15ull; tkey = (tkey ^ (uint64_t)samps[i]) * 0xc2b2ae3d27d4eb4full; }
+			auto it = F->texSets.find(tkey);
+			if (it != F->texSets.end() && it->second.mask == mask)
+			{
+				bool eq = true;
+				for (int i = 0; i < 16 && eq; i++) if (mask >> i & 1) eq = it->second.views[i] == views[i] && it->second.samps[i] == samps[i];
+				if (eq)
+				{
+					VkDescriptorSet set = it->second.set;
+					vkCmdBindDescriptorSets(C, VK_PIPELINE_BIND_POINT_GRAPHICS, gLayout, 1, 1, &set, 0, nullptr);
+					S.texSet = set; S.texMask = mask;
+					memcpy(S.texViews, views, sizeof views); memcpy(S.texSamp, samps, sizeof samps);
+					same = true;
+				}
+			}
+		}
 		if (!same)
 		{
 			VkDescriptorSet set = allocTexSet();
@@ -2393,6 +2561,9 @@ void draw(const DrawCall& dc)
 			vkCmdBindDescriptorSets(C, VK_PIPELINE_BIND_POINT_GRAPHICS, gLayout, 1, 1, &set, 0, nullptr);
 			S.texSet = set; S.texMask = mask;
 			memcpy(S.texViews, views, sizeof views); memcpy(S.texSamp, samps, sizeof samps);
+			Frame::TexSetEntry e{set, mask, {}, {}};
+			memcpy(e.views, views, sizeof views); memcpy(e.samps, samps, sizeof samps);
+			F->texSets[tkey] = e;
 		}
 	}
 
@@ -2608,6 +2779,7 @@ void stretchRect(Obj* src, const int32_t* sr, Obj* dst, const int32_t* dr, uint3
 void submitFrame(const VkCommandBuffer* cbs, uint32_t n, VkFence fence, VkSemaphore acq, int presentIdx)
 {
 	if (!cq::gOn) { vkb::submit(cbs, n, fence, acq, presentIdx); return; }
+	sealStores(true);
 	VkCommandBuffer c[2] = {cbs[0], n > 1 ? cbs[1] : VK_NULL_HANDLE};
 	cq::q([c, n, fence, acq, presentIdx] { vkb::submit(c, n, fence, acq, presentIdx); });
 	cq::frameDone(gSerial);
@@ -2806,6 +2978,7 @@ bool present(int sw, int sh)
 		log("vulkan perf: draw CPU ms per frame: setup %.2f, textures+pass %.2f, pipeline %.2f, state %.2f, constants %.2f, texture sets %.2f (%.0f), vertices+draw %.2f",
 			gSt.phaseNs[0] / 1e6 / f, gSt.phaseNs[1] / 1e6 / f, gSt.phaseNs[2] / 1e6 / f, gSt.phaseNs[3] / 1e6 / f, gSt.phaseNs[4] / 1e6 / f, gSt.phaseNs[5] / 1e6 / f, gSt.descSets / f, gSt.phaseNs[6] / 1e6 / f);
 		if (cq::gOn) log("vulkan perf: recording thread %.2f ms per frame", gSt.recNs / 1e6 / f);
+		log("vulkan perf: attachments not written back: %.1f per frame in the frame, %.1f across frames (%u times read after all)", gSt.storesDropped / f, gSt.storesPredicted / f, gSt.storeMisses);
 		log("vulkan perf: merged draws: %.0f per frame added to %.0f instanced draws", gSt.batched / f, gSt.batches / f);
 		log("vulkan perf: clears done on their own %.1f per frame; copies avoided by swapping %.1f per frame (%.1f copied back later, %.1f never needed)", gClearFlushes / f, gSt.swaps / f, gSt.swapResolves / f, gSt.swapFree / f);
 		gClearFlushes = 0;

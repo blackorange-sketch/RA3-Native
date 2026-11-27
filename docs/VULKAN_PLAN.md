@@ -94,5 +94,11 @@ stays at its 30 fps; the gain is heat, battery and headroom for weaker phones.
   - Battle on Adreno 740: GPU 32-33 ms per frame vs 16-17 ms with OpenGL; the gap is spread over all passes
     (shadow map 2.4 vs 0.5 ms, depth prepass 2-3 vs 0.7 ms), so it looks like per-draw cost. Done: copies as draws
     instead of vkCmdBlitImage, World matrix in push constants (fewer UBO bytes per draw).
+  - The GPU sat at 295 of 719 MHz in Vulkan mode: the Android performance hint session (ADPF) and the fast-core
+    pinning were only done by the OpenGL present. With both, the GPU load matches OpenGL (about 78% busy at the same
+    clock at 30 fps); OpenGL's timer queries simply miss part of the tiled work (17 vs 26 ms measured).
+  - Pre-rotation of the swapchain (the compositor no longer turns every frame), recording thread, draw merging,
+    copies avoided by swapping images, store ops decided after the pass (PassStore: attachments overwritten before
+    being read are not written back; depth images cleared at the start of every frame not stored at its end).
   - Performance overlay (launcher PERFORMANCE OVERLAY or /sdcard/ra3_overlay): frame time average / worst, GPU
     time per frame, renderer CPU (Vulkan) under the FPS counter. Works with OpenGL too (timer queries).
