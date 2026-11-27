@@ -171,6 +171,7 @@ std::deque<QChunk*> ready, freeL;
 QChunk* cur = nullptr;
 uint64_t doneSerial = 0, marks = 0, marksDone = 0;   // (qm)
 std::atomic<uint64_t> busyNs{0};
+std::atomic<int> tid{0};   // the recording thread
 template <class T> void runDestroy(void* p) { T* t = (T*)p; (*t)(); t->~T(); }
 void publish()
 {
@@ -234,6 +235,7 @@ void start()
 	if (!gOn) return;
 	std::thread([] {
 		pthread_setname_np(pthread_self(), "ra3-vkrecord");
+		tid = (int)gettid();
 		setpriority(PRIO_PROCESS, 0, -10);
 		loop();
 	}).detach();
@@ -2612,6 +2614,8 @@ void submitFrame(const VkCommandBuffer* cbs, uint32_t n, VkFence fence, VkSemaph
 	cq::publish();
 	cq::waitFrame(gSerial - 1);   // the frame before is on the GPU: the game runs at most one frame ahead of the recording
 }
+
+int recordTid() { return cq::gOn ? cq::tid.load() : -1; }
 
 bool present(int sw, int sh)
 {

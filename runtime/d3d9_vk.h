@@ -13,6 +13,7 @@ void stretchRect(Obj* src, const int32_t* srcRect, Obj* dst, const int32_t* dstR
 // the frame: the back buffer letterboxed into the screen, side bars, the on-screen buttons; false: nothing drawn
 // yet (the caller shows the start-up console instead)
 bool present(int screenW, int screenH);
+int recordTid();   // the thread recording the frame's commands (0: not started yet, -1: none, all on the game thread)
 uint32_t drawsThisFrame();
 }
 }

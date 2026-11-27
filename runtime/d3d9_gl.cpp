@@ -2366,6 +2366,33 @@ void present()
 // Vulkan: the renderer's frame, or (before the game has drawn anything, or without the renderer) a black frame
 // with the console picture and the on-screen buttons; the frame bookkeeping (frame number, HUD scaling state) goes
 // on as with OpenGL so the interface code keeps working
+static void pinGameThread()
+{
+	// The game thread that draws (the busiest one) goes to the fast cores, with a higher priority; the other threads
+	// are left to Android. Fast cores by the kernel's cpu_capacity (how much work a core does per clock and at its top
+	// clock): on Helio G85/G88/G99-like chips the small cores clock nearly as high as the two big ones (1.8 vs 2.0 GHz),
+	// so the clock alone picked all eight cores and the pinning did nothing.
+	unsigned long freq[16] = {0}, cap[16] = {0}, maxF = 0, maxC = 0; int ncpu = 0;
+	for (int i = 0; i < 16; i++)
+	{
+		char path[96]; snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq", i);
+		if (FILE* f = fopen(path, "r")) { if (fscanf(f, "%lu", &freq[i]) == 1) { ncpu = i + 1; maxF = std::max(maxF, freq[i]); } fclose(f); }
+		snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cpu_capacity", i);
+		if (FILE* f = fopen(path, "r")) { if (fscanf(f, "%lu", &cap[i]) == 1) maxC = std::max(maxC, cap[i]); fclose(f); }
+	}
+	cpu_set_t set; CPU_ZERO(&set); int picked = 0;
+	for (int i = 0; i < ncpu; i++)
+		if (maxC ? cap[i] * 4 >= maxC * 3 : freq[i] * 4 >= maxF * 3) { CPU_SET(i, &set); picked++; }
+	{
+		std::string t;
+		for (int i = 0; i < ncpu; i++) t += " " + std::to_string(freq[i] / 1000) + "MHz/" + std::to_string(cap[i]);
+		log("perf: cores (top clock / capacity):%s", t.c_str());
+	}
+	int ra = picked ? sched_setaffinity(0, sizeof set, &set) : -1;
+	int rp = setpriority(PRIO_PROCESS, (id_t)gettid(), -10);
+	::profStart();
+	log("perf: main thread pinned to %d fast cores of %d (max %lu kHz): affinity %s, priority %s", picked, ncpu, maxF, ra == 0 ? "ok" : "failed", rp == 0 ? "ok" : "failed");
+}
 static void presentVk()
 {
 	int sw = gfx::width(), sh = gfx::height();
@@ -2379,6 +2406,15 @@ static void presentVk()
 		vkb::present(vr.data(), vr.size(), true);
 	}
 	gFrameNo++;
+	if (gFrameNo == 1) pinGameThread();
+	{
+		// Android performance hint (as the OpenGL path): the game thread and the recording thread, work per frame =
+		// wall time since the last present minus the game limiter's sleep
+		static uint64_t lastT = 0, lastLim = 0;
+		uint64_t t = nowUs(), lim = rt::limiterWaitTotalUs();
+		if (lastT && t > lastT) { uint64_t wall = t - lastT, sl = lim - lastLim; rt::perfHintFrame((wall > sl ? wall - sl : 0) * 1000, vkr::recordTid()); }
+		lastT = t; lastLim = lim;
+	}
 	ui::uiEndFrame(gFrameNo);
 	if (gFrameNo == 1 || gFrameNo % 3600 == 0) log("vulkan: frame %u presented, screen %dx%d", gFrameNo, sw, sh);
 	if (gFrameNo % 300 == 0) rt::profDump();
@@ -2521,33 +2557,7 @@ static void presentImpl()
 	else { const GLenum a[] = {GL_DEPTH, GL_STENCIL}; ::glInvalidateFramebuffer(GL_FRAMEBUFFER, 2, a); gputime::frameEnd(passInfo()); uint64_t ts = nowUs(); gfx::swap(); gTSwap += nowUs() - ts; }
 	glErr("present");
 	gFrameNo++;
-	if (gFrameNo == 1)
-	{
-		// The game thread that draws (the busiest one) goes to the fast cores, with a higher priority; the other threads
-		// are left to Android. Fast cores by the kernel's cpu_capacity (how much work a core does per clock and at its top
-		// clock): on Helio G85/G88/G99-like chips the small cores clock nearly as high as the two big ones (1.8 vs 2.0 GHz),
-		// so the clock alone picked all eight cores and the pinning did nothing.
-		unsigned long freq[16] = {0}, cap[16] = {0}, maxF = 0, maxC = 0; int ncpu = 0;
-		for (int i = 0; i < 16; i++)
-		{
-			char path[96]; snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq", i);
-			if (FILE* f = fopen(path, "r")) { if (fscanf(f, "%lu", &freq[i]) == 1) { ncpu = i + 1; maxF = std::max(maxF, freq[i]); } fclose(f); }
-			snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cpu_capacity", i);
-			if (FILE* f = fopen(path, "r")) { if (fscanf(f, "%lu", &cap[i]) == 1) maxC = std::max(maxC, cap[i]); fclose(f); }
-		}
-		cpu_set_t set; CPU_ZERO(&set); int picked = 0;
-		for (int i = 0; i < ncpu; i++)
-			if (maxC ? cap[i] * 4 >= maxC * 3 : freq[i] * 4 >= maxF * 3) { CPU_SET(i, &set); picked++; }
-		{
-			std::string t;
-			for (int i = 0; i < ncpu; i++) t += " " + std::to_string(freq[i] / 1000) + "MHz/" + std::to_string(cap[i]);
-			log("perf: cores (top clock / capacity):%s", t.c_str());
-		}
-		int ra = picked ? sched_setaffinity(0, sizeof set, &set) : -1;
-		int rp = setpriority(PRIO_PROCESS, (id_t)gettid(), -10);
-		::profStart();
-		log("perf: main thread pinned to %d fast cores of %d (max %lu kHz): affinity %s, priority %s", picked, ncpu, maxF, ra == 0 ? "ok" : "failed", rp == 0 ? "ok" : "failed");
-	}
+	if (gFrameNo == 1) pinGameThread();
 	{
 		// load-time log: the first frame and every pause between frames longer than 1.5 s, with the share spent reading from disk
 		static uint64_t lastT = 0, lastBytes = 0, lastUs = 0, lastCalls = 0;
