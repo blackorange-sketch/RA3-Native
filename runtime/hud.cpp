@@ -81,11 +81,11 @@ const uint8_t* glyph(char ch)
 	static const uint8_t blank[5] = {0, 0, 0, 0, 0};
 	static const uint8_t plus[5] = {0x08,0x08,0x3E,0x08,0x08}, minus[5] = {0x08,0x08,0x08,0x08,0x08}, up[5] = {0x04,0x02,0x01,0x02,0x04}, dn[5] = {0x10,0x20,0x40,0x20,0x10},
 		lt[5] = {0x08,0x14,0x22,0x41,0x00}, gt[5] = {0x00,0x41,0x22,0x14,0x08}, colon[5] = {0x00,0x36,0x36,0x00,0x00}, slash[5] = {0x20,0x10,0x08,0x04,0x02},
-		dot[5] = {0x00,0x60,0x60,0x00,0x00};
+		dot[5] = {0x00,0x60,0x60,0x00,0x00}, pct[5] = {0x23,0x13,0x08,0x64,0x62};
 	if (ch >= '0' && ch <= '9') return digits[ch - '0'];
 	if (ch >= 'A' && ch <= 'Z') return letters[ch - 'A'];
 	if (ch >= 'a' && ch <= 'z') return letters[ch - 'a'];
-	switch (ch) { case '+': return plus; case '-': return minus; case '^': return up; case 'v': return dn; case '<': return lt; case '>': return gt; case ':': return colon; case '/': return slash; case '.': return dot; }
+	switch (ch) { case '+': return plus; case '-': return minus; case '^': return up; case 'v': return dn; case '<': return lt; case '>': return gt; case ':': return colon; case '/': return slash; case '.': return dot; case '%': return pct; }
 	return blank;
 }
 
@@ -350,6 +350,48 @@ bool overlayOn()
 	return v;
 }
 void setGpuNs(uint64_t ns) { gGpuNs += ns; gGpuN++; }
+
+// the GPU's clock and load from the kernel driver (Adreno: kgsl), when readable; -1: not readable
+long readNum(const char* path)
+{
+	FILE* f = fopen(path, "r");
+	if (!f) return -1;
+	long v = -1;
+	if (fscanf(f, "%ld", &v) != 1) v = -1;
+	fclose(f);
+	return v;
+}
+// every half second: the clock in MHz and the busy percentage; logged every 30 s (min / average / max)
+void sampleGpuClock(int& mhz, int& busy)
+{
+	static bool tried = false, ok = false;
+	static const char* clkPath = nullptr;
+	static long maxMhz = -1;
+	if (!tried)
+	{
+		tried = true;
+		const char* paths[] = {"/sys/class/kgsl/kgsl-3d0/gpuclk", "/sys/class/kgsl/kgsl-3d0/devfreq/cur_freq"};
+		for (const char* p : paths) if (readNum(p) > 0) { clkPath = p; break; }
+		long mx = readNum("/sys/class/kgsl/kgsl-3d0/max_gpuclk");
+		if (mx <= 0) mx = readNum("/sys/class/kgsl/kgsl-3d0/devfreq/max_freq");
+		maxMhz = mx > 0 ? mx / 1000000 : -1;
+		ok = clkPath != nullptr;
+		rt::log("gpu clock: %s (max %ld MHz)", ok ? clkPath : "not readable", maxMhz);
+	}
+	mhz = busy = -1;
+	if (!ok) return;
+	long c = readNum(clkPath);
+	if (c > 0) mhz = (int)(c / 1000000);
+	busy = (int)readNum("/sys/class/kgsl/kgsl-3d0/gpu_busy_percentage");
+	static int n = 0, lo = 1 << 30, hi = 0; static long sum = 0, bsum = 0; static int bn = 0;
+	if (mhz > 0) { n++; sum += mhz; lo = std::min(lo, mhz); hi = std::max(hi, mhz); }
+	if (busy >= 0) { bsum += busy; bn++; }
+	if (n >= 60)
+	{
+		rt::log("gpu clock: %d / %ld / %d MHz (min / average / max of 30 s; top %ld), busy %ld%%", lo, sum / n, hi, maxMhz, bn ? bsum / bn : -1);
+		n = 0; sum = 0; lo = 1 << 30; hi = 0; bsum = 0; bn = 0;
+	}
+}
 void setRenderNs(uint64_t ns) { gRenNs += ns; gRenN++; }
 
 void draw(const DrawRect& rect)
@@ -362,6 +404,7 @@ void draw(const DrawRect& rect)
 		static auto t0 = std::chrono::steady_clock::now(), tl = t0;
 		static int frames = 0, shown = 0;
 		static double worst = 0, shownMs = 0, shownWorst = 0, shownGpu = -1, shownRen = -1;
+		static int shownMhz = -1, shownBusy = -1;
 		auto now = std::chrono::steady_clock::now();
 		double fd = std::chrono::duration<double, std::milli>(now - tl).count(); tl = now;
 		worst = std::max(worst, fd);
@@ -372,6 +415,7 @@ void draw(const DrawRect& rect)
 			shown = (int)(frames / dt + 0.5); shownMs = dt * 1000 / frames; shownWorst = worst;
 			uint64_t gn = gGpuNs.exchange(0), rn = gRenNs.exchange(0); uint32_t gc = gGpuN.exchange(0), rc = gRenN.exchange(0);
 			shownGpu = gc ? gn / 1e6 / gc : -1; shownRen = rc ? rn / 1e6 / rc : -1;
+			sampleGpuClock(shownMhz, shownBusy);   // (two small file reads)
 			frames = 0; worst = 0; t0 = now;
 		}
 		int h = std::max(18, scrH / 36), w = h * 2;
@@ -386,7 +430,14 @@ void draw(const DrawRect& rect)
 			else snprintf(l2, sizeof l2, "GPU %.1f CPU %.1f", shownGpu, shownRen);
 			int lh = h, lw = h * 8;
 			R b1 = {scrW - lw - 6, 6 + h + 2, lw, lh}, b2 = {scrW - lw - 6, 6 + h + 2 + lh, lw, lh};
-			rect(b1.x, b1.y, lw, lh * 2, 0.05f, 0.05f, 0.06f);
+			bool clk = shownMhz > 0;
+			rect(b1.x, b1.y, lw, lh * (clk ? 3 : 2), 0.05f, 0.05f, 0.06f);
+			if (clk)
+			{
+				char l3[40];
+				if (shownBusy >= 0) snprintf(l3, sizeof l3, "%d MHZ %d%%", shownMhz, shownBusy); else snprintf(l3, sizeof l3, "%d MHZ", shownMhz);
+				text(rect, l3, {b1.x, b1.y + 2 * lh, lw, lh}, 0.85f, 0.85f, 0.9f);
+			}
 			text(rect, l1, b1, 0.85f, 0.85f, 0.9f);
 			// GPU time red when it alone does not fit a 30 fps frame
 			bool slow = shownGpu > 33.3;
