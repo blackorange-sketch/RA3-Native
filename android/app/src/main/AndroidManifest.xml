@@ -15,7 +15,12 @@
         android:roundIcon="@mipmap/ic_launcher"
         android:hasCode="true"
         android:largeHeap="true"
-        android:requestLegacyExternalStorage="true">
+        android:requestLegacyExternalStorage="true"
+        android:appCategory="game"
+        android:isGame="true">
+        <!-- a game for the system: Game Mode / game centres (their performance profile instead of the default
+             one, which held the GPU at 295 of 719 MHz) -->
+        <meta-data android:name="android.game_mode_config" android:resource="@xml/game_mode_config" />
         <activity
             android:name="org.ra3native.LauncherActivity"
             android:exported="true"
