@@ -58,7 +58,7 @@ void onProf(int, siginfo_t* si, void* uctx)
 			uintptr_t fp = (uintptr_t)uc->uc_mcontext.regs[29];
 			for (int k = 0; k < 12 && !our; k++)
 			{
-				if (!(fp >= rStackLo && fp + 16 <= rStackHi) || (fp & 7)) break;
+				if (!(fp >= rStackLo && rStackHi >= 16 && fp <= rStackHi - 16) || (fp & 7)) break;   // (fp + 16 wraps for a junk fp near 2^64)
 				uintptr_t ra = ((uintptr_t*)fp)[1], next = ((uintptr_t*)fp)[0];
 				if (ra >= soLo && ra < soHi) our = ra;
 				fp = next > fp ? next : 0;
@@ -77,7 +77,7 @@ void onProf(int, siginfo_t* si, void* uctx)
 	for (int k = 0; k < Deep; k++)
 	{
 		uintptr_t ra = 0;
-		if (fp >= stackLo && fp + 16 <= stackHi && !(fp & 7))
+		if (fp >= stackLo && stackHi >= 16 && fp <= stackHi - 16 && !(fp & 7))
 		{
 			ra = ((uintptr_t*)fp)[1];
 			uintptr_t next = ((uintptr_t*)fp)[0];
