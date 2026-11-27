@@ -289,7 +289,9 @@ inline bool execPreshader(const PresProg& pp, const std::vector<double>& in, Pre
 		uint32_t ot = fu(q + 4), oi = fu(q + 8);
 		q += 12;
 		uint32_t opc = (tok >> 20) & 0x7ff, comps = tok & 0xffff;
-		bool scalar = (tok & 0x10000) != 0;
+		// scalar op (bit 31, as Wine's d3dx9 PRES_SCALAR_FLAG): the first input is one value for every component
+		// (e.g. number x colour); bit 16 belongs to nothing, so such ops read the first input as a vector
+		bool scalar = (tok & 0x80000000u) != 0;
 		if (comps == 0) comps = 1;
 		if (comps > 16) return false;
 		if (opc == 0x500)   // dot: all components -> one value
