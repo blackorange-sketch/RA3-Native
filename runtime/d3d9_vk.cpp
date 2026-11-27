@@ -543,6 +543,7 @@ VkImageView makeView(VTex* t, VkImageViewType type, uint32_t level, uint32_t nLe
 void beforeWrite(VTex* t, bool whole);
 VTex* readOf(VTex* t);
 extern std::vector<VTex*> gLwList;
+void markRead(VTex* t);
 void destroyTex(VTex* t)
 {
 	if (!t) return;
